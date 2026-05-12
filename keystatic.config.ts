@@ -1,7 +1,5 @@
 import { config, collection, fields } from '@keystatic/core';
 
-const siteUrl = import.meta.env.PUBLIC_SITE_URL ?? 'https://capitulo-de-hoje.pages.dev';
-
 export default config({
   storage: {
     kind: 'github',
