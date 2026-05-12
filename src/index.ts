@@ -9,6 +9,8 @@ import {
   renderAdminImport,
 } from './render';
 import { parseWxr } from './wxr';
+import { extractImageUrls, migrateImages, rewriteHtmlUrls } from './images';
+import type { ImageMigrationStats } from './images';
 import {
   createSession, sessionCookie, clearSessionCookie, requireAuth,
 } from './auth';
@@ -78,6 +80,36 @@ export default {
       // ===== Static assets (CSS, favicon, etc) =====
       if (pathname.startsWith('/styles.css') || pathname.startsWith('/favicon')) {
         return env.ASSETS.fetch(request);
+      }
+
+      // ===== R2 images: /img/<filename> =====
+      if (pathname.startsWith('/img/') && (request.method === 'GET' || request.method === 'HEAD')) {
+        const key = pathname.slice(5);
+        if (!key || key.includes('/') || key.includes('..')) {
+          return new Response('Not found', { status: 404 });
+        }
+        const ifNoneMatch = request.headers.get('If-None-Match');
+        if (request.method === 'HEAD') {
+          const meta = await env.IMAGES.head(key);
+          if (!meta) return new Response(null, { status: 404 });
+          const h = new Headers();
+          meta.writeHttpMetadata(h);
+          h.set('etag', meta.httpEtag);
+          h.set('Cache-Control', 'public, max-age=31536000, immutable');
+          h.set('Content-Length', String(meta.size));
+          if (ifNoneMatch === meta.httpEtag) return new Response(null, { status: 304, headers: h });
+          return new Response(null, { status: 200, headers: h });
+        }
+        const obj = await env.IMAGES.get(key);
+        if (!obj) return new Response('Not found', { status: 404 });
+        const headers = new Headers();
+        obj.writeHttpMetadata(headers);
+        headers.set('etag', obj.httpEtag);
+        headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+        if (ifNoneMatch === obj.httpEtag) {
+          return new Response(null, { status: 304, headers });
+        }
+        return new Response(obj.body, { headers });
       }
 
       // ===== Public: home =====
@@ -260,14 +292,31 @@ Sitemap: ${url.protocol}//${url.host}/rss.xml
             });
           }
           const importDrafts = form.get('import_drafts') === '1';
+          const migrateImagesFlag = form.get('migrate_images') === '1';
           const xml = await file.text();
           const posts = parseWxr(xml);
+
+          // ===== Pré-passe: coletar URLs de imagens =====
+          let imageStats: ImageMigrationStats | null = null;
+          let urlMap = new Map<string, string>();
+          if (migrateImagesFlag) {
+            const allUrls: string[] = [];
+            for (const p of posts) {
+              if (p.status !== 'publish' && !importDrafts) continue;
+              if (p.heroImage) allUrls.push(p.heroImage);
+              allUrls.push(...extractImageUrls(p.content));
+            }
+            const r = await migrateImages(allUrls, env.IMAGES);
+            urlMap = r.urlMap;
+            imageStats = r.stats;
+          }
 
           const result = {
             imported: 0,
             skipped: [] as Array<{ slug: string; title: string; reason: string }>,
             errors: [] as Array<{ title: string; error: string }>,
             total: posts.length,
+            imageStats,
           };
 
           for (const p of posts) {
@@ -284,15 +333,19 @@ Sitemap: ${url.protocol}//${url.host}/rss.xml
               continue;
             }
             try {
+              const content = migrateImagesFlag ? rewriteHtmlUrls(p.content, urlMap) : p.content;
+              const heroImage = p.heroImage
+                ? (migrateImagesFlag ? (urlMap.get(p.heroImage) ?? p.heroImage) : p.heroImage)
+                : null;
               await createPost(env.DB, {
                 slug: p.slug,
                 title: p.title,
-                description: p.description || excerpt(p.content),
-                content: p.content,
+                description: p.description || excerpt(content),
+                content,
                 category: p.category,
                 tags: p.tags.join(', '),
                 author: p.author,
-                hero_image: p.heroImage,
+                hero_image: heroImage,
                 draft: isDraft ? 1 : 0,
                 pub_date: p.pubDate,
               });

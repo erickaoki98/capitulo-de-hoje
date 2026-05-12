@@ -1,6 +1,7 @@
 export interface Env {
   DB: D1Database;
   ASSETS: Fetcher;
+  IMAGES: R2Bucket;
   SITE_TITLE: string;
   SITE_DESCRIPTION: string;
   ADMIN_USERNAME: string;

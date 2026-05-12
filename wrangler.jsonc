@@ -17,6 +17,12 @@
       "database_id": "e8eae0e1-be0a-4fc6-8429-4ab9f072a544"
     }
   ],
+  "r2_buckets": [
+    {
+      "binding": "IMAGES",
+      "bucket_name": "capitulo-de-hoje-images"
+    }
+  ],
   "vars": {
     "SITE_TITLE": "Capítulo de Hoje",
     "SITE_DESCRIPTION": "Artigos e reflexões."

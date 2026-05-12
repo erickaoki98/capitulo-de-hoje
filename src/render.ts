@@ -315,6 +315,13 @@ export interface ImportResult {
   skipped: Array<{ slug: string; title: string; reason: string }>;
   errors: Array<{ title: string; error: string }>;
   total: number;
+  imageStats?: {
+    totalFound: number;
+    uniqueFound: number;
+    migrated: number;
+    failed: Array<{ url: string; error: string }>;
+    skipped: number;
+  } | null;
 }
 
 export function renderAdminImport(
@@ -325,12 +332,28 @@ export function renderAdminImport(
 ): string {
   const url = new URL(request.url);
 
+  const imgStatsHtml = result?.imageStats
+    ? `<div class="success">
+        <p><strong>${result.imageStats.migrated}</strong> imagens enviadas para o R2 (${result.imageStats.skipped} já existiam, ${result.imageStats.failed.length} falharam) de <strong>${result.imageStats.uniqueFound}</strong> únicas encontradas.</p>
+      </div>
+      ${result.imageStats.failed.length > 0
+        ? `<details><summary><strong>${result.imageStats.failed.length}</strong> imagens com falha</summary>
+            <ul class="import-list">
+              ${result.imageStats.failed.map((f) =>
+                `<li><code>${escapeHtml(f.url)}</code> — <span class="muted">${escapeHtml(f.error)}</span></li>`,
+              ).join('')}
+            </ul>
+          </details>`
+        : ''}`
+    : '';
+
   const resultHtml = result
     ? `<div class="${result.imported > 0 ? 'success' : 'error'}">
         <p><strong>${result.imported}</strong> posts importados de <strong>${result.total}</strong> encontrados.</p>
       </div>
+      ${imgStatsHtml}
       ${result.skipped.length > 0
-        ? `<details open><summary><strong>${result.skipped.length}</strong> posts pulados (slug duplicado)</summary>
+        ? `<details open><summary><strong>${result.skipped.length}</strong> posts pulados</summary>
             <ul class="import-list">
               ${result.skipped.map((s) =>
                 `<li><code>${escapeHtml(s.slug)}</code> — ${escapeHtml(s.title)} <span class="muted">(${escapeHtml(s.reason)})</span></li>`,
@@ -370,7 +393,7 @@ export function renderAdminImport(
           <li>Os <strong>slugs</strong> originais são preservados para que URLs antigas continuem funcionando.</li>
           <li>Posts com slug duplicado serão <strong>pulados</strong> (não sobrescrevem o existente).</li>
           <li>Páginas, attachments e revisões são ignorados — apenas posts.</li>
-          <li>Imagens permanecem nas URLs originais (não são re-hospedadas).</li>
+          <li>Quando habilitada a migração de imagens: cada imagem é baixada da URL original, salva no bucket R2, e as URLs no conteúdo são reescritas para <code>/img/&lt;hash&gt;.ext</code>. Imagens duplicadas são deduplicadas por hash.</li>
         </ul>
       </div>
       <form method="POST" action="/admin/import" enctype="multipart/form-data" class="editor-form">
@@ -380,6 +403,9 @@ export function renderAdminImport(
         </div>
         <div class="field field--check">
           <label><input type="checkbox" name="import_drafts" value="1"> Importar rascunhos também</label>
+        </div>
+        <div class="field field--check">
+          <label><input type="checkbox" name="migrate_images" value="1" checked> Baixar imagens e salvar no R2 (recomendado)</label>
         </div>
         <div class="form-actions">
           <button type="submit" class="btn btn--primary">Iniciar importação</button>
