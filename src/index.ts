@@ -2,6 +2,7 @@ import type { Env, PostInput } from './types';
 import {
   listPosts, getPostBySlug, getPostById,
   createPost, updatePost, deletePost,
+  upsertRedirect, findRedirect,
 } from './db';
 import {
   renderHome, renderPost, render404,
@@ -79,7 +80,11 @@ export default {
     try {
       // ===== Static assets (CSS, favicon, etc) =====
       if (pathname.startsWith('/styles.css') || pathname.startsWith('/favicon')) {
-        return env.ASSETS.fetch(request);
+        const res = await env.ASSETS.fetch(request);
+        // adiciona cache de longo prazo (mutaremos via versão se precisar)
+        const headers = new Headers(res.headers);
+        headers.set('Cache-Control', 'public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800');
+        return new Response(res.body, { status: res.status, headers });
       }
 
       // ===== R2 images: /img/<filename> =====
@@ -118,29 +123,46 @@ export default {
         return new Response(renderHome(env, request, posts), { headers: PUBLIC_CACHE_HEADERS });
       }
 
-      // ===== Public: post by slug =====
+      // ===== Legacy /p/<slug> → 301 to /<slug> =====
       if (pathname.startsWith('/p/') && request.method === 'GET') {
-        const slug = pathname.slice(3);
-        const post = await getPostBySlug(env.DB, slug);
-        if (!post || post.draft) {
-          return new Response(render404(env, request), { status: 404, headers: HTML_HEADERS });
-        }
-        return new Response(renderPost(env, request, post), { headers: PUBLIC_CACHE_HEADERS });
+        const slug = pathname.slice(3).replace(/\/$/, '');
+        return Response.redirect(`${url.protocol}//${url.host}/${slug}`, 301);
       }
 
       // ===== robots.txt =====
       if (pathname === '/robots.txt' && request.method === 'GET') {
+        const canonical = canonicalUrl(env, url);
         const robots = `User-agent: *
 Allow: /
 Disallow: /admin
 Disallow: /admin/
 
-Sitemap: ${url.protocol}//${url.host}/rss.xml
+Sitemap: ${canonical}/sitemap.xml
 `;
         return new Response(robots, {
           headers: {
             'Content-Type': 'text/plain; charset=utf-8',
             'Cache-Control': 'public, max-age=86400',
+          },
+        });
+      }
+
+      // ===== Sitemap =====
+      if (pathname === '/sitemap.xml' && request.method === 'GET') {
+        const posts = await listPosts(env.DB, { includeDrafts: false, limit: 1000 });
+        const base = canonicalUrl(env, url);
+        const urls = [
+          `<url><loc>${base}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>`,
+          ...posts.map((p) => `<url><loc>${base}/${p.slug}</loc><lastmod>${new Date(p.updated_date || p.pub_date).toISOString()}</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>`),
+        ].join('\n');
+        const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${urls}
+</urlset>`;
+        return new Response(xml, {
+          headers: {
+            'Content-Type': 'application/xml; charset=utf-8',
+            'Cache-Control': 'public, max-age=3600',
           },
         });
       }
@@ -348,7 +370,22 @@ Sitemap: ${url.protocol}//${url.host}/rss.xml
                 hero_image: heroImage,
                 draft: isDraft ? 1 : 0,
                 pub_date: p.pubDate,
+                source_url: p.link || null,
               });
+              // Cadastra redirect a partir do pathname original do WP
+              // (ex: /2023/05/meu-post/ → meu-post). Sem trailing slash.
+              if (p.link) {
+                try {
+                  const u = new URL(p.link);
+                  const oldPath = u.pathname.replace(/\/+$/, '');
+                  // só cadastra se for diferente de /<slug>
+                  if (oldPath && oldPath !== `/${p.slug}`) {
+                    await upsertRedirect(env.DB, oldPath, p.slug);
+                  }
+                } catch {
+                  // link inválido, ignora
+                }
+              }
               result.imported++;
             } catch (e: unknown) {
               result.errors.push({ title: p.title, error: e instanceof Error ? e.message : String(e) });
@@ -372,6 +409,27 @@ Sitemap: ${url.protocol}//${url.host}/rss.xml
         return new Response(null, { status: 303, headers: { Location: '/admin' } });
       }
 
+      // ===== Public: post at bare /<slug> (catch-all) =====
+      if (request.method === 'GET' && pathname !== '/' && !pathname.startsWith('/admin')) {
+        // trailing slash → 301 to canonical
+        if (pathname.endsWith('/') && pathname.length > 1) {
+          return Response.redirect(`${url.protocol}//${url.host}${pathname.slice(0, -1)}`, 301);
+        }
+        const slug = pathname.slice(1);
+        // valida formato — só letras minúsculas, números e hífens
+        if (/^[a-z0-9-]+$/.test(slug)) {
+          const post = await getPostBySlug(env.DB, slug);
+          if (post && !post.draft) {
+            return new Response(renderPost(env, request, post), { headers: PUBLIC_CACHE_HEADERS });
+          }
+        }
+        // Não bateu como slug direto → checa tabela de redirects (URL antiga do WP)
+        const target = await findRedirect(env.DB, pathname);
+        if (target) {
+          return Response.redirect(`${url.protocol}//${url.host}/${target}`, 301);
+        }
+      }
+
       // ===== Default 404 =====
       return new Response(render404(env, request), { status: 404, headers: HTML_HEADERS });
     } catch (err) {
@@ -386,6 +444,17 @@ Sitemap: ${url.protocol}//${url.host}/rss.xml
 
 function redirectToLogin(): Response {
   return new Response(null, { status: 303, headers: { Location: '/admin' } });
+}
+
+/**
+ * URL canônica do site. Usa CANONICAL_URL se definida, senão o host da request.
+ * Sempre sem trailing slash. Permite que canonical/og:url/sitemap apontem
+ * para o dominio final mesmo quando servidor responde via workers.dev.
+ */
+function canonicalUrl(env: Env, url: URL): string {
+  const fromEnv = (env as Env & { CANONICAL_URL?: string }).CANONICAL_URL;
+  if (fromEnv) return fromEnv.replace(/\/$/, '');
+  return `${url.protocol}//${url.host}`;
 }
 
 function escapeXml(s: string): string {

@@ -26,8 +26,8 @@ export async function getPostById(db: D1Database, id: number): Promise<Post | nu
 export async function createPost(db: D1Database, input: PostInput): Promise<number> {
   const now = Date.now();
   const stmt = db.prepare(
-    `INSERT INTO posts (slug, title, description, content, category, tags, author, hero_image, draft, pub_date, updated_date)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO posts (slug, title, description, content, category, tags, author, hero_image, draft, pub_date, updated_date, source_url)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).bind(
     input.slug,
     input.title,
@@ -40,9 +40,30 @@ export async function createPost(db: D1Database, input: PostInput): Promise<numb
     input.draft,
     input.pub_date,
     now,
+    input.source_url ?? null,
   );
   const result = await stmt.run();
   return Number(result.meta.last_row_id);
+}
+
+/**
+ * Cadastra um redirect from_path → to_slug. Idempotente.
+ */
+export async function upsertRedirect(db: D1Database, fromPath: string, toSlug: string): Promise<void> {
+  await db.prepare(
+    `INSERT INTO redirects (from_path, to_slug) VALUES (?, ?)
+     ON CONFLICT(from_path) DO UPDATE SET to_slug = excluded.to_slug`,
+  ).bind(fromPath, toSlug).run();
+}
+
+/**
+ * Busca slug para um redirect dado.
+ */
+export async function findRedirect(db: D1Database, fromPath: string): Promise<string | null> {
+  const row = await db.prepare(
+    'SELECT to_slug FROM redirects WHERE from_path = ? LIMIT 1',
+  ).bind(fromPath).first<{ to_slug: string }>();
+  return row?.to_slug ?? null;
 }
 
 export async function updatePost(db: D1Database, id: number, input: PostInput): Promise<void> {

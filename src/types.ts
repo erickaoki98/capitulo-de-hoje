@@ -4,6 +4,7 @@ export interface Env {
   IMAGES: R2Bucket;
   SITE_TITLE: string;
   SITE_DESCRIPTION: string;
+  CANONICAL_URL?: string;  // URL canônica (após mover para domínio final)
   ADMIN_USERNAME: string;
   ADMIN_PASSWORD: string;
   SESSION_SECRET: string;
@@ -22,6 +23,7 @@ export interface Post {
   draft: number;
   pub_date: number;
   updated_date: number;
+  source_url: string | null;
 }
 
 export interface PostInput {
@@ -35,4 +37,5 @@ export interface PostInput {
   hero_image: string | null;
   draft: number;
   pub_date: number;
+  source_url?: string | null;
 }

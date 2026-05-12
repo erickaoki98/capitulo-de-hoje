@@ -1,6 +1,17 @@
 import type { Env, Post } from './types';
 import { renderMarkdown, readingTime } from './markdown';
 
+/**
+ * URL canônica do site (preferindo CANONICAL_URL env var).
+ * Garante que `<link rel=canonical>`, og:url e JSON-LD apontem
+ * sempre para o domínio final, mesmo enquanto o site roda em workers.dev.
+ */
+function siteCanonical(env: Env, url: URL): string {
+  const fromEnv = (env as Env & { CANONICAL_URL?: string }).CANONICAL_URL;
+  if (fromEnv) return fromEnv.replace(/\/$/, '');
+  return `${url.protocol}//${url.host}`;
+}
+
 // ====== Helpers ======
 export function escapeHtml(s: string): string {
   return s
@@ -61,11 +72,14 @@ function layout(opts: LayoutOptions, body: string): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#ffffff">
+<meta name="color-scheme" content="light">
 <title>${escapeHtml(title)}</title>
 <meta name="description" content="${escapeHtml(description)}">
 <link rel="canonical" href="${escapeHtml(url)}">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="/styles.css" as="style">
 <link rel="stylesheet" href="/styles.css">
+${image ? `<link rel="preload" as="image" href="${escapeHtml(image)}" ${type === 'article' ? 'fetchpriority="high"' : ''}>` : ''}
 ${!isAdmin ? `<link rel="alternate" type="application/rss+xml" title="${escapeHtml(siteTitle)}" href="/rss.xml">` : ''}
 <meta property="og:type" content="${type}">
 <meta property="og:locale" content="pt_BR">
@@ -85,7 +99,7 @@ ${tags.map((t) => `<meta property="article:tag" content="${escapeHtml(t)}">`).jo
 <meta name="twitter:description" content="${escapeHtml(description)}">
 ${image ? `<meta name="twitter:image" content="${escapeHtml(image)}">` : ''}
 ${author ? `<meta name="author" content="${escapeHtml(author)}">` : ''}
-${isAdmin ? '<meta name="robots" content="noindex, nofollow, noarchive, nosnippet">' : '<meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">'}
+${isAdmin || bodyClass.includes('is-404') ? '<meta name="robots" content="noindex, nofollow">' : '<meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">'}
 ${ld}
 </head>
 <body class="${bodyClass}">
@@ -110,16 +124,17 @@ ${body}
 // ====== Home ======
 export function renderHome(env: Env, request: Request, posts: Post[]): string {
   const url = new URL(request.url);
-  const siteUrl = `${url.protocol}//${url.host}`;
+  const siteUrl = siteCanonical(env, url);
 
   const cards = posts
-    .map((p) => {
+    .map((p, i) => {
       const tags = parseTags(p.tags);
+      const eager = i < 2;
       return `<article class="post-card">
-        ${p.hero_image ? `<a href="/p/${escapeHtml(p.slug)}" class="post-card__image"><img src="${escapeHtml(p.hero_image)}" alt="" loading="lazy" decoding="async"></a>` : ''}
+        ${p.hero_image ? `<a href="/${escapeHtml(p.slug)}" class="post-card__image"><img src="${escapeHtml(p.hero_image)}" alt="" loading="${eager ? 'eager' : 'lazy'}" ${eager ? 'fetchpriority="high"' : ''} decoding="async"></a>` : ''}
         <div class="post-card__body">
           ${p.category ? `<div class="post-card__category">${escapeHtml(p.category)}</div>` : ''}
-          <h2 class="post-card__title"><a href="/p/${escapeHtml(p.slug)}">${escapeHtml(p.title)}</a></h2>
+          <h2 class="post-card__title"><a href="/${escapeHtml(p.slug)}">${escapeHtml(p.title)}</a></h2>
           <p class="post-card__desc">${escapeHtml(p.description)}</p>
           <div class="post-card__meta">
             <time datetime="${isoDate(p.pub_date)}">${formatDate(p.pub_date)}</time>
@@ -155,7 +170,8 @@ export function renderHome(env: Env, request: Request, posts: Post[]): string {
 // ====== Post page ======
 export function renderPost(env: Env, request: Request, post: Post): string {
   const url = new URL(request.url);
-  const postUrl = `${url.protocol}//${url.host}/p/${post.slug}`;
+  const siteOrigin = siteCanonical(env, url);
+  const postUrl = `${siteOrigin}/${post.slug}`;
   const tags = parseTags(post.tags);
   const html = renderMarkdown(post.content);
 
@@ -178,7 +194,6 @@ export function renderPost(env: Env, request: Request, post: Post): string {
 </article>
 <p class="back"><a href="/">← Voltar</a></p>`;
 
-  const siteOrigin = `${url.protocol}//${url.host}`;
   const heroAbs = post.hero_image
     ? (post.hero_image.startsWith('http') ? post.hero_image : `${siteOrigin}${post.hero_image}`)
     : undefined;
@@ -227,8 +242,9 @@ export function render404(env: Env, request: Request): string {
     {
       title: `404 — ${env.SITE_TITLE}`,
       description: 'Página não encontrada',
-      url: `${url.protocol}//${url.host}${url.pathname}`,
+      url: `${siteCanonical(env, url)}${url.pathname}`,
       siteTitle: env.SITE_TITLE,
+      bodyClass: 'is-404',
     },
     `<div class="not-found"><h1>404</h1><p>Página não encontrada.</p><p><a href="/" class="btn">Voltar ao início</a></p></div>`,
   );

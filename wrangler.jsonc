@@ -26,5 +26,8 @@
   "vars": {
     "SITE_TITLE": "Capítulo de Hoje",
     "SITE_DESCRIPTION": "Artigos e reflexões."
+    // Quando subir para o domínio final, adicione/atualize via dashboard
+    // (Settings → Variables) ou aqui:
+    // "CANONICAL_URL": "https://capitulodehoje.com.br"
   }
 }
