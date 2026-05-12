@@ -1,8 +1,0 @@
-# Cloudflare Pages redirects
-# Formato: /origem /destino código
-
-# Exemplo: redirecionar /posts/* para /blog/*
-# /posts/*  /blog/:splat  301
-
-# SPA fallback (descomente se usar SSR/hybrid)
-# /*  /index.html  200

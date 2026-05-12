@@ -1,13 +1,24 @@
 {
-	"compatibility_date": "2026-05-12",
-	"compatibility_flags": ["global_fetch_strictly_public"],
-	"name": "blog",
-	"main": "@astrojs/cloudflare/entrypoints/server",
-	"assets": {
-		"directory": "./dist",
-		"binding": "ASSETS"
-	},
-	"observability": {
-		"enabled": true
-	}
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "capitulo-de-hoje",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-05-12",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "capitulo-de-hoje",
+      "database_id": "e8eae0e1-be0a-4fc6-8429-4ab9f072a544"
+    }
+  ],
+  "vars": {
+    "SITE_TITLE": "Capítulo de Hoje",
+    "SITE_DESCRIPTION": "Artigos e reflexões."
+  }
 }
