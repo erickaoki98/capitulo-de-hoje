@@ -2,7 +2,7 @@
 // Faz download da URL original, faz upload no R2 com nome derivado de hash,
 // e reescreve URLs no conteúdo HTML para apontar para /img/<filename>.
 
-const FETCH_TIMEOUT_MS = 10_000;
+const FETCH_TIMEOUT_MS = 5_000;
 const MAX_IMAGE_BYTES = 25 * 1024 * 1024; // 25 MB
 
 export interface ImageMigrationStats {
@@ -176,4 +176,61 @@ export function rewriteHtmlUrls(html: string, urlMap: Map<string, string>): stri
     out = out.replace(new RegExp(escaped, 'g'), newUrl);
   }
   return out;
+}
+
+/**
+ * Migra imagens com orçamento de tempo e subrequests.
+ * Bota um teto pra garantir que a request termina antes do CPU/wall-time limit.
+ */
+export interface MigrationBudget {
+  /** epoch ms quando começou */
+  startedAt: number;
+  /** ms até bater no limite (default 20s) */
+  maxWallTimeMs: number;
+  /** máx imagens a baixar nessa request */
+  maxImages: number;
+}
+
+export async function migrateImagesWithBudget(
+  urls: string[],
+  bucket: R2Bucket,
+  budget: MigrationBudget,
+): Promise<{
+  urlMap: Map<string, string>;
+  stats: ImageMigrationStats;
+  exhausted: boolean; // true se bateu no limite e tem mais pra fazer
+}> {
+  const unique = Array.from(new Set(urls));
+  const urlMap = new Map<string, string>();
+  const stats: ImageMigrationStats = {
+    totalFound: urls.length,
+    uniqueFound: unique.length,
+    migrated: 0,
+    failed: [],
+    skipped: 0,
+  };
+
+  let exhausted = false;
+  let processedThisRun = 0;
+
+  for (const url of unique) {
+    // checa orçamento
+    const elapsed = Date.now() - budget.startedAt;
+    if (elapsed > budget.maxWallTimeMs || processedThisRun >= budget.maxImages) {
+      exhausted = true;
+      break;
+    }
+
+    const result = await migrateOne(url, bucket);
+    processedThisRun++;
+    if ('error' in result) {
+      stats.failed.push({ url, error: result.error });
+    } else {
+      urlMap.set(url, result.newPath);
+      if (result.skipped) stats.skipped++;
+      else stats.migrated++;
+    }
+  }
+
+  return { urlMap, stats, exhausted };
 }

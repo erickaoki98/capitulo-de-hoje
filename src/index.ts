@@ -3,14 +3,17 @@ import {
   listPosts, getPostBySlug, getPostById,
   createPost, updatePost, deletePost,
   upsertRedirect, findRedirect,
+  countPostsWithExternalImages, nextPostsToMigrate, updatePostContent,
 } from './db';
 import {
   renderHome, renderPost, render404,
   renderLogin, renderAdminDashboard, renderAdminEditor,
-  renderAdminImport,
+  renderAdminImport, renderAdminMigrate,
 } from './render';
 import { parseWxr } from './wxr';
-import { extractImageUrls, migrateImages, rewriteHtmlUrls } from './images';
+import {
+  extractImageUrls, rewriteHtmlUrls, migrateImagesWithBudget,
+} from './images';
 import type { ImageMigrationStats } from './images';
 import {
   createSession, sessionCookie, clearSessionCookie, requireAuth,
@@ -303,6 +306,9 @@ ${urls}
       }
 
       // ===== Admin: import (POST) =====
+      // Estratégia: SEMPRE importa rápido (só posts, sem imagens).
+      // Migração de imagens é separada via /admin/migrate-images (batched).
+      // Isso evita timeout do Workers (CPU/wall-time + subrequest limits).
       if (pathname === '/admin/import' && request.method === 'POST') {
         if (!authed) return redirectToLogin();
         try {
@@ -314,77 +320,50 @@ ${urls}
             });
           }
           const importDrafts = form.get('import_drafts') === '1';
-          const migrateImagesFlag = form.get('migrate_images') === '1';
           const xml = await file.text();
           const posts = parseWxr(xml);
-
-          // ===== Pré-passe: coletar URLs de imagens =====
-          let imageStats: ImageMigrationStats | null = null;
-          let urlMap = new Map<string, string>();
-          if (migrateImagesFlag) {
-            const allUrls: string[] = [];
-            for (const p of posts) {
-              if (p.status !== 'publish' && !importDrafts) continue;
-              if (p.heroImage) allUrls.push(p.heroImage);
-              allUrls.push(...extractImageUrls(p.content));
-            }
-            const r = await migrateImages(allUrls, env.IMAGES);
-            urlMap = r.urlMap;
-            imageStats = r.stats;
-          }
 
           const result = {
             imported: 0,
             skipped: [] as Array<{ slug: string; title: string; reason: string }>,
             errors: [] as Array<{ title: string; error: string }>,
             total: posts.length,
-            imageStats,
+            imageStats: null as ImageMigrationStats | null,
           };
 
           for (const p of posts) {
-            // pula rascunhos a menos que solicitado
             const isDraft = p.status !== 'publish';
             if (isDraft && !importDrafts) {
               result.skipped.push({ slug: p.slug, title: p.title, reason: `status: ${p.status}` });
               continue;
             }
-            // preserva o slug — se já existe, pula
             const existing = await getPostBySlug(env.DB, p.slug);
             if (existing) {
               result.skipped.push({ slug: p.slug, title: p.title, reason: 'slug já existe' });
               continue;
             }
             try {
-              const content = migrateImagesFlag ? rewriteHtmlUrls(p.content, urlMap) : p.content;
-              const heroImage = p.heroImage
-                ? (migrateImagesFlag ? (urlMap.get(p.heroImage) ?? p.heroImage) : p.heroImage)
-                : null;
               await createPost(env.DB, {
                 slug: p.slug,
                 title: p.title,
-                description: p.description || excerpt(content),
-                content,
+                description: p.description || excerpt(p.content),
+                content: p.content, // URLs originais — migradas depois
                 category: p.category,
                 tags: p.tags.join(', '),
                 author: p.author,
-                hero_image: heroImage,
+                hero_image: p.heroImage,
                 draft: isDraft ? 1 : 0,
                 pub_date: p.pubDate,
                 source_url: p.link || null,
               });
-              // Cadastra redirect a partir do pathname original do WP
-              // (ex: /2023/05/meu-post/ → meu-post). Sem trailing slash.
               if (p.link) {
                 try {
                   const u = new URL(p.link);
                   const oldPath = u.pathname.replace(/\/+$/, '');
-                  // só cadastra se for diferente de /<slug>
                   if (oldPath && oldPath !== `/${p.slug}`) {
                     await upsertRedirect(env.DB, oldPath, p.slug);
                   }
-                } catch {
-                  // link inválido, ignora
-                }
+                } catch {/* link inválido */}
               }
               result.imported++;
             } catch (e: unknown) {
@@ -399,6 +378,83 @@ ${urls}
             { status: 500, headers: NO_CACHE_HEADERS },
           );
         }
+      }
+
+      // ===== Admin: migrate images (GET) =====
+      if (pathname === '/admin/migrate-images' && request.method === 'GET') {
+        if (!authed) return redirectToLogin();
+        const pending = await countPostsWithExternalImages(env.DB);
+        return new Response(renderAdminMigrate(env, request, { pending }), { headers: NO_CACHE_HEADERS });
+      }
+
+      // ===== Admin: migrate images (POST) — processa um lote =====
+      if (pathname === '/admin/migrate-images' && request.method === 'POST') {
+        if (!authed) return redirectToLogin();
+        const startedAt = Date.now();
+        const BATCH_SIZE = 5;
+        const batch = await nextPostsToMigrate(env.DB, BATCH_SIZE);
+
+        let processedPosts = 0;
+        const totalStats: ImageMigrationStats = {
+          totalFound: 0, uniqueFound: 0, migrated: 0, skipped: 0, failed: [],
+        };
+        const perPostResults: Array<{ slug: string; migrated: number; failed: number; partial: boolean }> = [];
+
+        for (const post of batch) {
+          // checa budget global por request — 20s wall time total
+          if (Date.now() - startedAt > 20_000) break;
+
+          const urls = [
+            ...(post.hero_image && /^https?:\/\//.test(post.hero_image) ? [post.hero_image] : []),
+            ...extractImageUrls(post.content),
+          ];
+          if (urls.length === 0) {
+            processedPosts++;
+            continue;
+          }
+
+          const { urlMap, stats, exhausted } = await migrateImagesWithBudget(urls, env.IMAGES, {
+            startedAt,
+            maxWallTimeMs: 20_000,
+            maxImages: 40,
+          });
+
+          // atualiza stats globais
+          totalStats.totalFound += stats.totalFound;
+          totalStats.uniqueFound += stats.uniqueFound;
+          totalStats.migrated += stats.migrated;
+          totalStats.skipped += stats.skipped;
+          totalStats.failed.push(...stats.failed);
+
+          const newContent = rewriteHtmlUrls(post.content, urlMap);
+          const newHero = post.hero_image && urlMap.has(post.hero_image)
+            ? urlMap.get(post.hero_image)!
+            : post.hero_image;
+
+          // só atualiza se alguma URL foi reescrita
+          if (newContent !== post.content || newHero !== post.hero_image) {
+            await updatePostContent(env.DB, post.id, newContent, newHero);
+          }
+
+          perPostResults.push({
+            slug: post.slug,
+            migrated: stats.migrated + stats.skipped,
+            failed: stats.failed.length,
+            partial: exhausted,
+          });
+          processedPosts++;
+
+          if (exhausted) break;
+        }
+
+        const remaining = await countPostsWithExternalImages(env.DB);
+        return new Response(
+          renderAdminMigrate(env, request, {
+            pending: remaining,
+            lastBatch: { processedPosts, totalStats, perPostResults, elapsedMs: Date.now() - startedAt },
+          }),
+          { headers: NO_CACHE_HEADERS },
+        );
       }
 
       // ===== Admin: delete post =====

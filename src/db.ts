@@ -66,6 +66,45 @@ export async function findRedirect(db: D1Database, fromPath: string): Promise<st
   return row?.to_slug ?? null;
 }
 
+/**
+ * Conta posts com URLs externas (não em /img/) no hero_image ou content.
+ * Usado para a página de migração de imagens.
+ */
+export async function countPostsWithExternalImages(db: D1Database): Promise<number> {
+  const row = await db.prepare(
+    `SELECT COUNT(*) AS n FROM posts
+     WHERE hero_image LIKE 'http%'
+        OR content LIKE '%<img%src="http%'
+        OR content LIKE '%<img%src=''http%'`,
+  ).first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+/**
+ * Pega o próximo lote de posts que ainda têm imagens externas.
+ */
+export async function nextPostsToMigrate(db: D1Database, limit: number): Promise<Post[]> {
+  const { results } = await db.prepare(
+    `SELECT * FROM posts
+     WHERE hero_image LIKE 'http%'
+        OR content LIKE '%<img%src="http%'
+        OR content LIKE '%<img%src=''http%'
+     ORDER BY id ASC LIMIT ?`,
+  ).bind(limit).all<Post>();
+  return results ?? [];
+}
+
+/**
+ * Atualiza apenas content + hero_image de um post (usado pela migração).
+ */
+export async function updatePostContent(
+  db: D1Database, id: number, content: string, heroImage: string | null,
+): Promise<void> {
+  await db.prepare(
+    'UPDATE posts SET content = ?, hero_image = ?, updated_date = ? WHERE id = ?',
+  ).bind(content, heroImage, Date.now(), id).run();
+}
+
 export async function updatePost(db: D1Database, id: number, input: PostInput): Promise<void> {
   const now = Date.now();
   const stmt = db.prepare(

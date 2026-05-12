@@ -310,6 +310,7 @@ export function renderAdminDashboard(env: Env, request: Request, posts: Post[]):
         <div class="admin-actions">
           <a href="/admin/new" class="btn btn--primary">+ Novo post</a>
           <a href="/admin/import" class="btn">Importar WordPress</a>
+          <a href="/admin/migrate-images" class="btn">Migrar imagens</a>
           <form method="POST" action="/admin/logout" style="display:inline">
             <button type="submit" class="btn">Sair</button>
           </form>
@@ -409,7 +410,7 @@ export function renderAdminImport(
           <li>Os <strong>slugs</strong> originais são preservados para que URLs antigas continuem funcionando.</li>
           <li>Posts com slug duplicado serão <strong>pulados</strong> (não sobrescrevem o existente).</li>
           <li>Páginas, attachments e revisões são ignorados — apenas posts.</li>
-          <li>Quando habilitada a migração de imagens: cada imagem é baixada da URL original, salva no bucket R2, e as URLs no conteúdo são reescritas para <code>/img/&lt;hash&gt;.ext</code>. Imagens duplicadas são deduplicadas por hash.</li>
+          <li><strong>Imagens são migradas separadamente</strong> para evitar timeouts. Depois do import, vá em <em>Migrar imagens</em> e processe em lotes.</li>
         </ul>
       </div>
       <form method="POST" action="/admin/import" enctype="multipart/form-data" class="editor-form">
@@ -420,13 +421,99 @@ export function renderAdminImport(
         <div class="field field--check">
           <label><input type="checkbox" name="import_drafts" value="1"> Importar rascunhos também</label>
         </div>
-        <div class="field field--check">
-          <label><input type="checkbox" name="migrate_images" value="1" checked> Baixar imagens e salvar no R2 (recomendado)</label>
-        </div>
         <div class="form-actions">
           <button type="submit" class="btn btn--primary">Iniciar importação</button>
         </div>
       </form>
+    </div>`,
+  );
+}
+
+// ====== Admin: migrate images ======
+export interface MigrateState {
+  pending: number;
+  lastBatch?: {
+    processedPosts: number;
+    totalStats: {
+      totalFound: number;
+      uniqueFound: number;
+      migrated: number;
+      skipped: number;
+      failed: Array<{ url: string; error: string }>;
+    };
+    perPostResults: Array<{ slug: string; migrated: number; failed: number; partial: boolean }>;
+    elapsedMs: number;
+  };
+}
+
+export function renderAdminMigrate(env: Env, request: Request, state: MigrateState): string {
+  const url = new URL(request.url);
+  const done = state.pending === 0;
+
+  const lastBatchHtml = state.lastBatch
+    ? `<div class="${state.lastBatch.totalStats.migrated > 0 ? 'success' : 'error'}">
+        <p>Lote processado em ${(state.lastBatch.elapsedMs / 1000).toFixed(1)}s — ${state.lastBatch.processedPosts} posts, ${state.lastBatch.totalStats.migrated} imagens enviadas (${state.lastBatch.totalStats.skipped} já existiam, ${state.lastBatch.totalStats.failed.length} falharam).</p>
+      </div>
+      ${state.lastBatch.perPostResults.length > 0 ? `<details><summary>Detalhes por post</summary>
+        <ul class="import-list">
+          ${state.lastBatch.perPostResults.map((r) =>
+            `<li><code>/${escapeHtml(r.slug)}</code> — ${r.migrated} OK, ${r.failed} falhas ${r.partial ? '<em>(parcial)</em>' : ''}</li>`,
+          ).join('')}
+        </ul>
+      </details>` : ''}
+      ${state.lastBatch.totalStats.failed.length > 0 ? `<details><summary>Falhas</summary>
+        <ul class="import-list">
+          ${state.lastBatch.totalStats.failed.slice(0, 50).map((f) =>
+            `<li><code>${escapeHtml(f.url)}</code> — <span class="muted">${escapeHtml(f.error)}</span></li>`,
+          ).join('')}
+        </ul>
+      </details>` : ''}`
+    : '';
+
+  // auto-refresh: se ainda tem pendentes E o último lote progrediu, oferece JS leve pra continuar
+  const autoNextScript = state.lastBatch && state.pending > 0 && state.lastBatch.processedPosts > 0
+    ? `<script>
+        // continua automaticamente — só clica o botão sozinho após 1s
+        setTimeout(() => { document.getElementById('next-batch')?.submit(); }, 1000);
+      </script>`
+    : '';
+
+  return layout(
+    {
+      title: `Migrar imagens — ${env.SITE_TITLE}`,
+      description: 'Migração',
+      url: `${url.protocol}//${url.host}/admin/migrate-images`,
+      siteTitle: env.SITE_TITLE,
+      bodyClass: 'admin',
+    },
+    `<div class="admin-import">
+      <header class="admin-header">
+        <h1>Migrar imagens para o R2</h1>
+        <a href="/admin" class="btn">← Voltar</a>
+      </header>
+
+      <div class="import-info">
+        <p>Posts importados do WordPress têm URLs de imagem apontando para o servidor original. Esta página baixa cada imagem e salva no Cloudflare R2, reescrevendo o conteúdo.</p>
+        <ul>
+          <li>Processa <strong>5 posts por lote</strong> (limite seguro para o Workers).</li>
+          <li>Imagens já no R2 são puladas (dedupe).</li>
+          <li>Falhas (404, hot-link block, etc.) são reportadas mas não interrompem.</li>
+          <li>Idempotente: pode rodar de novo se algo falhar — só re-processa o que sobrou.</li>
+        </ul>
+      </div>
+
+      <div class="${done ? 'success' : 'error'}">
+        <p><strong>${state.pending}</strong> ${state.pending === 1 ? 'post precisa' : 'posts precisam'} de migração de imagens.</p>
+      </div>
+
+      ${lastBatchHtml}
+
+      ${!done ? `<form method="POST" action="/admin/migrate-images" id="next-batch">
+        <div class="form-actions">
+          <button type="submit" class="btn btn--primary">Processar próximo lote (5 posts)</button>
+        </div>
+      </form>` : '<p>✓ Todas as imagens estão no R2.</p>'}
+      ${autoNextScript}
     </div>`,
   );
 }
