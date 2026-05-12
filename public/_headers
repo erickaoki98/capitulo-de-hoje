@@ -1,0 +1,20 @@
+# Cloudflare Pages cache headers
+
+# Fontes e assets com hash — cache longo
+/fonts/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/_astro/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Favicon
+/favicon.*
+  Cache-Control: public, max-age=86400
+
+# Páginas HTML — revalidação curta
+/*
+  Cache-Control: public, max-age=0, must-revalidate
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: SAMEORIGIN
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=()
