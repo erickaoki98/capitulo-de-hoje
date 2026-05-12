@@ -3,7 +3,8 @@ import {
   listPosts, getPostBySlug, getPostById,
   createPost, updatePost, deletePost,
   upsertRedirect, findRedirect,
-  countPostsWithExternalImages, nextPostsToMigrate, updatePostContent,
+  countPostsWithExternalImages, countPostsWithAnyImages,
+  nextPostsToMigrate, updatePostContent,
 } from './db';
 import {
   renderHome, renderPost, render404,
@@ -380,36 +381,47 @@ ${urls}
         }
       }
 
-      // ===== Admin: migrate images (GET) =====
+      // ===== Admin: migrate images (GET) — UI =====
       if (pathname === '/admin/migrate-images' && request.method === 'GET') {
         if (!authed) return redirectToLogin();
-        const pending = await countPostsWithExternalImages(env.DB);
-        return new Response(renderAdminMigrate(env, request, { pending }), { headers: NO_CACHE_HEADERS });
+        return new Response(renderAdminMigrate(env, request), { headers: NO_CACHE_HEADERS });
       }
 
-      // ===== Admin: migrate images (POST) — processa um lote =====
-      if (pathname === '/admin/migrate-images' && request.method === 'POST') {
-        if (!authed) return redirectToLogin();
+      // ===== Admin: migrate images status (JSON) =====
+      if (pathname === '/admin/migrate-images/status' && request.method === 'GET') {
+        if (!authed) return new Response('{"error":"unauthorized"}', { status: 401, headers: { 'Content-Type': 'application/json' } });
+        const [pending, totalWithImages] = await Promise.all([
+          countPostsWithExternalImages(env.DB),
+          countPostsWithAnyImages(env.DB),
+        ]);
+        return new Response(JSON.stringify({
+          pending,
+          totalWithImages,
+          migrated: totalWithImages - pending,
+        }), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
+      }
+
+      // ===== Admin: migrate images batch (JSON) — processa um lote =====
+      if (pathname === '/admin/migrate-images/batch' && request.method === 'POST') {
+        if (!authed) return new Response('{"error":"unauthorized"}', { status: 401, headers: { 'Content-Type': 'application/json' } });
+
         const startedAt = Date.now();
         const BATCH_SIZE = 5;
         const batch = await nextPostsToMigrate(env.DB, BATCH_SIZE);
 
-        let processedPosts = 0;
-        const totalStats: ImageMigrationStats = {
-          totalFound: 0, uniqueFound: 0, migrated: 0, skipped: 0, failed: [],
-        };
-        const perPostResults: Array<{ slug: string; migrated: number; failed: number; partial: boolean }> = [];
+        const perPost: Array<{ slug: string; title: string; migrated: number; failed: number; skipped: number; partial: boolean }> = [];
+        const globalFailed: Array<{ url: string; error: string }> = [];
 
         for (const post of batch) {
-          // checa budget global por request — 20s wall time total
           if (Date.now() - startedAt > 20_000) break;
 
           const urls = [
             ...(post.hero_image && /^https?:\/\//.test(post.hero_image) ? [post.hero_image] : []),
             ...extractImageUrls(post.content),
           ];
+
           if (urls.length === 0) {
-            processedPosts++;
+            perPost.push({ slug: post.slug, title: post.title, migrated: 0, failed: 0, skipped: 0, partial: false });
             continue;
           }
 
@@ -419,42 +431,42 @@ ${urls}
             maxImages: 40,
           });
 
-          // atualiza stats globais
-          totalStats.totalFound += stats.totalFound;
-          totalStats.uniqueFound += stats.uniqueFound;
-          totalStats.migrated += stats.migrated;
-          totalStats.skipped += stats.skipped;
-          totalStats.failed.push(...stats.failed);
-
           const newContent = rewriteHtmlUrls(post.content, urlMap);
           const newHero = post.hero_image && urlMap.has(post.hero_image)
             ? urlMap.get(post.hero_image)!
             : post.hero_image;
 
-          // só atualiza se alguma URL foi reescrita
           if (newContent !== post.content || newHero !== post.hero_image) {
             await updatePostContent(env.DB, post.id, newContent, newHero);
           }
 
-          perPostResults.push({
+          perPost.push({
             slug: post.slug,
-            migrated: stats.migrated + stats.skipped,
+            title: post.title,
+            migrated: stats.migrated,
             failed: stats.failed.length,
+            skipped: stats.skipped,
             partial: exhausted,
           });
-          processedPosts++;
+          globalFailed.push(...stats.failed);
 
           if (exhausted) break;
         }
 
-        const remaining = await countPostsWithExternalImages(env.DB);
-        return new Response(
-          renderAdminMigrate(env, request, {
-            pending: remaining,
-            lastBatch: { processedPosts, totalStats, perPostResults, elapsedMs: Date.now() - startedAt },
-          }),
-          { headers: NO_CACHE_HEADERS },
-        );
+        const [remaining, totalWithImages] = await Promise.all([
+          countPostsWithExternalImages(env.DB),
+          countPostsWithAnyImages(env.DB),
+        ]);
+
+        return new Response(JSON.stringify({
+          processedPosts: perPost.length,
+          perPost,
+          failed: globalFailed.slice(0, 20),
+          elapsedMs: Date.now() - startedAt,
+          pending: remaining,
+          totalWithImages,
+          migrated: totalWithImages - remaining,
+        }), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
       }
 
       // ===== Admin: delete post =====

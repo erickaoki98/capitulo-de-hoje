@@ -81,6 +81,19 @@ export async function countPostsWithExternalImages(db: D1Database): Promise<numb
 }
 
 /**
+ * Conta posts que JÁ TIVERAM imagens (hero ou content), seja externa ou local.
+ * Usado pra calcular o total da progress bar.
+ */
+export async function countPostsWithAnyImages(db: D1Database): Promise<number> {
+  const row = await db.prepare(
+    `SELECT COUNT(*) AS n FROM posts
+     WHERE hero_image IS NOT NULL
+        OR content LIKE '%<img%'`,
+  ).first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+/**
  * Pega o próximo lote de posts que ainda têm imagens externas.
  */
 export async function nextPostsToMigrate(db: D1Database, limit: number): Promise<Post[]> {

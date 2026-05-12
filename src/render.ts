@@ -430,53 +430,8 @@ export function renderAdminImport(
 }
 
 // ====== Admin: migrate images ======
-export interface MigrateState {
-  pending: number;
-  lastBatch?: {
-    processedPosts: number;
-    totalStats: {
-      totalFound: number;
-      uniqueFound: number;
-      migrated: number;
-      skipped: number;
-      failed: Array<{ url: string; error: string }>;
-    };
-    perPostResults: Array<{ slug: string; migrated: number; failed: number; partial: boolean }>;
-    elapsedMs: number;
-  };
-}
-
-export function renderAdminMigrate(env: Env, request: Request, state: MigrateState): string {
+export function renderAdminMigrate(env: Env, request: Request): string {
   const url = new URL(request.url);
-  const done = state.pending === 0;
-
-  const lastBatchHtml = state.lastBatch
-    ? `<div class="${state.lastBatch.totalStats.migrated > 0 ? 'success' : 'error'}">
-        <p>Lote processado em ${(state.lastBatch.elapsedMs / 1000).toFixed(1)}s — ${state.lastBatch.processedPosts} posts, ${state.lastBatch.totalStats.migrated} imagens enviadas (${state.lastBatch.totalStats.skipped} já existiam, ${state.lastBatch.totalStats.failed.length} falharam).</p>
-      </div>
-      ${state.lastBatch.perPostResults.length > 0 ? `<details><summary>Detalhes por post</summary>
-        <ul class="import-list">
-          ${state.lastBatch.perPostResults.map((r) =>
-            `<li><code>/${escapeHtml(r.slug)}</code> — ${r.migrated} OK, ${r.failed} falhas ${r.partial ? '<em>(parcial)</em>' : ''}</li>`,
-          ).join('')}
-        </ul>
-      </details>` : ''}
-      ${state.lastBatch.totalStats.failed.length > 0 ? `<details><summary>Falhas</summary>
-        <ul class="import-list">
-          ${state.lastBatch.totalStats.failed.slice(0, 50).map((f) =>
-            `<li><code>${escapeHtml(f.url)}</code> — <span class="muted">${escapeHtml(f.error)}</span></li>`,
-          ).join('')}
-        </ul>
-      </details>` : ''}`
-    : '';
-
-  // auto-refresh: se ainda tem pendentes E o último lote progrediu, oferece JS leve pra continuar
-  const autoNextScript = state.lastBatch && state.pending > 0 && state.lastBatch.processedPosts > 0
-    ? `<script>
-        // continua automaticamente — só clica o botão sozinho após 1s
-        setTimeout(() => { document.getElementById('next-batch')?.submit(); }, 1000);
-      </script>`
-    : '';
 
   return layout(
     {
@@ -486,35 +441,192 @@ export function renderAdminMigrate(env: Env, request: Request, state: MigrateSta
       siteTitle: env.SITE_TITLE,
       bodyClass: 'admin',
     },
-    `<div class="admin-import">
+    `<div class="admin-migrate">
       <header class="admin-header">
         <h1>Migrar imagens para o R2</h1>
         <a href="/admin" class="btn">← Voltar</a>
       </header>
 
-      <div class="import-info">
-        <p>Posts importados do WordPress têm URLs de imagem apontando para o servidor original. Esta página baixa cada imagem e salva no Cloudflare R2, reescrevendo o conteúdo.</p>
-        <ul>
-          <li>Processa <strong>5 posts por lote</strong> (limite seguro para o Workers).</li>
-          <li>Imagens já no R2 são puladas (dedupe).</li>
-          <li>Falhas (404, hot-link block, etc.) são reportadas mas não interrompem.</li>
-          <li>Idempotente: pode rodar de novo se algo falhar — só re-processa o que sobrou.</li>
-        </ul>
-      </div>
-
-      <div class="${done ? 'success' : 'error'}">
-        <p><strong>${state.pending}</strong> ${state.pending === 1 ? 'post precisa' : 'posts precisam'} de migração de imagens.</p>
-      </div>
-
-      ${lastBatchHtml}
-
-      ${!done ? `<form method="POST" action="/admin/migrate-images" id="next-batch">
-        <div class="form-actions">
-          <button type="submit" class="btn btn--primary">Processar próximo lote (5 posts)</button>
+      <div class="migrate-panel">
+        <div class="migrate-progress">
+          <div class="migrate-progress__head">
+            <strong id="mig-progress-text">Carregando…</strong>
+            <span id="mig-percent" class="muted">0%</span>
+          </div>
+          <div class="progress-bar"><div class="progress-bar__fill" id="mig-bar" style="width:0%"></div></div>
         </div>
-      </form>` : '<p>✓ Todas as imagens estão no R2.</p>'}
-      ${autoNextScript}
-    </div>`,
+
+        <div class="migrate-stats" id="mig-stats">
+          <div class="stat"><span class="stat__label">Total</span><span class="stat__value" id="mig-total">—</span></div>
+          <div class="stat"><span class="stat__label">Migrados</span><span class="stat__value" id="mig-migrated">—</span></div>
+          <div class="stat"><span class="stat__label">Pendentes</span><span class="stat__value" id="mig-pending">—</span></div>
+          <div class="stat"><span class="stat__label">Falhas</span><span class="stat__value" id="mig-failed">0</span></div>
+        </div>
+
+        <div class="migrate-actions">
+          <button type="button" class="btn btn--primary" id="mig-start">▶ Iniciar migração</button>
+          <button type="button" class="btn" id="mig-pause" disabled>⏸ Pausar</button>
+          <span class="migrate-status" id="mig-status">Pronto.</span>
+        </div>
+
+        <div class="migrate-log-wrap">
+          <div class="migrate-log-header">
+            <strong>Atividade</strong>
+            <span class="muted" id="mig-elapsed"></span>
+          </div>
+          <ul class="migrate-log" id="mig-log" aria-live="polite"></ul>
+        </div>
+      </div>
+    </div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    bar: $('mig-bar'),
+    percent: $('mig-percent'),
+    progressText: $('mig-progress-text'),
+    total: $('mig-total'),
+    migrated: $('mig-migrated'),
+    pending: $('mig-pending'),
+    failed: $('mig-failed'),
+    start: $('mig-start'),
+    pause: $('mig-pause'),
+    status: $('mig-status'),
+    log: $('mig-log'),
+    elapsed: $('mig-elapsed'),
+  };
+
+  let running = false;
+  let totalFailed = 0;
+  let startedAt = 0;
+  let elapsedTimer = null;
+
+  function log(html, level = 'info') {
+    const li = document.createElement('li');
+    li.className = 'migrate-log__item migrate-log__item--' + level;
+    li.innerHTML = html;
+    els.log.prepend(li);
+    // limita a 60 entradas
+    while (els.log.children.length > 60) els.log.removeChild(els.log.lastChild);
+  }
+
+  function fmtTime(ms) {
+    const s = Math.floor(ms / 1000);
+    const m = Math.floor(s / 60);
+    return m > 0 ? \`\${m}m \${s % 60}s\` : \`\${s}s\`;
+  }
+
+  function setRunning(on) {
+    running = on;
+    els.start.disabled = on;
+    els.pause.disabled = !on;
+    els.start.textContent = on ? '▶ Rodando…' : '▶ Iniciar migração';
+    if (on) {
+      startedAt = Date.now();
+      elapsedTimer = setInterval(() => {
+        els.elapsed.textContent = fmtTime(Date.now() - startedAt);
+      }, 1000);
+    } else if (elapsedTimer) {
+      clearInterval(elapsedTimer);
+      elapsedTimer = null;
+    }
+  }
+
+  function updateStats(s) {
+    els.total.textContent = s.totalWithImages;
+    els.migrated.textContent = s.migrated;
+    els.pending.textContent = s.pending;
+    const total = s.totalWithImages || 1;
+    const pct = Math.round((s.migrated / total) * 100);
+    els.bar.style.width = pct + '%';
+    els.percent.textContent = pct + '%';
+    els.progressText.textContent = \`\${s.migrated} de \${s.totalWithImages} posts\`;
+  }
+
+  async function fetchStatus() {
+    const r = await fetch('/admin/migrate-images/status', { credentials: 'same-origin' });
+    if (!r.ok) throw new Error('Status HTTP ' + r.status);
+    return r.json();
+  }
+
+  async function runBatch() {
+    const r = await fetch('/admin/migrate-images/batch', {
+      method: 'POST',
+      credentials: 'same-origin',
+    });
+    if (!r.ok) throw new Error('Batch HTTP ' + r.status);
+    return r.json();
+  }
+
+  async function loop() {
+    setRunning(true);
+    els.status.textContent = 'Migrando…';
+    try {
+      // status inicial
+      const initial = await fetchStatus();
+      updateStats(initial);
+      if (initial.pending === 0) {
+        els.status.textContent = '✓ Tudo migrado.';
+        setRunning(false);
+        return;
+      }
+
+      while (running) {
+        const result = await runBatch();
+        updateStats(result);
+
+        // log dos posts processados
+        for (const p of result.perPost) {
+          const meta = p.migrated > 0 || p.skipped > 0
+            ? \`\${p.migrated} novas, \${p.skipped} dedupe\${p.failed > 0 ? ', ' + p.failed + ' falhas' : ''}\${p.partial ? ' <em>(parcial)</em>' : ''}\`
+            : (p.failed > 0 ? \`\${p.failed} falhas\` : 'sem imagens');
+          const level = p.failed > 0 && p.migrated === 0 ? 'warn' : 'info';
+          log(\`<span class="muted">/\${p.slug}</span> — \${meta}\`, level);
+        }
+        // log das falhas globais (uma amostra)
+        for (const f of (result.failed || []).slice(0, 3)) {
+          log(\`<span class="muted">\${f.url.slice(0, 80)}…</span> — \${f.error}\`, 'error');
+        }
+        totalFailed += (result.failed || []).length;
+        els.failed.textContent = totalFailed;
+
+        if (result.pending === 0) {
+          log('<strong>✓ Concluído.</strong>', 'success');
+          els.status.textContent = '✓ Tudo migrado.';
+          setRunning(false);
+          return;
+        }
+        if (result.processedPosts === 0) {
+          // nada foi processado mas ainda tem pendentes — possivelmente todos têm imagens problemáticas
+          log('<em>Lote sem progresso. Verifique falhas.</em>', 'warn');
+          els.status.textContent = 'Sem progresso.';
+          setRunning(false);
+          return;
+        }
+        // pequena pausa entre lotes pra não sobrecarregar
+        await new Promise(r => setTimeout(r, 300));
+      }
+      els.status.textContent = 'Pausado.';
+    } catch (err) {
+      log('<strong>Erro:</strong> ' + (err.message || err), 'error');
+      els.status.textContent = 'Erro — clique em Iniciar para tentar de novo.';
+      setRunning(false);
+    }
+  }
+
+  els.start.addEventListener('click', loop);
+  els.pause.addEventListener('click', () => {
+    running = false;
+    els.status.textContent = 'Pausando…';
+  });
+
+  // status inicial
+  fetchStatus().then(updateStats).catch((e) => {
+    els.status.textContent = 'Erro ao carregar status: ' + e.message;
+  });
+})();
+</script>`,
   );
 }
 
