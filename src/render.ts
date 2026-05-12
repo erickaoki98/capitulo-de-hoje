@@ -37,6 +37,9 @@ interface LayoutOptions {
   pubDate?: number;
   updatedDate?: number;
   author?: string;
+  image?: string;
+  tags?: string[];
+  category?: string;
   jsonLd?: object;
   bodyClass?: string;
 }
@@ -44,31 +47,45 @@ interface LayoutOptions {
 function layout(opts: LayoutOptions, body: string): string {
   const {
     title, description, url, siteTitle,
-    type = 'website', pubDate, updatedDate, author, jsonLd, bodyClass = '',
+    type = 'website', pubDate, updatedDate, author,
+    image, tags = [], category, jsonLd, bodyClass = '',
   } = opts;
 
+  const isAdmin = bodyClass.includes('admin');
   const ld = jsonLd ? `<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>` : '';
+  const twitterCard = image ? 'summary_large_image' : 'summary';
 
   return `<!doctype html>
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#ffffff">
 <title>${escapeHtml(title)}</title>
 <meta name="description" content="${escapeHtml(description)}">
 <link rel="canonical" href="${escapeHtml(url)}">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/styles.css">
+${!isAdmin ? `<link rel="alternate" type="application/rss+xml" title="${escapeHtml(siteTitle)}" href="/rss.xml">` : ''}
 <meta property="og:type" content="${type}">
+<meta property="og:locale" content="pt_BR">
 <meta property="og:title" content="${escapeHtml(title)}">
 <meta property="og:description" content="${escapeHtml(description)}">
 <meta property="og:url" content="${escapeHtml(url)}">
 <meta property="og:site_name" content="${escapeHtml(siteTitle)}">
+${image ? `<meta property="og:image" content="${escapeHtml(image)}">
+<meta property="og:image:alt" content="${escapeHtml(title)}">` : ''}
 ${pubDate ? `<meta property="article:published_time" content="${isoDate(pubDate)}">` : ''}
 ${updatedDate ? `<meta property="article:modified_time" content="${isoDate(updatedDate)}">` : ''}
+${author && type === 'article' ? `<meta property="article:author" content="${escapeHtml(author)}">` : ''}
+${category && type === 'article' ? `<meta property="article:section" content="${escapeHtml(category)}">` : ''}
+${tags.map((t) => `<meta property="article:tag" content="${escapeHtml(t)}">`).join('\n')}
+<meta name="twitter:card" content="${twitterCard}">
+<meta name="twitter:title" content="${escapeHtml(title)}">
+<meta name="twitter:description" content="${escapeHtml(description)}">
+${image ? `<meta name="twitter:image" content="${escapeHtml(image)}">` : ''}
 ${author ? `<meta name="author" content="${escapeHtml(author)}">` : ''}
-<meta name="twitter:card" content="summary">
-${bodyClass.includes('admin') ? '<meta name="robots" content="noindex, nofollow, noarchive, nosnippet">' : ''}
+${isAdmin ? '<meta name="robots" content="noindex, nofollow, noarchive, nosnippet">' : '<meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">'}
 ${ld}
 </head>
 <body class="${bodyClass}">
@@ -161,6 +178,11 @@ export function renderPost(env: Env, request: Request, post: Post): string {
 </article>
 <p class="back"><a href="/">← Voltar</a></p>`;
 
+  const siteOrigin = `${url.protocol}//${url.host}`;
+  const heroAbs = post.hero_image
+    ? (post.hero_image.startsWith('http') ? post.hero_image : `${siteOrigin}${post.hero_image}`)
+    : undefined;
+
   return layout(
     {
       title: `${post.title} — ${env.SITE_TITLE}`,
@@ -171,17 +193,27 @@ export function renderPost(env: Env, request: Request, post: Post): string {
       pubDate: post.pub_date,
       updatedDate: post.updated_date,
       author: post.author,
+      image: heroAbs,
+      tags,
+      category: post.category ?? undefined,
       jsonLd: {
         '@context': 'https://schema.org',
         '@type': 'NewsArticle',
+        mainEntityOfPage: { '@type': 'WebPage', '@id': postUrl },
         headline: post.title,
         description: post.description,
-        image: post.hero_image ? [post.hero_image] : undefined,
+        ...(heroAbs && { image: { '@type': 'ImageObject', url: heroAbs } }),
         datePublished: isoDate(post.pub_date),
         dateModified: isoDate(post.updated_date),
         author: { '@type': 'Person', name: post.author },
-        publisher: { '@type': 'Organization', name: env.SITE_TITLE },
-        keywords: tags.join(', '),
+        publisher: {
+          '@type': 'Organization',
+          name: env.SITE_TITLE,
+          url: siteOrigin,
+        },
+        articleSection: post.category ?? undefined,
+        keywords: tags.length ? tags.join(', ') : undefined,
+        inLanguage: 'pt-BR',
       },
     },
     body,
@@ -261,6 +293,7 @@ export function renderAdminDashboard(env: Env, request: Request, posts: Post[]):
         <h1>Posts</h1>
         <div class="admin-actions">
           <a href="/admin/new" class="btn btn--primary">+ Novo post</a>
+          <a href="/admin/import" class="btn">Importar WordPress</a>
           <form method="POST" action="/admin/logout" style="display:inline">
             <button type="submit" class="btn">Sair</button>
           </form>
@@ -272,6 +305,86 @@ export function renderAdminDashboard(env: Env, request: Request, posts: Post[]):
         </thead>
         <tbody>${rows}</tbody>
       </table>
+    </div>`,
+  );
+}
+
+// ====== Admin: import WordPress ======
+export interface ImportResult {
+  imported: number;
+  skipped: Array<{ slug: string; title: string; reason: string }>;
+  errors: Array<{ title: string; error: string }>;
+  total: number;
+}
+
+export function renderAdminImport(
+  env: Env,
+  request: Request,
+  result?: ImportResult,
+  error?: string,
+): string {
+  const url = new URL(request.url);
+
+  const resultHtml = result
+    ? `<div class="${result.imported > 0 ? 'success' : 'error'}">
+        <p><strong>${result.imported}</strong> posts importados de <strong>${result.total}</strong> encontrados.</p>
+      </div>
+      ${result.skipped.length > 0
+        ? `<details open><summary><strong>${result.skipped.length}</strong> posts pulados (slug duplicado)</summary>
+            <ul class="import-list">
+              ${result.skipped.map((s) =>
+                `<li><code>${escapeHtml(s.slug)}</code> — ${escapeHtml(s.title)} <span class="muted">(${escapeHtml(s.reason)})</span></li>`,
+              ).join('')}
+            </ul>
+          </details>`
+        : ''}
+      ${result.errors.length > 0
+        ? `<details open><summary><strong>${result.errors.length}</strong> erros</summary>
+            <ul class="import-list">
+              ${result.errors.map((e) =>
+                `<li><strong>${escapeHtml(e.title)}</strong>: ${escapeHtml(e.error)}</li>`,
+              ).join('')}
+            </ul>
+          </details>`
+        : ''}`
+    : '';
+
+  return layout(
+    {
+      title: `Importar WordPress — ${env.SITE_TITLE}`,
+      description: 'Importação',
+      url: `${url.protocol}//${url.host}/admin/import`,
+      siteTitle: env.SITE_TITLE,
+      bodyClass: 'admin',
+    },
+    `<div class="admin-import">
+      <header class="admin-header">
+        <h1>Importar do WordPress</h1>
+        <a href="/admin" class="btn">← Voltar</a>
+      </header>
+      ${error ? `<p class="error">${escapeHtml(error)}</p>` : ''}
+      ${resultHtml}
+      <div class="import-info">
+        <p>Faça upload do arquivo XML exportado pelo WordPress (<em>Ferramentas → Exportar → Todo o conteúdo</em>).</p>
+        <ul>
+          <li>Os <strong>slugs</strong> originais são preservados para que URLs antigas continuem funcionando.</li>
+          <li>Posts com slug duplicado serão <strong>pulados</strong> (não sobrescrevem o existente).</li>
+          <li>Páginas, attachments e revisões são ignorados — apenas posts.</li>
+          <li>Imagens permanecem nas URLs originais (não são re-hospedadas).</li>
+        </ul>
+      </div>
+      <form method="POST" action="/admin/import" enctype="multipart/form-data" class="editor-form">
+        <div class="field">
+          <label>Arquivo XML do WordPress (.xml)</label>
+          <input type="file" name="wxr" accept=".xml,application/xml,text/xml" required>
+        </div>
+        <div class="field field--check">
+          <label><input type="checkbox" name="import_drafts" value="1"> Importar rascunhos também</label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn--primary">Iniciar importação</button>
+        </div>
+      </form>
     </div>`,
   );
 }

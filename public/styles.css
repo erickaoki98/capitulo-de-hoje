@@ -24,20 +24,6 @@
   --max-wide: 960px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #e5e7eb;
-    --text-muted: #9ca3af;
-    --text-soft: #6b7280;
-    --bg: #0f0f0f;
-    --bg-soft: #1a1a1a;
-    --border: #2a2a2a;
-    --link: #e5e7eb;
-    --link-hover: #60a5fa;
-    --tag-bg: #1f2937;
-  }
-}
-
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 html { font-size: 17px; -webkit-text-size-adjust: 100%; }
@@ -279,10 +265,6 @@ body.admin main { padding-block: 2rem; }
   background: #dcfce7; color: #166534;
 }
 .badge--draft { background: #fef3c7; color: #92400e; }
-@media (prefers-color-scheme: dark) {
-  .badge { background: #14532d; color: #bbf7d0; }
-  .badge--draft { background: #78350f; color: #fde68a; }
-}
 
 /* Container wider for admin */
 body.admin .container { max-width: var(--max-wide); }
@@ -317,9 +299,34 @@ body.admin .container { max-width: var(--max-wide); }
   background: #fee2e2; color: #991b1b; padding: 0.75rem 1rem;
   border-radius: 5px; border: 1px solid #fecaca; font-size: 0.9375rem;
 }
-@media (prefers-color-scheme: dark) {
-  .error { background: #450a0a; color: #fecaca; border-color: #7f1d1d; }
+.success {
+  background: #dcfce7; color: #166534; padding: 0.75rem 1rem;
+  border-radius: 5px; border: 1px solid #bbf7d0; font-size: 0.9375rem;
 }
+
+/* ===== Import page ===== */
+.admin-import { display: flex; flex-direction: column; gap: 1.5rem; }
+.import-info {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 1rem 1.25rem;
+}
+.import-info p { margin-bottom: 0.5rem; }
+.import-info ul { margin-left: 1.25rem; color: var(--text-muted); font-size: 0.9375rem; }
+.import-info li { margin-block: 0.25rem; }
+.import-list {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 1rem 1.5rem; margin-top: 0.75rem;
+  font-size: 0.875rem; max-height: 320px; overflow-y: auto;
+}
+.import-list code {
+  font-family: var(--font-mono); background: var(--bg-soft);
+  padding: 1px 4px; border-radius: 3px; font-size: 0.875em;
+}
+.import-list .muted { color: var(--text-muted); font-size: 0.875em; }
+details summary {
+  cursor: pointer; padding: 0.5rem 0; font-size: 0.9375rem;
+}
+details summary:hover { color: var(--link-hover); }
 
 /* ===== Responsive ===== */
 @media (max-width: 640px) {

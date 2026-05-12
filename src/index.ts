@@ -6,7 +6,9 @@ import {
 import {
   renderHome, renderPost, render404,
   renderLogin, renderAdminDashboard, renderAdminEditor,
+  renderAdminImport,
 } from './render';
+import { parseWxr } from './wxr';
 import {
   createSession, sessionCookie, clearSessionCookie, requireAuth,
 } from './auth';
@@ -238,6 +240,75 @@ Sitemap: ${url.protocol}//${url.host}/rss.xml
         }
         await updatePost(env.DB, id, input);
         return new Response(null, { status: 303, headers: { Location: '/admin' } });
+      }
+
+      // ===== Admin: import (GET) =====
+      if (pathname === '/admin/import' && request.method === 'GET') {
+        if (!authed) return redirectToLogin();
+        return new Response(renderAdminImport(env, request), { headers: NO_CACHE_HEADERS });
+      }
+
+      // ===== Admin: import (POST) =====
+      if (pathname === '/admin/import' && request.method === 'POST') {
+        if (!authed) return redirectToLogin();
+        try {
+          const form = await parseFormData(request);
+          const file = form.get('wxr');
+          if (!(file instanceof File)) {
+            return new Response(renderAdminImport(env, request, undefined, 'Nenhum arquivo enviado.'), {
+              status: 400, headers: NO_CACHE_HEADERS,
+            });
+          }
+          const importDrafts = form.get('import_drafts') === '1';
+          const xml = await file.text();
+          const posts = parseWxr(xml);
+
+          const result = {
+            imported: 0,
+            skipped: [] as Array<{ slug: string; title: string; reason: string }>,
+            errors: [] as Array<{ title: string; error: string }>,
+            total: posts.length,
+          };
+
+          for (const p of posts) {
+            // pula rascunhos a menos que solicitado
+            const isDraft = p.status !== 'publish';
+            if (isDraft && !importDrafts) {
+              result.skipped.push({ slug: p.slug, title: p.title, reason: `status: ${p.status}` });
+              continue;
+            }
+            // preserva o slug — se já existe, pula
+            const existing = await getPostBySlug(env.DB, p.slug);
+            if (existing) {
+              result.skipped.push({ slug: p.slug, title: p.title, reason: 'slug já existe' });
+              continue;
+            }
+            try {
+              await createPost(env.DB, {
+                slug: p.slug,
+                title: p.title,
+                description: p.description || excerpt(p.content),
+                content: p.content,
+                category: p.category,
+                tags: p.tags.join(', '),
+                author: p.author,
+                hero_image: p.heroImage,
+                draft: isDraft ? 1 : 0,
+                pub_date: p.pubDate,
+              });
+              result.imported++;
+            } catch (e: unknown) {
+              result.errors.push({ title: p.title, error: e instanceof Error ? e.message : String(e) });
+            }
+          }
+
+          return new Response(renderAdminImport(env, request, result), { headers: NO_CACHE_HEADERS });
+        } catch (e: unknown) {
+          return new Response(
+            renderAdminImport(env, request, undefined, `Erro ao processar arquivo: ${e instanceof Error ? e.message : String(e)}`),
+            { status: 500, headers: NO_CACHE_HEADERS },
+          );
+        }
       }
 
       // ===== Admin: delete post =====
