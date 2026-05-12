@@ -8,7 +8,7 @@ import react from '@astrojs/react';
 import keystatic from '@keystatic/astro';
 
 export default defineConfig({
-  site: 'https://capitulo-de-hoje.pages.dev',
+  site: process.env.PUBLIC_SITE_URL ?? 'https://capitulo-de-hoje.pages.dev',
   output: 'static',
   adapter: cloudflare({
     imageService: 'cloudflare',
