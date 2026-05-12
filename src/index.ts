@@ -94,6 +94,23 @@ export default {
         return new Response(renderPost(env, request, post), { headers: PUBLIC_CACHE_HEADERS });
       }
 
+      // ===== robots.txt =====
+      if (pathname === '/robots.txt' && request.method === 'GET') {
+        const robots = `User-agent: *
+Allow: /
+Disallow: /admin
+Disallow: /admin/
+
+Sitemap: ${url.protocol}//${url.host}/rss.xml
+`;
+        return new Response(robots, {
+          headers: {
+            'Content-Type': 'text/plain; charset=utf-8',
+            'Cache-Control': 'public, max-age=86400',
+          },
+        });
+      }
+
       // ===== RSS feed =====
       if (pathname === '/rss.xml' && request.method === 'GET') {
         const posts = await listPosts(env.DB, { includeDrafts: false, limit: 50 });
@@ -134,9 +151,10 @@ export default {
       // ===== Admin: login (POST) =====
       if (pathname === '/admin/login' && request.method === 'POST') {
         const form = await parseFormData(request);
+        const username = String(form.get('username') ?? '').trim();
         const password = String(form.get('password') ?? '');
-        if (password !== env.ADMIN_PASSWORD) {
-          return new Response(renderLogin(env, request, 'Senha incorreta.'), {
+        if (username !== env.ADMIN_USERNAME || password !== env.ADMIN_PASSWORD) {
+          return new Response(renderLogin(env, request, 'Usuário ou senha incorretos.'), {
             status: 401,
             headers: NO_CACHE_HEADERS,
           });

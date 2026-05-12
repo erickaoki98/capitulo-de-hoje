@@ -68,13 +68,16 @@ ${pubDate ? `<meta property="article:published_time" content="${isoDate(pubDate)
 ${updatedDate ? `<meta property="article:modified_time" content="${isoDate(updatedDate)}">` : ''}
 ${author ? `<meta name="author" content="${escapeHtml(author)}">` : ''}
 <meta name="twitter:card" content="summary">
+${bodyClass.includes('admin') ? '<meta name="robots" content="noindex, nofollow, noarchive, nosnippet">' : ''}
 ${ld}
 </head>
 <body class="${bodyClass}">
 <header class="site-header">
   <div class="container">
     <a href="/" class="site-logo">${escapeHtml(siteTitle)}</a>
-    <nav><a href="/">Início</a> <a href="/admin">Admin</a></nav>
+    <nav>${bodyClass.includes('admin')
+      ? '<a href="/admin">Admin</a>'
+      : '<a href="/">Início</a><a href="/rss.xml">RSS</a>'}</nav>
   </div>
 </header>
 <main class="container">
@@ -213,9 +216,12 @@ export function renderLogin(env: Env, request: Request, error?: string): string 
     `<div class="admin-login">
       <h1>Admin</h1>
       ${error ? `<p class="error">${escapeHtml(error)}</p>` : ''}
-      <form method="POST" action="/admin/login">
+      <form method="POST" action="/admin/login" autocomplete="off">
+        <label>Usuário
+          <input type="text" name="username" required autofocus autocomplete="username">
+        </label>
         <label>Senha
-          <input type="password" name="password" required autofocus>
+          <input type="password" name="password" required autocomplete="current-password">
         </label>
         <button type="submit" class="btn btn--primary">Entrar</button>
       </form>

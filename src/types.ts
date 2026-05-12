@@ -3,6 +3,7 @@ export interface Env {
   ASSETS: Fetcher;
   SITE_TITLE: string;
   SITE_DESCRIPTION: string;
+  ADMIN_USERNAME: string;
   ADMIN_PASSWORD: string;
   SESSION_SECRET: string;
 }
