@@ -117,72 +117,159 @@ function extractThumbnailId(itemBody: string): string | null {
 }
 
 /**
- * Parse principal: lê WXR, retorna posts publicados.
+ * Parse de um único item já isolado (uma string `<item>...</item>` sem as tags externas).
+ * Resolve o thumbnail usando um mapa externo de attachments (id → url).
+ */
+function parseItem(itemBody: string, attachments: Map<string, string>): WxrPost | null {
+  const postType = extractTag(itemBody, 'wp:post_type');
+  if (postType !== 'post') return null;
+
+  const title = (extractTag(itemBody, 'title') ?? '').trim();
+  const slug = (extractTag(itemBody, 'wp:post_name') ?? '').trim();
+  if (!title || !slug) return null;
+
+  const link = extractTag(itemBody, 'link') ?? '';
+  const author = (extractTag(itemBody, 'dc:creator') ?? 'Erick Aoki').trim();
+  const content = extractTag(itemBody, 'content:encoded') ?? '';
+  const excerpt = (extractTag(itemBody, 'excerpt:encoded') ?? '').trim();
+  const status = extractTag(itemBody, 'wp:status') ?? 'publish';
+
+  const wpDate = extractTag(itemBody, 'wp:post_date_gmt') ?? extractTag(itemBody, 'wp:post_date');
+  const pubDateNum = wpDate
+    ? new Date(wpDate.replace(' ', 'T') + (wpDate.includes('T') ? '' : 'Z')).getTime()
+    : Date.now();
+  const pubDate = Number.isFinite(pubDateNum) ? pubDateNum : Date.now();
+
+  const categoryTags = extractAllTags(itemBody, 'category');
+  let category: string | null = null;
+  const tags: string[] = [];
+  for (const c of categoryTags) {
+    if (c.attrs.domain === 'category' && !category) category = c.content.trim();
+    else if (c.attrs.domain === 'post_tag') tags.push(c.content.trim());
+  }
+
+  const thumbnailId = extractThumbnailId(itemBody);
+  const heroImage = thumbnailId ? attachments.get(thumbnailId) ?? null : null;
+
+  return {
+    title, slug, link, pubDate, author, content,
+    description: excerpt, status, postType, category, tags, heroImage, thumbnailId,
+  };
+}
+
+/**
+ * Parse não-streaming: lê WXR inteiro de uma string, retorna posts publicados.
+ * Útil pra arquivos pequenos. Pra arquivos grandes, use streamWxr.
  */
 export function parseWxr(xml: string): WxrPost[] {
   const items = extractItems(xml);
 
-  // Primeiro passe: construir mapa de attachments (id → url)
   const attachments = new Map<string, string>();
   for (const itemBody of items) {
     const att = parseAttachment(itemBody);
     if (att) attachments.set(att.id, att.url);
   }
 
-  // Segundo passe: processar posts
   const posts: WxrPost[] = [];
   for (const itemBody of items) {
-    const postType = extractTag(itemBody, 'wp:post_type');
-    if (postType !== 'post') continue; // só posts (não pages, attachments)
+    const p = parseItem(itemBody, attachments);
+    if (p) posts.push(p);
+  }
+  return posts;
+}
 
-    const title = (extractTag(itemBody, 'title') ?? '').trim();
-    const slug = (extractTag(itemBody, 'wp:post_name') ?? '').trim();
-    const link = extractTag(itemBody, 'link') ?? '';
-    const author = (extractTag(itemBody, 'dc:creator') ?? 'Erick Aoki').trim();
-    const content = extractTag(itemBody, 'content:encoded') ?? '';
-    const excerpt = (extractTag(itemBody, 'excerpt:encoded') ?? '').trim();
-    const status = extractTag(itemBody, 'wp:status') ?? 'publish';
+/**
+ * Parse incremental: extrai itens de um buffer de texto.
+ * Retorna { items: corpos extraídos, remaining: texto que não terminou ainda }.
+ */
+function extractItemsFromBuffer(buffer: string): { items: string[]; remaining: string } {
+  const items: string[] = [];
+  let cursor = 0;
+  while (true) {
+    const start = buffer.indexOf('<item>', cursor);
+    if (start === -1) break;
+    const end = buffer.indexOf('</item>', start);
+    if (end === -1) break; // item incompleto — guarda pro próximo chunk
+    items.push(buffer.slice(start + 6, end));
+    cursor = end + 7;
+  }
+  return { items, remaining: buffer.slice(cursor) };
+}
 
-    // Data: wp:post_date é o mais confiável, formato: 2023-04-12 14:30:00
-    const wpDate = extractTag(itemBody, 'wp:post_date_gmt') ?? extractTag(itemBody, 'wp:post_date');
-    const pubDate = wpDate
-      ? new Date(wpDate.replace(' ', 'T') + (wpDate.includes('T') ? '' : 'Z')).getTime()
-      : Date.now();
+/**
+ * Parser streaming SINGLE-PASS. Lê o stream uma única vez:
+ *   - Para cada <item>: se for attachment, salva no mapa.
+ *     Se for post, parseia parcialmente (sem resolver thumbnail).
+ *   - No final, resolve heroImage de cada post usando o mapa.
+ *
+ * Single-pass economiza CPU e subrequests (R2 lido 1x).
+ */
+export async function streamWxrCollect(
+  stream: ReadableStream<Uint8Array>,
+): Promise<WxrPost[]> {
+  const attachments = new Map<string, string>();
+  const posts: WxrPost[] = [];
 
-    // Categories e tags
-    const categoryTags = extractAllTags(itemBody, 'category');
-    let category: string | null = null;
-    const tags: string[] = [];
-    for (const c of categoryTags) {
-      if (c.attrs.domain === 'category' && !category) {
-        category = c.content.trim();
-      } else if (c.attrs.domain === 'post_tag') {
-        tags.push(c.content.trim());
-      }
+  await processStream(stream, (itemBody) => {
+    // Fast path: olha o post_type sem parsear o item inteiro
+    const typeMatch = itemBody.match(/<wp:post_type(?:\s[^>]*)?>(?:<!\[CDATA\[)?([^<\]]+)(?:\]\]>)?<\/wp:post_type>/);
+    const postType = typeMatch ? typeMatch[1].trim() : null;
+
+    if (postType === 'attachment') {
+      const att = parseAttachment(itemBody);
+      if (att) attachments.set(att.id, att.url);
+    } else if (postType === 'post') {
+      const p = parseItem(itemBody, attachments);
+      if (p) posts.push(p);
     }
+    // outros tipos (page, nav_menu_item, revision, etc.) são ignorados
+  });
 
-    // Featured image
-    const thumbnailId = extractThumbnailId(itemBody);
-    const heroImage = thumbnailId ? attachments.get(thumbnailId) ?? null : null;
-
-    if (!title || !slug) continue; // skip items sem título ou slug
-
-    posts.push({
-      title,
-      slug,
-      link,
-      pubDate: Number.isFinite(pubDate) ? pubDate : Date.now(),
-      author,
-      content,
-      description: excerpt,
-      status,
-      postType,
-      category,
-      tags,
-      heroImage,
-      thumbnailId,
-    });
+  // Pós-processamento: para posts cujo thumbnail_id veio depois do attachment,
+  // o heroImage já foi resolvido em parseItem. Para posts cujo attachment veio
+  // depois, precisamos re-resolver agora.
+  for (const p of posts) {
+    if (!p.heroImage && p.thumbnailId) {
+      const url = attachments.get(p.thumbnailId);
+      if (url) p.heroImage = url;
+    }
   }
 
   return posts;
+}
+
+/**
+ * Lê um ReadableStream completo, mantém buffer e chama callback pra cada
+ * `<item>...</item>` encontrado. Não acumula itens — economia de memória.
+ */
+async function processStream(
+  stream: ReadableStream<Uint8Array>,
+  onItem: (itemBody: string) => void,
+): Promise<void> {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let buffer = '';
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        // flush último decode
+        buffer += decoder.decode();
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const { items, remaining } = extractItemsFromBuffer(buffer);
+      for (const it of items) onItem(it);
+      buffer = remaining;
+      // sanity check: se buffer crescer absurdamente sem fechar item, aborta
+      if (buffer.length > 100 * 1024 * 1024) {
+        throw new Error('Item XML maior que 100MB — arquivo possivelmente corrompido');
+      }
+    }
+    // último flush
+    const final = extractItemsFromBuffer(buffer);
+    for (const it of final.items) onItem(it);
+  } finally {
+    reader.releaseLock();
+  }
 }

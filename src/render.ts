@@ -364,30 +364,9 @@ export function renderAdminImport(
         : ''}`
     : '';
 
-  const resultHtml = result
-    ? `<div class="${result.imported > 0 ? 'success' : 'error'}">
-        <p><strong>${result.imported}</strong> posts importados de <strong>${result.total}</strong> encontrados.</p>
-      </div>
-      ${imgStatsHtml}
-      ${result.skipped.length > 0
-        ? `<details open><summary><strong>${result.skipped.length}</strong> posts pulados</summary>
-            <ul class="import-list">
-              ${result.skipped.map((s) =>
-                `<li><code>${escapeHtml(s.slug)}</code> — ${escapeHtml(s.title)} <span class="muted">(${escapeHtml(s.reason)})</span></li>`,
-              ).join('')}
-            </ul>
-          </details>`
-        : ''}
-      ${result.errors.length > 0
-        ? `<details open><summary><strong>${result.errors.length}</strong> erros</summary>
-            <ul class="import-list">
-              ${result.errors.map((e) =>
-                `<li><strong>${escapeHtml(e.title)}</strong>: ${escapeHtml(e.error)}</li>`,
-              ).join('')}
-            </ul>
-          </details>`
-        : ''}`
-    : '';
+  // O HTML do `result` legacy não é mais usado — o novo fluxo é totalmente
+  // JS-driven com upload em chunks. Mantemos `result` no signature por compat.
+  void result;
 
   return layout(
     {
@@ -403,29 +382,186 @@ export function renderAdminImport(
         <a href="/admin" class="btn">← Voltar</a>
       </header>
       ${error ? `<p class="error">${escapeHtml(error)}</p>` : ''}
-      ${resultHtml}
+
       <div class="import-info">
         <p>Faça upload do arquivo XML exportado pelo WordPress (<em>Ferramentas → Exportar → Todo o conteúdo</em>).</p>
         <ul>
-          <li>Os <strong>slugs</strong> originais são preservados para que URLs antigas continuem funcionando.</li>
-          <li>Posts com slug duplicado serão <strong>pulados</strong> (não sobrescrevem o existente).</li>
+          <li><strong>Slugs originais preservados</strong> — URLs antigas continuam funcionando via 301.</li>
+          <li>Posts com slug duplicado são <strong>pulados</strong>.</li>
           <li>Páginas, attachments e revisões são ignorados — apenas posts.</li>
-          <li><strong>Imagens são migradas separadamente</strong> para evitar timeouts. Depois do import, vá em <em>Migrar imagens</em> e processe em lotes.</li>
+          <li>O arquivo é enviado em <strong>chunks de 4 MB</strong> direto pro R2 — funciona com arquivos de qualquer tamanho.</li>
+          <li>Depois do import: vá em <em>Migrar imagens</em> pra baixar e salvar todas as imagens no R2.</li>
         </ul>
       </div>
-      <form method="POST" action="/admin/import" enctype="multipart/form-data" class="editor-form">
+
+      <div class="upload-panel">
         <div class="field">
-          <label>Arquivo XML do WordPress (.xml)</label>
-          <input type="file" name="wxr" accept=".xml,application/xml,text/xml" required>
+          <label for="wxr-file">Arquivo XML (.xml)</label>
+          <input type="file" id="wxr-file" accept=".xml,application/xml,text/xml">
         </div>
         <div class="field field--check">
-          <label><input type="checkbox" name="import_drafts" value="1"> Importar rascunhos também</label>
+          <label><input type="checkbox" id="import-drafts"> Importar rascunhos também</label>
         </div>
+
+        <div class="upload-progress" id="upload-progress" hidden>
+          <div class="migrate-progress__head">
+            <strong id="up-stage">Enviando…</strong>
+            <span id="up-percent" class="muted">0%</span>
+          </div>
+          <div class="progress-bar"><div class="progress-bar__fill" id="up-bar" style="width:0%"></div></div>
+          <div class="muted" id="up-detail">—</div>
+        </div>
+
         <div class="form-actions">
-          <button type="submit" class="btn btn--primary">Iniciar importação</button>
+          <button type="button" class="btn btn--primary" id="up-start">Iniciar importação</button>
+          <button type="button" class="btn" id="up-cancel" hidden>Cancelar</button>
         </div>
-      </form>
-    </div>`,
+
+        <div id="up-result"></div>
+      </div>
+    </div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    file: $('wxr-file'),
+    drafts: $('import-drafts'),
+    start: $('up-start'),
+    cancel: $('up-cancel'),
+    progress: $('upload-progress'),
+    bar: $('up-bar'),
+    percent: $('up-percent'),
+    stage: $('up-stage'),
+    detail: $('up-detail'),
+    result: $('up-result'),
+  };
+
+  const CHUNK_SIZE = 4 * 1024 * 1024; // 4 MB
+  let aborted = false;
+  let uploadId = null;
+
+  function fmtBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+    return (n / 1024 / 1024).toFixed(1) + ' MB';
+  }
+
+  function setProgress(pct, stage, detail) {
+    els.progress.hidden = false;
+    els.bar.style.width = pct + '%';
+    els.percent.textContent = pct + '%';
+    if (stage) els.stage.textContent = stage;
+    if (detail) els.detail.textContent = detail;
+  }
+
+  function setResult(html, kind) {
+    els.result.innerHTML = '<div class="' + (kind || 'success') + '">' + html + '</div>';
+  }
+
+  function uuid() {
+    if (crypto.randomUUID) return crypto.randomUUID();
+    return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+      (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c/4).toString(16),
+    );
+  }
+
+  async function uploadChunk(uploadId, seq, blob, attempt = 0) {
+    try {
+      const res = await fetch('/admin/import/chunk/' + uploadId + '/' + seq, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: blob,
+        credentials: 'same-origin',
+      });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return await res.json();
+    } catch (err) {
+      if (attempt < 2 && !aborted) {
+        await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+        return uploadChunk(uploadId, seq, blob, attempt + 1);
+      }
+      throw err;
+    }
+  }
+
+  async function startUpload() {
+    aborted = false;
+    els.result.innerHTML = '';
+    const file = els.file.files && els.file.files[0];
+    if (!file) {
+      setResult('Selecione um arquivo XML primeiro.', 'error');
+      return;
+    }
+    if (!/\\.xml$/i.test(file.name)) {
+      setResult('O arquivo deve ter extensão .xml.', 'error');
+      return;
+    }
+
+    els.start.disabled = true;
+    els.cancel.hidden = false;
+    uploadId = uuid();
+
+    const total = Math.ceil(file.size / CHUNK_SIZE);
+    setProgress(0, 'Enviando…', \`0 / \${total} chunks (\${fmtBytes(file.size)} total)\`);
+
+    try {
+      // 1. Upload em chunks
+      for (let i = 0; i < total; i++) {
+        if (aborted) throw new Error('Cancelado pelo usuário');
+        const blob = file.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+        await uploadChunk(uploadId, i, blob);
+        const pct = Math.round(((i + 1) / total) * 90); // upload = 0-90%
+        setProgress(pct, 'Enviando…', \`\${i + 1} / \${total} chunks (\${fmtBytes((i + 1) * CHUNK_SIZE)} de \${fmtBytes(file.size)})\`);
+      }
+
+      // 2. Finalizar — parse + insert
+      setProgress(92, 'Processando…', 'Parseando XML e inserindo posts no banco.');
+      const res = await fetch('/admin/import/finalize/' + uploadId, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ totalChunks: total, importDrafts: els.drafts.checked }),
+      });
+      if (!res.ok) {
+        const errBody = await res.text();
+        throw new Error('Finalize falhou: ' + errBody);
+      }
+      const result = await res.json();
+      setProgress(100, '✓ Concluído', \`\${result.imported} posts importados\`);
+
+      // 3. Mostra resultado
+      let html = \`<p><strong>\${result.imported}</strong> posts importados de <strong>\${result.total}</strong> encontrados.</p>\`;
+      if (result.skipped && result.skipped.length > 0) {
+        html += '<details><summary>' + result.skipped.length + ' pulados</summary><ul class="import-list">' +
+          result.skipped.slice(0, 50).map(s => '<li><code>' + s.slug + '</code> — ' + s.title + ' <span class="muted">(' + s.reason + ')</span></li>').join('') +
+          (result.skipped.length > 50 ? '<li class="muted">... e mais ' + (result.skipped.length - 50) + '</li>' : '') +
+          '</ul></details>';
+      }
+      if (result.errors && result.errors.length > 0) {
+        html += '<details open><summary>' + result.errors.length + ' erros</summary><ul class="import-list">' +
+          result.errors.slice(0, 20).map(e => '<li><strong>' + e.title + ':</strong> ' + e.error + '</li>').join('') +
+          '</ul></details>';
+      }
+      html += '<p style="margin-top:1rem"><a href="/admin/migrate-images" class="btn btn--primary">Próximo passo: migrar imagens →</a></p>';
+      setResult(html, result.imported > 0 ? 'success' : 'error');
+
+    } catch (err) {
+      setResult('<strong>Falhou:</strong> ' + (err.message || err), 'error');
+      // tenta limpar chunks no servidor
+      if (uploadId) {
+        fetch('/admin/import/cancel/' + uploadId, { method: 'POST', credentials: 'same-origin' }).catch(() => {});
+      }
+    } finally {
+      els.start.disabled = false;
+      els.cancel.hidden = true;
+    }
+  }
+
+  els.start.addEventListener('click', startUpload);
+  els.cancel.addEventListener('click', () => { aborted = true; });
+})();
+</script>`,
   );
 }
 

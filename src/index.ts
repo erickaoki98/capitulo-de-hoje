@@ -5,13 +5,15 @@ import {
   upsertRedirect, findRedirect,
   countPostsWithExternalImages, countPostsWithAnyImages,
   nextPostsToMigrate, updatePostContent,
+  createPostsBatch, upsertRedirectsBatch, existingSlugs,
 } from './db';
 import {
   renderHome, renderPost, render404,
   renderLogin, renderAdminDashboard, renderAdminEditor,
   renderAdminImport, renderAdminMigrate,
 } from './render';
-import { parseWxr } from './wxr';
+import { parseWxr, streamWxrCollect } from './wxr';
+import type { WxrPost } from './wxr';
 import {
   extractImageUrls, rewriteHtmlUrls, migrateImagesWithBudget,
 } from './images';
@@ -306,79 +308,98 @@ ${urls}
         return new Response(renderAdminImport(env, request), { headers: NO_CACHE_HEADERS });
       }
 
-      // ===== Admin: import (POST) =====
-      // Estratégia: SEMPRE importa rápido (só posts, sem imagens).
-      // Migração de imagens é separada via /admin/migrate-images (batched).
-      // Isso evita timeout do Workers (CPU/wall-time + subrequest limits).
+      // ===== Admin: import — endpoint legado (compat com curl simples) =====
+      // Aceita POST direto se o arquivo for pequeno o suficiente.
+      // Estratégia chunked é via /admin/import/chunk + /admin/import/finalize.
       if (pathname === '/admin/import' && request.method === 'POST') {
         if (!authed) return redirectToLogin();
         try {
-          const form = await parseFormData(request);
-          const file = form.get('wxr');
-          if (!(file instanceof File)) {
-            return new Response(renderAdminImport(env, request, undefined, 'Nenhum arquivo enviado.'), {
-              status: 400, headers: NO_CACHE_HEADERS,
-            });
-          }
-          const importDrafts = form.get('import_drafts') === '1';
-          const xml = await file.text();
-          const posts = parseWxr(xml);
-
-          const result = {
-            imported: 0,
-            skipped: [] as Array<{ slug: string; title: string; reason: string }>,
-            errors: [] as Array<{ title: string; error: string }>,
-            total: posts.length,
-            imageStats: null as ImageMigrationStats | null,
-          };
-
-          for (const p of posts) {
-            const isDraft = p.status !== 'publish';
-            if (isDraft && !importDrafts) {
-              result.skipped.push({ slug: p.slug, title: p.title, reason: `status: ${p.status}` });
-              continue;
-            }
-            const existing = await getPostBySlug(env.DB, p.slug);
-            if (existing) {
-              result.skipped.push({ slug: p.slug, title: p.title, reason: 'slug já existe' });
-              continue;
-            }
-            try {
-              await createPost(env.DB, {
-                slug: p.slug,
-                title: p.title,
-                description: p.description || excerpt(p.content),
-                content: p.content, // URLs originais — migradas depois
-                category: p.category,
-                tags: p.tags.join(', '),
-                author: p.author,
-                hero_image: p.heroImage,
-                draft: isDraft ? 1 : 0,
-                pub_date: p.pubDate,
-                source_url: p.link || null,
+          const ct = request.headers.get('Content-Type') || '';
+          let xml: string;
+          let importDrafts = false;
+          if (ct.startsWith('multipart/form-data')) {
+            const form = await parseFormData(request);
+            const file = form.get('wxr');
+            if (!file || typeof file === 'string' || typeof (file as Blob).text !== 'function') {
+              return new Response(JSON.stringify({ error: 'Nenhum arquivo enviado.' }), {
+                status: 400, headers: { 'Content-Type': 'application/json' },
               });
-              if (p.link) {
-                try {
-                  const u = new URL(p.link);
-                  const oldPath = u.pathname.replace(/\/+$/, '');
-                  if (oldPath && oldPath !== `/${p.slug}`) {
-                    await upsertRedirect(env.DB, oldPath, p.slug);
-                  }
-                } catch {/* link inválido */}
-              }
-              result.imported++;
-            } catch (e: unknown) {
-              result.errors.push({ title: p.title, error: e instanceof Error ? e.message : String(e) });
             }
+            importDrafts = form.get('import_drafts') === '1';
+            xml = await (file as Blob).text();
+          } else {
+            // raw body (application/xml ou octet-stream)
+            xml = await request.text();
           }
-
-          return new Response(renderAdminImport(env, request, result), { headers: NO_CACHE_HEADERS });
+          const posts = parseWxr(xml);
+          const result = await importPostsBatch(env, posts, importDrafts);
+          return new Response(JSON.stringify(result), {
+            headers: { 'Content-Type': 'application/json' },
+          });
         } catch (e: unknown) {
-          return new Response(
-            renderAdminImport(env, request, undefined, `Erro ao processar arquivo: ${e instanceof Error ? e.message : String(e)}`),
-            { status: 500, headers: NO_CACHE_HEADERS },
-          );
+          return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
+            status: 500, headers: { 'Content-Type': 'application/json' },
+          });
         }
+      }
+
+      // ===== Admin: chunked upload — recebe um chunk e salva no R2 =====
+      // PUT /admin/import/chunk/<uploadId>/<seq>
+      const chunkMatch = pathname.match(/^\/admin\/import\/chunk\/([a-f0-9-]{8,})\/(\d+)$/);
+      if (chunkMatch && request.method === 'PUT') {
+        if (!authed) return new Response('{"error":"unauthorized"}', { status: 401, headers: { 'Content-Type': 'application/json' } });
+        const [, uploadId, seqStr] = chunkMatch;
+        const seq = Number(seqStr);
+        if (seq > 9999) return new Response('{"error":"chunk seq too high"}', { status: 400 });
+        const key = `_imports/${uploadId}/${seq.toString().padStart(5, '0')}.bin`;
+        if (!request.body) return new Response('{"error":"empty body"}', { status: 400 });
+        await env.IMAGES.put(key, request.body);
+        return new Response(JSON.stringify({ ok: true, seq }), {
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+
+      // ===== Admin: finalize — junta chunks, faz parse streaming, insere =====
+      // POST /admin/import/finalize/<uploadId>
+      const finalMatch = pathname.match(/^\/admin\/import\/finalize\/([a-f0-9-]{8,})$/);
+      if (finalMatch && request.method === 'POST') {
+        if (!authed) return new Response('{"error":"unauthorized"}', { status: 401, headers: { 'Content-Type': 'application/json' } });
+        const [, uploadId] = finalMatch;
+        try {
+          const { totalChunks, importDrafts } = await request.json<{ totalChunks: number; importDrafts: boolean }>();
+          if (!Number.isInteger(totalChunks) || totalChunks < 1 || totalChunks > 9999) {
+            return new Response('{"error":"invalid totalChunks"}', { status: 400 });
+          }
+          // Single-pass: lê chunks do R2 em stream, parseia, coleta posts
+          const stream = await buildChunkStream(env.IMAGES, uploadId, totalChunks);
+          const posts = await streamWxrCollect(stream);
+          // Insere em batch
+          const result = await importPostsBatch(env, posts, !!importDrafts);
+          // Cleanup chunks
+          await cleanupChunks(env.IMAGES, uploadId, totalChunks);
+          return new Response(JSON.stringify(result), {
+            headers: { 'Content-Type': 'application/json' },
+          });
+        } catch (e: unknown) {
+          // tenta limpar mesmo em erro
+          try {
+            const totalChunks = await request.clone().json<{ totalChunks: number }>().then((d) => d.totalChunks).catch(() => 0);
+            if (totalChunks) await cleanupChunks(env.IMAGES, uploadId, totalChunks);
+          } catch {/* ignore */}
+          return new Response(JSON.stringify({ error: e instanceof Error ? e.message : String(e) }), {
+            status: 500, headers: { 'Content-Type': 'application/json' },
+          });
+        }
+      }
+
+      // ===== Admin: cancel chunked upload =====
+      const cancelMatch = pathname.match(/^\/admin\/import\/cancel\/([a-f0-9-]{8,})$/);
+      if (cancelMatch && request.method === 'POST') {
+        if (!authed) return new Response('{"error":"unauthorized"}', { status: 401 });
+        // best-effort: lista e deleta tudo abaixo do prefix
+        const list = await env.IMAGES.list({ prefix: `_imports/${cancelMatch[1]}/` });
+        for (const obj of list.objects) await env.IMAGES.delete(obj.key);
+        return new Response('{"ok":true}', { headers: { 'Content-Type': 'application/json' } });
       }
 
       // ===== Admin: migrate images (GET) — UI =====
@@ -532,4 +553,173 @@ function escapeXml(s: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+// ===== Import helpers =====
+
+/**
+ * Constrói um ReadableStream concatenando todos os chunks do R2 em sequência.
+ * Permite ao parser ler em streaming sem carregar tudo na memória.
+ */
+function buildChunkStream(
+  bucket: R2Bucket,
+  uploadId: string,
+  totalChunks: number,
+): Promise<ReadableStream<Uint8Array>> {
+  return Promise.resolve(new ReadableStream<Uint8Array>({
+    async start(controller) {
+      try {
+        for (let i = 0; i < totalChunks; i++) {
+          const key = `_imports/${uploadId}/${i.toString().padStart(5, '0')}.bin`;
+          const obj = await bucket.get(key);
+          if (!obj) {
+            controller.error(new Error(`chunk ${i} faltando (key=${key})`));
+            return;
+          }
+          const reader = obj.body.getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            controller.enqueue(value);
+          }
+        }
+        controller.close();
+      } catch (e) {
+        controller.error(e);
+      }
+    },
+  }));
+}
+
+async function cleanupChunks(bucket: R2Bucket, uploadId: string, totalChunks: number): Promise<void> {
+  const deletes: Promise<void>[] = [];
+  for (let i = 0; i < totalChunks; i++) {
+    const key = `_imports/${uploadId}/${i.toString().padStart(5, '0')}.bin`;
+    deletes.push(bucket.delete(key));
+  }
+  await Promise.all(deletes);
+}
+
+interface ImportBatchResult {
+  imported: number;
+  skipped: Array<{ slug: string; title: string; reason: string }>;
+  errors: Array<{ title: string; error: string }>;
+  total: number;
+}
+
+/**
+ * Importa um array de WxrPost em batches para o D1. Usa createPostsBatch
+ * (batch insert) e upsertRedirectsBatch (batch redirect) pra ser eficiente.
+ */
+async function importPostsBatch(
+  env: Env,
+  posts: WxrPost[],
+  importDrafts: boolean,
+): Promise<ImportBatchResult> {
+  const BATCH = 50; // posts por batch insert — D1 aguenta bem
+  const result: ImportBatchResult = {
+    imported: 0,
+    skipped: [],
+    errors: [],
+    total: posts.length,
+  };
+
+  // 1. Filtra rascunhos
+  const candidates: WxrPost[] = [];
+  for (const p of posts) {
+    const isDraft = p.status !== 'publish';
+    if (isDraft && !importDrafts) {
+      result.skipped.push({ slug: p.slug, title: p.title, reason: `status: ${p.status}` });
+      continue;
+    }
+    candidates.push(p);
+  }
+
+  // 2. Dedup local (mesmo slug aparecendo 2x no XML)
+  const seenSlugs = new Set<string>();
+  const dedupCandidates: WxrPost[] = [];
+  for (const p of candidates) {
+    if (seenSlugs.has(p.slug)) {
+      result.skipped.push({ slug: p.slug, title: p.title, reason: 'slug duplicado no XML' });
+      continue;
+    }
+    seenSlugs.add(p.slug);
+    dedupCandidates.push(p);
+  }
+
+  if (dedupCandidates.length === 0) return result;
+
+  // 3. Verifica TODOS os slugs existentes de uma vez (1 subrequest único)
+  const allSlugs = dedupCandidates.map((p) => p.slug);
+  let alreadyExisting: Set<string>;
+  try {
+    alreadyExisting = await existingSlugs(env.DB, allSlugs);
+  } catch (e) {
+    for (const p of dedupCandidates) {
+      result.errors.push({ title: p.title, error: 'check existing failed' });
+    }
+    return result;
+  }
+
+  const toInsert = dedupCandidates.filter((p) => {
+    if (alreadyExisting.has(p.slug)) {
+      result.skipped.push({ slug: p.slug, title: p.title, reason: 'slug já existe' });
+      return false;
+    }
+    return true;
+  });
+
+  if (toInsert.length === 0) return result;
+
+  // 4. Prepara redirects todos juntos
+  const allRedirects: Array<{ from: string; to: string }> = [];
+  for (const p of toInsert) {
+    if (!p.link) continue;
+    try {
+      const u = new URL(p.link);
+      const oldPath = u.pathname.replace(/\/+$/, '');
+      if (oldPath && oldPath !== `/${p.slug}`) {
+        allRedirects.push({ from: oldPath, to: p.slug });
+      }
+    } catch {/* link inválido */}
+  }
+
+  // 5. Insere posts em batches grandes
+  for (let i = 0; i < toInsert.length; i += BATCH) {
+    const slice = toInsert.slice(i, i + BATCH);
+    try {
+      await createPostsBatch(
+        env.DB,
+        slice.map((p) => ({
+          slug: p.slug,
+          title: p.title,
+          description: p.description || excerpt(p.content),
+          content: p.content,
+          category: p.category,
+          tags: p.tags.join(', '),
+          author: p.author,
+          hero_image: p.heroImage,
+          draft: p.status !== 'publish' ? 1 : 0,
+          pub_date: p.pubDate,
+          source_url: p.link || null,
+        })),
+      );
+      result.imported += slice.length;
+    } catch (e: unknown) {
+      for (const p of slice) {
+        result.errors.push({ title: p.title, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+  }
+
+  // 6. Insere redirects em batches separados (só pros que foram importados)
+  if (allRedirects.length > 0 && result.imported > 0) {
+    for (let i = 0; i < allRedirects.length; i += BATCH) {
+      try {
+        await upsertRedirectsBatch(env.DB, allRedirects.slice(i, i + BATCH));
+      } catch {/* ignore */}
+    }
+  }
+
+  return result;
 }

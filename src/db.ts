@@ -57,6 +57,72 @@ export async function upsertRedirect(db: D1Database, fromPath: string, toSlug: s
 }
 
 /**
+ * Insere múltiplos posts em uma única request batch para o D1.
+ * Muito mais rápido que inserir um por um. Limite recomendado: 50/batch.
+ * Posts com slug duplicado disparam erro; o caller deve filtrar antes.
+ */
+export async function createPostsBatch(db: D1Database, inputs: PostInput[]): Promise<void> {
+  if (inputs.length === 0) return;
+  const now = Date.now();
+  const stmts = inputs.map((input) =>
+    db.prepare(
+      `INSERT INTO posts (slug, title, description, content, category, tags, author, hero_image, draft, pub_date, updated_date, source_url)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(
+      input.slug,
+      input.title,
+      input.description,
+      input.content,
+      input.category,
+      input.tags,
+      input.author,
+      input.hero_image,
+      input.draft,
+      input.pub_date,
+      now,
+      input.source_url ?? null,
+    ),
+  );
+  await db.batch(stmts);
+}
+
+/**
+ * Insere múltiplos redirects em uma única request batch.
+ */
+export async function upsertRedirectsBatch(
+  db: D1Database, pairs: Array<{ from: string; to: string }>,
+): Promise<void> {
+  if (pairs.length === 0) return;
+  const stmts = pairs.map(({ from, to }) =>
+    db.prepare(
+      `INSERT INTO redirects (from_path, to_slug) VALUES (?, ?)
+       ON CONFLICT(from_path) DO UPDATE SET to_slug = excluded.to_slug`,
+    ).bind(from, to),
+  );
+  await db.batch(stmts);
+}
+
+/**
+ * Retorna slugs já existentes dentre uma lista candidata.
+ * Útil pra deduplicar antes de batch insert.
+ * Internamente faz batches de 90 placeholders (limite D1 é ~100 binds/query).
+ */
+export async function existingSlugs(db: D1Database, slugs: string[]): Promise<Set<string>> {
+  if (slugs.length === 0) return new Set();
+  const CHUNK = 90;
+  const existing = new Set<string>();
+  for (let i = 0; i < slugs.length; i += CHUNK) {
+    const slice = slugs.slice(i, i + CHUNK);
+    const placeholders = slice.map(() => '?').join(',');
+    const { results } = await db.prepare(
+      `SELECT slug FROM posts WHERE slug IN (${placeholders})`,
+    ).bind(...slice).all<{ slug: string }>();
+    for (const r of (results ?? [])) existing.add(r.slug);
+  }
+  return existing;
+}
+
+/**
  * Busca slug para um redirect dado.
  */
 export async function findRedirect(db: D1Database, fromPath: string): Promise<string | null> {

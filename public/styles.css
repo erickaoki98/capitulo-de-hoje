@@ -328,6 +328,23 @@ details summary {
 }
 details summary:hover { color: var(--link-hover); }
 
+/* ===== Upload panel (import) ===== */
+.upload-panel {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.5rem;
+  display: flex; flex-direction: column; gap: 1.25rem;
+}
+.upload-progress {
+  display: flex; flex-direction: column; gap: 0.5rem;
+  padding: 0.875rem;
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.upload-progress .muted { font-size: 0.875rem; }
+
 /* ===== Migrate images dashboard ===== */
 .admin-migrate { display: flex; flex-direction: column; gap: 1.5rem; }
 .migrate-panel {
