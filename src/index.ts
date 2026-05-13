@@ -6,10 +6,16 @@ import {
   countPostsWithExternalImages, countPostsWithAnyImages,
   nextPostsToMigrate, updatePostContent, markPostsMigrated,
   createPostsBatch, upsertRedirectsBatch, existingSlugs,
+  getSetting, setSetting, getAllSettings,
+  recordPageview, topPostsByViews, getPostsBySlugList,
+  pageviewsSummary, pageviewsByDay,
+  listApiKeys, insertApiKey, findApiKeyByHash, touchApiKey, deleteApiKey,
 } from './db';
 import {
-  renderHome, renderPost, render404,
+  renderHome, renderPost, render404, renderPrivacy,
   renderLogin, renderAdminDashboard, renderAdminEditor,
+  renderAdminSettings, renderAdminAnalytics, renderAdminApiKeys,
+  type SiteAdSettings,
 } from './render';
 import { parseWxr, streamWxrCollect } from './wxr';
 import type { WxrPost } from './wxr';
@@ -17,6 +23,8 @@ import {
   extractImageUrls, rewriteHtmlUrls, migrateImagesWithBudget,
 } from './images';
 import type { ImageMigrationStats } from './images';
+import { parseAdConfig, type AdConfig, DEFAULT_AD_CONFIG } from './adsense';
+import { generateApiKey, sha256 } from './apikey';
 import {
   createSession, sessionCookie, clearSessionCookie, requireAuth,
 } from './auth';
@@ -124,8 +132,18 @@ export default {
 
       // ===== Public: home =====
       if (pathname === '/' && request.method === 'GET') {
-        const posts = await listPosts(env.DB, { includeDrafts: false, limit: 50 });
-        return new Response(renderHome(env, request, posts), { headers: PUBLIC_CACHE_HEADERS });
+        const [posts, ads] = await Promise.all([
+          listPosts(env.DB, { includeDrafts: false, limit: 60 }),
+          loadAdSettings(env),
+        ]);
+        ctx.waitUntil(recordPageview(env.DB, '/').catch(() => {}));
+        return new Response(renderHome(env, request, posts, ads), { headers: PUBLIC_CACHE_HEADERS });
+      }
+
+      // ===== Public: privacy =====
+      if (pathname === '/privacidade' && request.method === 'GET') {
+        ctx.waitUntil(recordPageview(env.DB, '/privacidade').catch(() => {}));
+        return new Response(renderPrivacy(env, request), { headers: PUBLIC_CACHE_HEADERS });
       }
 
       // ===== Legacy /p/<slug> → 301 to /<slug> =====
@@ -425,6 +443,164 @@ ${urls}
         }), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
       }
 
+      // ============= Admin: Settings =============
+      if (pathname === '/admin/settings' && request.method === 'GET') {
+        if (!authed) return redirectToLogin();
+        const settings = await getAllSettings(env.DB);
+        return new Response(renderAdminSettings(env, request, {
+          publisherId: settings['adsense.publisher_id'] ?? '',
+          autoAds: settings['adsense.auto_ads'] === '1',
+          adConfig: parseAdConfig(settings['adsense.placements'] ?? null),
+          saved: url.searchParams.get('saved') === '1',
+        }), { headers: NO_CACHE_HEADERS });
+      }
+
+      if (pathname === '/admin/settings' && request.method === 'POST') {
+        if (!authed) return redirectToLogin();
+        const form = await request.formData();
+        const pubId = String(form.get('adsense.publisher_id') ?? '').trim();
+        const autoAds = form.get('adsense.auto_ads') === '1' ? '1' : '0';
+        // monta AdConfig do form
+        const cfg: AdConfig = { ...DEFAULT_AD_CONFIG };
+        for (const key of Object.keys(cfg) as Array<keyof AdConfig>) {
+          const enabled = form.get(`enabled.${key}`) === '1';
+          const slot = String(form.get(`slot.${key}`) ?? '').trim() || undefined;
+          const format = String(form.get(`format.${key}`) ?? 'auto') as any;
+          const n = Number(form.get(`n.${key}`));
+          (cfg as any)[key] = {
+            enabled, slotId: slot, format,
+            ...(key === 'inContent' ? { everyNParagraphs: Number.isFinite(n) && n > 0 ? n : 4 } : {}),
+            ...(key === 'betweenCards' ? { everyNCards: Number.isFinite(n) && n > 0 ? n : 6 } : {}),
+          };
+        }
+        await Promise.all([
+          setSetting(env.DB, 'adsense.publisher_id', pubId),
+          setSetting(env.DB, 'adsense.auto_ads', autoAds),
+          setSetting(env.DB, 'adsense.placements', JSON.stringify(cfg)),
+        ]);
+        return new Response(null, { status: 303, headers: { Location: '/admin/settings?saved=1' } });
+      }
+
+      // ============= Admin: Analytics =============
+      if (pathname === '/admin/analytics' && request.method === 'GET') {
+        if (!authed) return redirectToLogin();
+        const [s24, s7d, s30d, daily] = await Promise.all([
+          pageviewsSummary(env.DB, 24),
+          pageviewsSummary(env.DB, 24 * 7),
+          pageviewsSummary(env.DB, 24 * 30),
+          pageviewsByDay(env.DB, 30),
+        ]);
+        const top48hRaw = await topPostsByViews(env.DB, 48, 15);
+        // enriquece com títulos
+        const allSlugs = Array.from(new Set([
+          ...top48hRaw.map((r) => r.path.replace(/^\//, '')),
+          ...s30d.topPaths.slice(0, 15).map((r) => r.path.replace(/^\//, '')),
+        ]));
+        const enrichPosts = allSlugs.length > 0 ? await getPostsBySlugList(env.DB, allSlugs) : [];
+        const titleMap = new Map(enrichPosts.map((p) => [p.slug, p.title]));
+        return new Response(renderAdminAnalytics(env, request, {
+          totals: {
+            last24h: s24.total ?? 0,
+            last7d: s7d.total ?? 0,
+            last30d: s30d.total ?? 0,
+          },
+          top48h: top48hRaw.map((r) => ({
+            path: r.path, views: r.views, title: titleMap.get(r.path.replace(/^\//, '')),
+          })),
+          top30d: s30d.topPaths.slice(0, 15).map((r) => ({
+            path: r.path, views: r.views, title: titleMap.get(r.path.replace(/^\//, '')),
+          })),
+          daily,
+        }), { headers: NO_CACHE_HEADERS });
+      }
+
+      // ============= Admin: API Keys =============
+      if (pathname === '/admin/api-keys' && request.method === 'GET') {
+        if (!authed) return redirectToLogin();
+        const keys = await listApiKeys(env.DB);
+        // pega token recém criado da query string (one-shot)
+        const newToken = url.searchParams.get('new') || undefined;
+        return new Response(renderAdminApiKeys(env, request, keys, newToken), {
+          headers: NO_CACHE_HEADERS,
+        });
+      }
+
+      if (pathname === '/admin/api-keys/new' && request.method === 'POST') {
+        if (!authed) return redirectToLogin();
+        const form = await request.formData();
+        const name = String(form.get('name') ?? '').trim() || 'Chave sem nome';
+        const { token, prefix, hash } = await generateApiKey();
+        await insertApiKey(env.DB, name, prefix, hash);
+        return new Response(null, {
+          status: 303,
+          headers: { Location: `/admin/api-keys?new=${encodeURIComponent(token)}` },
+        });
+      }
+
+      const delKeyMatch = pathname.match(/^\/admin\/api-keys\/delete\/(\d+)$/);
+      if (delKeyMatch && request.method === 'POST') {
+        if (!authed) return redirectToLogin();
+        await deleteApiKey(env.DB, Number(delKeyMatch[1]));
+        return new Response(null, { status: 303, headers: { Location: '/admin/api-keys' } });
+      }
+
+      // ============= External Posting API =============
+      // POST /api/posts — auth: Bearer cdh_xxx
+      if (pathname === '/api/posts' && request.method === 'POST') {
+        const auth = request.headers.get('Authorization') || '';
+        const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
+        if (!token || !token.startsWith('cdh_')) {
+          return json({ error: 'Missing or invalid Authorization header' }, 401);
+        }
+        const hash = await sha256(token);
+        const apiKey = await findApiKeyByHash(env.DB, hash);
+        if (!apiKey) return json({ error: 'Invalid API key' }, 401);
+        ctx.waitUntil(touchApiKey(env.DB, apiKey.id).catch(() => {}));
+
+        let payload: Record<string, unknown>;
+        try {
+          payload = await request.json();
+        } catch {
+          return json({ error: 'Body must be valid JSON' }, 400);
+        }
+
+        const title = String(payload.title ?? '').trim();
+        if (!title) return json({ error: 'title is required' }, 400);
+        const content = String(payload.content ?? '').trim();
+        if (!content) return json({ error: 'content is required' }, 400);
+
+        let slug = String(payload.slug ?? '').trim();
+        if (!slug) slug = slugify(title);
+        if (!/^[a-z0-9-]+$/.test(slug)) {
+          return json({ error: 'slug must contain only a-z, 0-9 and hyphens' }, 400);
+        }
+        // dedupe
+        const existing = await getPostBySlug(env.DB, slug);
+        if (existing) return json({ error: 'slug already exists', slug }, 409);
+
+        const description = String(payload.description ?? '').trim() || excerpt(content);
+        const tags = Array.isArray(payload.tags) ? (payload.tags as unknown[]).map(String).join(', ') : '';
+        const category = (payload.category != null && String(payload.category).trim()) || null;
+        const author = String(payload.author ?? 'Erick Aoki').trim();
+        const hero = (payload.hero_image != null && String(payload.hero_image).trim()) || null;
+        const draft = payload.draft === true || payload.draft === 1 ? 1 : 0;
+        const pubDateStr = String(payload.pub_date ?? '').trim();
+        const pub_date = pubDateStr ? new Date(pubDateStr).getTime() : Date.now();
+        if (pubDateStr && !Number.isFinite(pub_date)) {
+          return json({ error: 'pub_date must be a valid ISO timestamp' }, 400);
+        }
+
+        const id = await createPost(env.DB, {
+          slug, title, description, content, category, tags, author,
+          hero_image: hero, draft, pub_date,
+          source_url: typeof payload.source_url === 'string' ? payload.source_url : null,
+        });
+        const siteOrigin = `${url.protocol}//${url.host}`;
+        return json({
+          id, slug, url: `${siteOrigin}/${slug}`,
+        }, 201);
+      }
+
       // ===== Admin: delete post =====
       const deleteMatch = pathname.match(/^\/admin\/delete\/(\d+)$/);
       if (deleteMatch && request.method === 'POST') {
@@ -434,17 +610,44 @@ ${urls}
       }
 
       // ===== Public: post at bare /<slug> (catch-all) =====
-      if (request.method === 'GET' && pathname !== '/' && !pathname.startsWith('/admin')) {
+      if (request.method === 'GET' && pathname !== '/' && !pathname.startsWith('/admin') && !pathname.startsWith('/api')) {
         // trailing slash → 301 to canonical
         if (pathname.endsWith('/') && pathname.length > 1) {
           return Response.redirect(`${url.protocol}//${url.host}${pathname.slice(0, -1)}`, 301);
         }
         const slug = pathname.slice(1);
-        // valida formato — só letras minúsculas, números e hífens
         if (/^[a-z0-9-]+$/.test(slug)) {
           const post = await getPostBySlug(env.DB, slug);
           if (post && !post.draft) {
-            return new Response(renderPost(env, request, post), { headers: PUBLIC_CACHE_HEADERS });
+            // related: top 48h excluding this slug, fallback to recent if empty
+            const [topViews, ads] = await Promise.all([
+              topPostsByViews(env.DB, 48, 12, pathname),
+              loadAdSettings(env),
+            ]);
+            const slugs = topViews.map((v) => v.path.replace(/^\//, ''));
+            let relatedPosts = slugs.length > 0
+              ? await getPostsBySlugList(env.DB, slugs)
+              : [];
+            // ordenar pela ordem de views (mais visto primeiro)
+            const slugOrder = new Map(slugs.map((s, i) => [s, i]));
+            relatedPosts = relatedPosts.sort((a, b) =>
+              (slugOrder.get(a.slug) ?? 999) - (slugOrder.get(b.slug) ?? 999),
+            );
+            // se não tem dados suficientes, complementa com recentes
+            if (relatedPosts.length < 6) {
+              const recent = await listPosts(env.DB, { includeDrafts: false, limit: 20 });
+              for (const r of recent) {
+                if (r.slug !== slug && !relatedPosts.find((x) => x.slug === r.slug)) {
+                  relatedPosts.push(r);
+                  if (relatedPosts.length >= 12) break;
+                }
+              }
+            }
+            ctx.waitUntil(recordPageview(env.DB, pathname).catch(() => {}));
+            return new Response(
+              renderPost(env, request, post, relatedPosts.slice(0, 12), ads),
+              { headers: PUBLIC_CACHE_HEADERS },
+            );
           }
         }
         // Não bateu como slug direto → checa tabela de redirects (URL antiga do WP)
@@ -570,6 +773,28 @@ function canonicalUrl(env: Env, url: URL): string {
   const fromEnv = (env as Env & { CANONICAL_URL?: string }).CANONICAL_URL;
   if (fromEnv) return fromEnv.replace(/\/$/, '');
   return `${url.protocol}//${url.host}`;
+}
+
+/** Carrega configurações de AdSense do D1, ou retorna undefined se não configurado. */
+async function loadAdSettings(env: Env): Promise<SiteAdSettings | undefined> {
+  const [pubId, autoAds, placements] = await Promise.all([
+    getSetting(env.DB, 'adsense.publisher_id'),
+    getSetting(env.DB, 'adsense.auto_ads'),
+    getSetting(env.DB, 'adsense.placements'),
+  ]);
+  if (!pubId || pubId.length < 8) return undefined;
+  return {
+    publisherId: pubId,
+    autoAds: autoAds === '1',
+    config: parseAdConfig(placements),
+  };
+}
+
+function json(body: object, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+  });
 }
 
 function escapeXml(s: string): string {

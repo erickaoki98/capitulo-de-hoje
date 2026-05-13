@@ -185,6 +185,146 @@ export async function markPostsMigrated(db: D1Database, ids: number[]): Promise<
   await db.batch(stmts);
 }
 
+// ============== SETTINGS (key/value) ==============
+
+export async function getSetting(db: D1Database, key: string): Promise<string | null> {
+  const row = await db.prepare('SELECT value FROM settings WHERE key = ?')
+    .bind(key).first<{ value: string }>();
+  return row?.value ?? null;
+}
+
+export async function setSetting(db: D1Database, key: string, value: string): Promise<void> {
+  await db.prepare(
+    `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+  ).bind(key, value, Date.now()).run();
+}
+
+export async function getAllSettings(db: D1Database): Promise<Record<string, string>> {
+  const { results } = await db.prepare('SELECT key, value FROM settings').all<{ key: string; value: string }>();
+  const out: Record<string, string> = {};
+  for (const r of results ?? []) out[r.key] = r.value;
+  return out;
+}
+
+// ============== PAGE VIEWS ==============
+
+/** Hora UTC atual no formato 'YYYY-MM-DDTHH' */
+export function currentBucket(): string {
+  const d = new Date();
+  return d.toISOString().slice(0, 13);
+}
+
+/** Incrementa contador de pageview pro path no bucket atual */
+export async function recordPageview(db: D1Database, path: string): Promise<void> {
+  const bucket = currentBucket();
+  await db.prepare(
+    `INSERT INTO pageviews_hourly (bucket, path, count) VALUES (?, ?, 1)
+     ON CONFLICT(bucket, path) DO UPDATE SET count = count + 1`,
+  ).bind(bucket, path).run();
+}
+
+/** Top N paths por views nas últimas H horas (UTC) */
+export async function topPostsByViews(
+  db: D1Database, hours: number, limit: number, excludePath?: string,
+): Promise<Array<{ path: string; views: number }>> {
+  const since = new Date(Date.now() - hours * 3600_000).toISOString().slice(0, 13);
+  const exclude = excludePath ?? '__none__';
+  const { results } = await db.prepare(
+    `SELECT path, SUM(count) AS views
+     FROM pageviews_hourly
+     WHERE bucket >= ? AND path != ? AND path LIKE '/%' AND path NOT LIKE '/admin%'
+       AND path NOT LIKE '/api%' AND path NOT LIKE '/img%' AND path NOT LIKE '/_%'
+       AND path NOT IN ('/', '/sitemap.xml', '/robots.txt', '/rss.xml', '/privacidade', '/favicon.svg')
+     GROUP BY path
+     ORDER BY views DESC LIMIT ?`,
+  ).bind(since, exclude, limit).all<{ path: string; views: number }>();
+  return results ?? [];
+}
+
+/** Busca posts por slug (sem todo o content — só metadados pro card) */
+export async function getPostsBySlugList(db: D1Database, slugs: string[]): Promise<Post[]> {
+  if (slugs.length === 0) return [];
+  const placeholders = slugs.map(() => '?').join(',');
+  const { results } = await db.prepare(
+    `SELECT * FROM posts WHERE slug IN (${placeholders}) AND draft = 0`,
+  ).bind(...slugs).all<Post>();
+  return results ?? [];
+}
+
+/** Pageviews agregados nas últimas N horas — total e por path */
+export async function pageviewsSummary(db: D1Database, hours: number): Promise<{
+  total: number;
+  topPaths: Array<{ path: string; views: number }>;
+}> {
+  const since = new Date(Date.now() - hours * 3600_000).toISOString().slice(0, 13);
+  const totalRow = await db.prepare(
+    'SELECT SUM(count) AS total FROM pageviews_hourly WHERE bucket >= ?',
+  ).bind(since).first<{ total: number }>();
+  const { results: top } = await db.prepare(
+    `SELECT path, SUM(count) AS views FROM pageviews_hourly
+     WHERE bucket >= ? AND path NOT LIKE '/admin%' AND path NOT LIKE '/api%' AND path NOT LIKE '/img%'
+     GROUP BY path ORDER BY views DESC LIMIT 25`,
+  ).bind(since).all<{ path: string; views: number }>();
+  return { total: totalRow?.total ?? 0, topPaths: top ?? [] };
+}
+
+/** Série temporal por dia (para gráfico) */
+export async function pageviewsByDay(db: D1Database, days: number): Promise<Array<{ day: string; views: number }>> {
+  const since = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 13);
+  const { results } = await db.prepare(
+    `SELECT substr(bucket, 1, 10) AS day, SUM(count) AS views
+     FROM pageviews_hourly
+     WHERE bucket >= ?
+     GROUP BY day
+     ORDER BY day ASC`,
+  ).bind(since).all<{ day: string; views: number }>();
+  return results ?? [];
+}
+
+// ============== API KEYS ==============
+
+export interface ApiKey {
+  id: number;
+  key_prefix: string;
+  key_hash: string;
+  name: string;
+  created_at: number;
+  last_used_at: number | null;
+  active: number;
+}
+
+export async function listApiKeys(db: D1Database): Promise<ApiKey[]> {
+  const { results } = await db.prepare(
+    'SELECT * FROM api_keys ORDER BY created_at DESC',
+  ).all<ApiKey>();
+  return results ?? [];
+}
+
+export async function insertApiKey(
+  db: D1Database, name: string, prefix: string, hash: string,
+): Promise<number> {
+  const r = await db.prepare(
+    `INSERT INTO api_keys (key_prefix, key_hash, name, created_at, active)
+     VALUES (?, ?, ?, ?, 1)`,
+  ).bind(prefix, hash, name, Date.now()).run();
+  return Number(r.meta.last_row_id);
+}
+
+export async function findApiKeyByHash(db: D1Database, hash: string): Promise<ApiKey | null> {
+  return await db.prepare('SELECT * FROM api_keys WHERE key_hash = ? AND active = 1')
+    .bind(hash).first<ApiKey>();
+}
+
+export async function touchApiKey(db: D1Database, id: number): Promise<void> {
+  await db.prepare('UPDATE api_keys SET last_used_at = ? WHERE id = ?')
+    .bind(Date.now(), id).run();
+}
+
+export async function deleteApiKey(db: D1Database, id: number): Promise<void> {
+  await db.prepare('DELETE FROM api_keys WHERE id = ?').bind(id).run();
+}
+
 /**
  * Atualiza apenas content + hero_image de um post (usado pela migração).
  */
