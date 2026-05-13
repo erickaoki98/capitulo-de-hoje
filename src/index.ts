@@ -13,7 +13,7 @@ import {
 } from './db';
 import {
   renderHome, renderPost, render404, renderPrivacy, renderDocs,
-  renderLogin, renderAdminDashboard, renderAdminEditor,
+  renderLogin, renderAdminDashboard, renderAdminPosts, renderAdminEditor,
   renderAdminSettings, renderAdminAnalytics, renderAdminApiKeys,
   renderAdminCache,
   type SiteAdSettings,
@@ -247,14 +247,53 @@ ${urls}
         return writeCache(env, ctx, request, resp);
       }
 
-      // ===== Admin: login (GET) =====
+      // ===== Admin: login (GET) / Dashboard =====
       if (pathname === '/admin' && request.method === 'GET') {
         const authed = await requireAuth(request, env.SESSION_SECRET);
         if (!authed) {
           return new Response(renderLogin(env, request), { headers: NO_CACHE_HEADERS });
         }
-        const posts = await listPosts(env.DB, { includeDrafts: true, limit: 200 });
-        return new Response(renderAdminDashboard(env, request, posts), { headers: NO_CACHE_HEADERS });
+        // Carrega dados pro dashboard em paralelo
+        const [allPosts, summary24h, top24h] = await Promise.all([
+          listPosts(env.DB, { includeDrafts: true, limit: 500 }),
+          pageviewsSummary(env.DB, 24),
+          topPostsByViews(env.DB, 24, 5),
+        ]);
+        const published = allPosts.filter((p) => !p.draft).length;
+        const drafts = allPosts.length - published;
+        const recent = allPosts.slice(0, 6);
+        // enrich top with titles
+        const topSlugs = top24h.map((t) => t.path.replace(/^\//, ''));
+        const topPostsData = topSlugs.length ? await getPostsBySlugList(env.DB, topSlugs) : [];
+        const titleMap = new Map(topPostsData.map((p) => [p.slug, p.title]));
+        const topToday = top24h.map((t) => ({
+          path: t.path,
+          views: t.views,
+          title: titleMap.get(t.path.replace(/^\//, '')),
+        }));
+        return new Response(renderAdminDashboard(env, request, {
+          stats: {
+            total: allPosts.length,
+            published,
+            drafts,
+            views24h: summary24h.total ?? 0,
+          },
+          recent,
+          topToday,
+        }), { headers: NO_CACHE_HEADERS });
+      }
+
+      // ===== Admin: Posts list =====
+      if (pathname === '/admin/posts' && request.method === 'GET') {
+        const authed = await requireAuth(request, env.SESSION_SECRET);
+        if (!authed) return redirectToLogin();
+        const posts = await listPosts(env.DB, { includeDrafts: true, limit: 500 });
+        const q = url.searchParams.get('q') ?? '';
+        const statusParam = url.searchParams.get('status');
+        const status = (statusParam === 'published' || statusParam === 'draft') ? statusParam : 'all';
+        return new Response(renderAdminPosts(env, request, posts, { q, status }), {
+          headers: NO_CACHE_HEADERS,
+        });
       }
 
       // ===== Admin: login (POST) =====

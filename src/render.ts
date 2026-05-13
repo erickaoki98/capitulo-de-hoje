@@ -606,85 +606,315 @@ export function renderLogin(env: Env, request: Request, error?: string): string 
       description: 'Acesso restrito',
       url: `${url.protocol}//${url.host}/admin`,
       siteTitle: env.SITE_TITLE,
-      bodyClass: 'admin',
+      bodyClass: 'admin adm-login-page',
     },
-    `<div class="admin-login">
-      <h1>Admin</h1>
-      ${error ? `<p class="error">${escapeHtml(error)}</p>` : ''}
-      <form method="POST" action="/admin/login" autocomplete="off">
-        <label>Usuário
-          <input type="text" name="username" required autofocus autocomplete="username">
-        </label>
-        <label>Senha
-          <input type="password" name="password" required autocomplete="current-password">
-        </label>
-        <button type="submit" class="btn btn--primary">Entrar</button>
-      </form>
+    `<div class="adm-login">
+      <div class="adm-login__card">
+        <div class="adm-login__brand">
+          <span class="adm-brand__logo">${escapeHtml((env.SITE_TITLE.match(/\b[A-ZÀ-Ú]/g) ?? []).slice(0, 2).join('') || 'CH')}</span>
+        </div>
+        <h1>${escapeHtml(env.SITE_TITLE)}</h1>
+        <p class="muted">Painel administrativo</p>
+        ${error ? `<div class="alert alert--error" style="margin-top:1rem"><span class="alert__icon">⚠</span><div>${escapeHtml(error)}</div></div>` : ''}
+        <form method="POST" action="/admin/login" autocomplete="off" class="adm-login__form">
+          <div class="field">
+            <label>Usuário</label>
+            <input type="text" name="username" required autofocus autocomplete="username">
+          </div>
+          <div class="field">
+            <label>Senha</label>
+            <input type="password" name="password" required autocomplete="current-password">
+          </div>
+          <button type="submit" class="btn btn--primary btn--lg btn--block">Entrar</button>
+        </form>
+      </div>
     </div>`,
   );
 }
 
 // ====== Admin: dashboard ======
-export function renderAdminDashboard(env: Env, request: Request, posts: Post[]): string {
-  const url = new URL(request.url);
-  const rows = posts.length === 0
-    ? `<tr><td colspan="4" class="empty">Nenhum post ainda.</td></tr>`
-    : posts.map((p) => `<tr>
-        <td>
-          <a href="/admin/edit/${p.id}">${escapeHtml(p.title)}</a>
-          <div class="muted">/p/${escapeHtml(p.slug)}</div>
-        </td>
-        <td><time datetime="${isoDate(p.pub_date)}">${formatDate(p.pub_date)}</time></td>
-        <td>${p.draft ? '<span class="badge badge--draft">Rascunho</span>' : '<span class="badge">Publicado</span>'}</td>
-        <td>
-          <form method="POST" action="/admin/delete/${p.id}" onsubmit="return confirm('Excluir este post?')">
-            <button type="submit" class="btn btn--danger">Excluir</button>
-          </form>
-        </td>
-      </tr>`).join('');
+/** Renders the admin home / dashboard with stats + recent posts. */
+export function renderAdminDashboard(
+  env: Env, request: Request,
+  data: {
+    stats: { total: number; published: number; drafts: number; views24h: number };
+    recent: Post[];
+    topToday: Array<{ path: string; title?: string; views: number }>;
+  },
+): string {
+  void request;
+  const { stats, recent, topToday } = data;
+
+  return adminShell(env, {
+    active: 'dashboard',
+    title: 'Início',
+    subtitle: 'Visão geral do seu blog',
+    actions: `<a href="/admin/new" class="btn btn--primary">+ Novo post</a>`,
+  }, `
+    <section class="kpi-grid kpi-grid--4">
+      <div class="kpi-card">
+        <div class="kpi-card__label">Posts</div>
+        <div class="kpi-card__value">${stats.total.toLocaleString('pt-BR')}</div>
+        <div class="kpi-card__hint">${stats.published} publicados · ${stats.drafts} rascunhos</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-card__label">Views 24h</div>
+        <div class="kpi-card__value">${stats.views24h.toLocaleString('pt-BR')}</div>
+        <div class="kpi-card__hint"><a href="/admin/analytics" class="muted-link">Ver detalhes →</a></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-card__label">Site</div>
+        <div class="kpi-card__value" style="font-size:1.125rem">capitulodehoje</div>
+        <div class="kpi-card__hint"><a href="/" target="_blank" rel="noopener" class="muted-link">Abrir →</a></div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-card__label">Status</div>
+        <div class="kpi-card__value" style="font-size:1.125rem; color:#10b981">● Online</div>
+        <div class="kpi-card__hint">Cloudflare Workers</div>
+      </div>
+    </section>
+
+    <div class="adm-split">
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Posts recentes</h2>
+          <a href="/admin/posts" class="muted-link">Ver todos →</a>
+        </header>
+        <ul class="recent-list">
+          ${recent.length === 0 ? `<li class="empty-state">Nenhum post ainda. <a href="/admin/new">Criar o primeiro</a></li>` : recent.map((p) => `
+            <li class="recent-item">
+              <a href="/admin/edit/${p.id}" class="recent-item__title">${escapeHtml(p.title)}</a>
+              <span class="recent-item__meta">
+                ${p.draft ? '<span class="badge badge--draft">Rascunho</span>' : ''}
+                <time>${formatDate(p.pub_date)}</time>
+              </span>
+            </li>`).join('')}
+        </ul>
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Em alta agora</h2>
+          <span class="muted">últimas 24h</span>
+        </header>
+        <ul class="recent-list">
+          ${topToday.length === 0 ? `<li class="empty-state">Sem dados ainda — os visitantes começam a contar conforme acessam.</li>` : topToday.map((t) => `
+            <li class="recent-item">
+              <a href="${escapeHtml(t.path)}" target="_blank" rel="noopener" class="recent-item__title">${escapeHtml(t.title ?? t.path)}</a>
+              <span class="recent-item__meta"><strong>${t.views.toLocaleString('pt-BR')}</strong> views</span>
+            </li>`).join('')}
+        </ul>
+      </section>
+    </div>
+
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Ações rápidas</h2>
+      </header>
+      <div class="card__body quick-actions">
+        <a href="/admin/new" class="qa-card">
+          <span class="qa-card__icon">✏️</span>
+          <div>
+            <strong>Novo post</strong>
+            <small>Criar conteúdo manualmente</small>
+          </div>
+        </a>
+        <a href="/admin/api-keys" class="qa-card">
+          <span class="qa-card__icon">🔑</span>
+          <div>
+            <strong>Gerar API key</strong>
+            <small>Publicar via integração externa</small>
+          </div>
+        </a>
+        <a href="/admin/settings" class="qa-card">
+          <span class="qa-card__icon">💰</span>
+          <div>
+            <strong>Configurar AdSense</strong>
+            <small>Monetização e placements</small>
+          </div>
+        </a>
+        <a href="/admin/cache" class="qa-card">
+          <span class="qa-card__icon">🧹</span>
+          <div>
+            <strong>Limpar cache</strong>
+            <small>Forçar regeneração das páginas</small>
+          </div>
+        </a>
+      </div>
+    </section>
+  `);
+}
+
+/** Posts list — agora separado de /admin (que virou dashboard). */
+export function renderAdminPosts(
+  env: Env, request: Request,
+  posts: Post[],
+  filters: { q?: string; status?: 'all' | 'published' | 'draft' } = {},
+): string {
+  void request;
+  const status = filters.status ?? 'all';
+  const q = filters.q ?? '';
+  const filtered = posts.filter((p) => {
+    if (status === 'published' && p.draft) return false;
+    if (status === 'draft' && !p.draft) return false;
+    if (q && !p.title.toLowerCase().includes(q.toLowerCase()) && !p.slug.includes(q.toLowerCase())) return false;
+    return true;
+  });
+
+  return adminShell(env, {
+    active: 'posts',
+    title: 'Posts',
+    subtitle: `${posts.length.toLocaleString('pt-BR')} posts no total`,
+    actions: `<a href="/admin/new" class="btn btn--primary">+ Novo post</a>`,
+  }, `
+    <section class="card">
+      <header class="card__header" style="gap:1rem; flex-wrap:wrap">
+        <form method="GET" action="/admin/posts" class="search-form" style="flex:1; min-width:240px">
+          <input type="search" name="q" placeholder="🔍 Buscar por título ou slug…" value="${escapeHtml(q)}">
+          <input type="hidden" name="status" value="${status}">
+        </form>
+        <div class="filter-pills">
+          <a href="/admin/posts?status=all${q ? '&q=' + encodeURIComponent(q) : ''}" class="pill ${status === 'all' ? 'is-active' : ''}">Todos</a>
+          <a href="/admin/posts?status=published${q ? '&q=' + encodeURIComponent(q) : ''}" class="pill ${status === 'published' ? 'is-active' : ''}">Publicados</a>
+          <a href="/admin/posts?status=draft${q ? '&q=' + encodeURIComponent(q) : ''}" class="pill ${status === 'draft' ? 'is-active' : ''}">Rascunhos</a>
+        </div>
+      </header>
+      <table class="data-table">
+        <thead>
+          <tr><th>Título</th><th>Data</th><th>Status</th><th style="width:1px"></th></tr>
+        </thead>
+        <tbody>
+          ${filtered.length === 0 ? `<tr><td colspan="4" class="empty-state">Nenhum post encontrado${q ? ' para "' + escapeHtml(q) + '"' : ''}.</td></tr>` : filtered.slice(0, 100).map((p) => `
+            <tr>
+              <td>
+                <a href="/admin/edit/${p.id}" class="post-link">${escapeHtml(p.title)}</a>
+                <div class="muted">/${escapeHtml(p.slug)}</div>
+              </td>
+              <td class="nowrap"><time class="muted">${formatDate(p.pub_date)}</time></td>
+              <td>${p.draft ? '<span class="badge badge--draft">Rascunho</span>' : '<span class="badge badge--success">Publicado</span>'}</td>
+              <td>
+                <div class="row-actions">
+                  <a href="/${escapeHtml(p.slug)}" target="_blank" rel="noopener" class="btn btn--ghost btn--sm" title="Ver no site">
+                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+                  </a>
+                  <form method="POST" action="/admin/delete/${p.id}" onsubmit="return confirm('Excluir &quot;${escapeHtml(p.title).replace(/'/g, '&#39;').slice(0, 60)}&quot;?')" style="display:inline">
+                    <button type="submit" class="btn btn--ghost btn--sm btn--danger" title="Excluir">
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 01-2 2H9a2 2 0 01-2-2L5 6"/></svg>
+                    </button>
+                  </form>
+                </div>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+      ${filtered.length > 100 ? `<div class="table-footer muted">Mostrando 100 de ${filtered.length}. Use a busca pra refinar.</div>` : ''}
+    </section>
+  `);
+}
+
+// ====== Admin: shell with sidebar nav ======
+type AdminSection = 'dashboard' | 'posts' | 'settings' | 'analytics' | 'api-keys' | 'cache';
+
+interface AdminShellOptions {
+  active: AdminSection;
+  title: string;
+  subtitle?: string;
+  actions?: string;  // HTML pro lado direito do header
+  bodyClass?: string;
+}
+
+/** Ícones SVG inline — 20px, stroke 1.75, currentColor */
+const ICONS: Record<AdminSection, string> = {
+  dashboard: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>',
+  posts:     '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>',
+  analytics: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="3" y1="20" x2="21" y2="20"/></svg>',
+  settings:  '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+  'api-keys':'<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>',
+  cache:     '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>',
+};
+
+function adminShell(env: Env, opts: AdminShellOptions, body: string): string {
+  const { active, title, subtitle, actions = '', bodyClass = '' } = opts;
+  const navItems: Array<[AdminSection, string, string]> = [
+    ['dashboard', '/admin', 'Início'],
+    ['posts',     '/admin/posts', 'Posts'],
+    ['analytics', '/admin/analytics', 'Analytics'],
+    ['settings',  '/admin/settings', 'Configurações'],
+    ['api-keys',  '/admin/api-keys', 'API'],
+    ['cache',     '/admin/cache', 'Cache'],
+  ];
+
+  const nav = navItems.map(([k, href, label]) => `
+    <a class="adm-nav__item ${active === k ? 'is-active' : ''}" href="${href}">
+      <span class="adm-nav__icon">${ICONS[k]}</span>
+      <span class="adm-nav__label">${label}</span>
+    </a>`).join('');
+
+  // Reusa o layout() público mas com sidebar+main no body
+  const innerBody = `
+<div class="adm-shell">
+  <aside class="adm-sidebar" id="adm-sidebar">
+    <a href="/admin" class="adm-brand">
+      <span class="adm-brand__logo">${escapeHtml((env.SITE_TITLE.match(/\b[A-ZÀ-Ú]/g) ?? []).slice(0, 2).join('') || 'CH')}</span>
+      <span class="adm-brand__text">
+        <strong>${escapeHtml(env.SITE_TITLE)}</strong>
+        <small>admin</small>
+      </span>
+    </a>
+    <nav class="adm-nav">${nav}</nav>
+    <div class="adm-sidebar__footer">
+      <a href="/" target="_blank" rel="noopener" class="adm-footer-link">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+        Ver site
+      </a>
+      <form method="POST" action="/admin/logout" style="margin:0">
+        <button type="submit" class="adm-footer-link adm-footer-link--btn">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+          Sair
+        </button>
+      </form>
+    </div>
+  </aside>
+
+  <button class="adm-menu-toggle" id="adm-toggle" aria-label="Menu">
+    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+  </button>
+
+  <main class="adm-main">
+    <header class="adm-page-header">
+      <div class="adm-page-header__left">
+        <h1 class="adm-page-header__title">${escapeHtml(title)}</h1>
+        ${subtitle ? `<p class="adm-page-header__subtitle">${escapeHtml(subtitle)}</p>` : ''}
+      </div>
+      ${actions ? `<div class="adm-page-header__actions">${actions}</div>` : ''}
+    </header>
+    <div class="adm-content">${body}</div>
+  </main>
+</div>
+<script>
+(() => {
+  const sb = document.getElementById('adm-sidebar');
+  const btn = document.getElementById('adm-toggle');
+  btn?.addEventListener('click', () => sb?.classList.toggle('is-open'));
+  document.addEventListener('click', (e) => {
+    if (window.innerWidth >= 900) return;
+    if (sb?.classList.contains('is-open') && !sb.contains(e.target) && e.target !== btn) {
+      sb.classList.remove('is-open');
+    }
+  });
+})();
+</script>`;
 
   return layout(
     {
-      title: `Admin — ${env.SITE_TITLE}`,
-      description: 'Painel administrativo',
-      url: `${url.protocol}//${url.host}/admin`,
+      title: `${title} — ${env.SITE_TITLE}`,
+      description: 'Painel admin',
+      url: '',
       siteTitle: env.SITE_TITLE,
-      bodyClass: 'admin',
+      bodyClass: `admin adm-page ${bodyClass}`,
     },
-    `<div class="admin-dashboard">
-      <header class="admin-header">
-        <h1>Posts</h1>
-        <div class="admin-actions">
-          <a href="/admin/new" class="btn btn--primary">+ Novo post</a>
-          <form method="POST" action="/admin/logout" style="display:inline">
-            <button type="submit" class="btn">Sair</button>
-          </form>
-        </div>
-      </header>
-      ${adminTabs('posts')}
-      <table class="admin-table">
-        <thead>
-          <tr><th>Título</th><th>Data</th><th>Status</th><th></th></tr>
-        </thead>
-        <tbody>${rows}</tbody>
-      </table>
-    </div>`,
+    innerBody,
   );
-}
-
-// ====== Admin: shared shell with tabs ======
-type AdminTab = 'posts' | 'settings' | 'analytics' | 'api-keys' | 'cache';
-function adminTabs(active: AdminTab): string {
-  const links: Array<[string, string, AdminTab]> = [
-    ['/admin', 'Posts', 'posts'],
-    ['/admin/settings', 'Configurações', 'settings'],
-    ['/admin/analytics', 'Analytics', 'analytics'],
-    ['/admin/api-keys', 'API', 'api-keys'],
-    ['/admin/cache', 'Cache', 'cache'],
-  ];
-  return `<nav class="admin-tabs">${links.map(([href, label, k]) =>
-    `<a class="admin-tab ${active === k ? 'is-active' : ''}" href="${href}">${label}</a>`,
-  ).join('')}</nav>`;
 }
 
 // ====== Admin: Settings ======
@@ -741,50 +971,48 @@ export function renderAdminSettings(
     </fieldset>`;
   }).join('');
 
-  return layout(
-    {
-      title: `Configurações — ${env.SITE_TITLE}`,
-      description: 'Admin',
-      url: `${url.protocol}//${url.host}/admin/settings`,
-      siteTitle: env.SITE_TITLE,
-      bodyClass: 'admin',
-    },
-    `<div class="admin-import">
-      <header class="admin-header">
-        <h1>Configurações</h1>
-        <form method="POST" action="/admin/logout" style="display:inline">
-          <button type="submit" class="btn">Sair</button>
-        </form>
-      </header>
-      ${adminTabs('settings')}
-      ${saved ? `<div class="success"><p>✓ Configurações salvas.</p></div>` : ''}
-      ${error ? `<div class="error"><p>${escapeHtml(error)}</p></div>` : ''}
+  return adminShell(env, {
+    active: 'settings',
+    title: 'Configurações',
+    subtitle: 'Gerencie integrações e ajustes globais do site',
+  }, `
+    ${saved ? `<div class="alert alert--success"><span class="alert__icon">✓</span><div><strong>Configurações salvas.</strong></div></div>` : ''}
+    ${error ? `<div class="alert alert--error"><span class="alert__icon">⚠</span><div>${escapeHtml(error)}</div></div>` : ''}
 
-      <form method="POST" action="/admin/settings" class="editor-form">
-        <section class="settings-section">
-          <h2>Google AdSense</h2>
-          <p class="muted">Cole o ID do seu publisher (ex.: <code>ca-pub-1234567890123456</code>). Os slots de anúncio individuais ficam configurados na seção abaixo.</p>
+    <form method="POST" action="/admin/settings">
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Google AdSense</h2>
+          <p class="card__desc">Cole o ID do seu publisher AdSense. Os slots individuais são configurados abaixo.</p>
+        </header>
+        <div class="card__body">
           <div class="field">
             <label>Publisher ID</label>
             <input type="text" name="adsense.publisher_id" value="${escapeHtml(publisherId)}" placeholder="ca-pub-XXXXXXXXXXXXXXXX">
+            <small class="field__help">Formato: <code>ca-pub-</code> seguido de 16 dígitos.</small>
           </div>
           <div class="field field--check">
-            <label><input type="checkbox" name="adsense.auto_ads" value="1" ${autoAds ? 'checked' : ''}> Ativar Auto Ads do Google (decide automaticamente onde inserir anúncios — pode coexistir com placements manuais)</label>
+            <label class="check"><input type="checkbox" name="adsense.auto_ads" value="1" ${autoAds ? 'checked' : ''}> <span>Ativar <strong>Auto Ads</strong> do Google</span></label>
+            <small class="field__help">O Google decide automaticamente onde inserir anúncios extras. Funciona em conjunto com os placements manuais abaixo.</small>
           </div>
-        </section>
-
-        <section class="settings-section">
-          <h2>Inserção de Anúncios</h2>
-          <p class="muted">Marque os pontos onde deseja exibir anúncios. Cada ponto precisa de um <strong>slot ID</strong> criado no painel do AdSense.</p>
-          ${placementInputs}
-        </section>
-
-        <div class="form-actions">
-          <button type="submit" class="btn btn--primary">Salvar configurações</button>
         </div>
-      </form>
-    </div>`,
-  );
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Inserção de anúncios</h2>
+          <p class="card__desc">Ative os pontos onde quer exibir anúncios. Cada um precisa de um <strong>Slot ID</strong> criado no painel do AdSense.</p>
+        </header>
+        <div class="card__body">
+          ${placementInputs}
+        </div>
+      </section>
+
+      <div class="sticky-actions">
+        <button type="submit" class="btn btn--primary btn--lg">Salvar configurações</button>
+      </div>
+    </form>
+  `);
 }
 
 // ====== Admin: Analytics ======
@@ -818,51 +1046,58 @@ export function renderAdminAnalytics(
           <td class="views">${r.views.toLocaleString('pt-BR')}</td>
         </tr>`).join('');
 
-  return layout(
-    {
-      title: `Analytics — ${env.SITE_TITLE}`,
-      description: 'Admin',
-      url: `${url.protocol}//${url.host}/admin/analytics`,
-      siteTitle: env.SITE_TITLE,
-      bodyClass: 'admin',
-    },
-    `<div class="admin-import">
-      <header class="admin-header">
-        <h1>Analytics</h1>
-        <form method="POST" action="/admin/logout" style="display:inline">
-          <button type="submit" class="btn">Sair</button>
-        </form>
+  return adminShell(env, {
+    active: 'analytics',
+    title: 'Analytics',
+    subtitle: 'Visualizações, páginas populares e tendências',
+  }, `
+    <section class="kpi-grid">
+      <div class="kpi-card">
+        <div class="kpi-card__label">Últimas 24h</div>
+        <div class="kpi-card__value">${data.totals.last24h.toLocaleString('pt-BR')}</div>
+        <div class="kpi-card__hint">visualizações</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-card__label">Últimos 7 dias</div>
+        <div class="kpi-card__value">${data.totals.last7d.toLocaleString('pt-BR')}</div>
+        <div class="kpi-card__hint">visualizações</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-card__label">Últimos 30 dias</div>
+        <div class="kpi-card__value">${data.totals.last30d.toLocaleString('pt-BR')}</div>
+        <div class="kpi-card__hint">visualizações</div>
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Visualizações por dia</h2>
+        <p class="card__desc">Últimos 30 dias</p>
       </header>
-      ${adminTabs('analytics')}
+      <div class="card__body">${chart}</div>
+    </section>
 
-      <section class="kpi-grid">
-        <div class="kpi"><div class="kpi__label">Últimas 24h</div><div class="kpi__value">${data.totals.last24h.toLocaleString('pt-BR')}</div></div>
-        <div class="kpi"><div class="kpi__label">Últimos 7 dias</div><div class="kpi__value">${data.totals.last7d.toLocaleString('pt-BR')}</div></div>
-        <div class="kpi"><div class="kpi__label">Últimos 30 dias</div><div class="kpi__value">${data.totals.last30d.toLocaleString('pt-BR')}</div></div>
-      </section>
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Top posts</h2>
+        <p class="card__desc">Mais visualizados nas últimas 48 horas</p>
+      </header>
+      <table class="data-table">
+        <thead><tr><th>Página</th><th class="num">Views</th></tr></thead>
+        <tbody>${topRows(data.top48h)}</tbody>
+      </table>
+    </section>
 
-      <section class="analytics-section">
-        <h2>Visualizações por dia (últimos 30 dias)</h2>
-        ${chart}
-      </section>
-
-      <section class="analytics-section">
-        <h2>Top posts — últimas 48h</h2>
-        <table class="admin-table">
-          <thead><tr><th>Página</th><th>Views</th></tr></thead>
-          <tbody>${topRows(data.top48h)}</tbody>
-        </table>
-      </section>
-
-      <section class="analytics-section">
-        <h2>Top posts — últimos 30 dias</h2>
-        <table class="admin-table">
-          <thead><tr><th>Página</th><th>Views</th></tr></thead>
-          <tbody>${topRows(data.top30d)}</tbody>
-        </table>
-      </section>
-    </div>`,
-  );
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Top posts — 30 dias</h2>
+      </header>
+      <table class="data-table">
+        <thead><tr><th>Página</th><th class="num">Views</th></tr></thead>
+        <tbody>${topRows(data.top30d)}</tbody>
+      </table>
+    </section>
+  `);
 }
 
 // ====== Admin: API Keys ======
@@ -872,65 +1107,61 @@ export function renderAdminApiKeys(
   newToken?: string,
 ): string {
   const url = new URL(request.url);
-  return layout(
-    {
-      title: `API Keys — ${env.SITE_TITLE}`,
-      description: 'Admin',
-      url: `${url.protocol}//${url.host}/admin/api-keys`,
-      siteTitle: env.SITE_TITLE,
-      bodyClass: 'admin',
-    },
-    `<div class="admin-import">
-      <header class="admin-header">
-        <h1>API Keys</h1>
-        <form method="POST" action="/admin/logout" style="display:inline">
-          <button type="submit" class="btn">Sair</button>
-        </form>
-      </header>
-      ${adminTabs('api-keys')}
-
-      ${newToken ? `<div class="success">
-        <p><strong>Token criado:</strong></p>
-        <pre class="token-display">${escapeHtml(newToken)}</pre>
-        <p class="muted">⚠️ Anote agora — não será exibido novamente.</p>
-      </div>` : ''}
-
-      <div class="import-info">
-        <p><strong>Para publicar posts via API:</strong></p>
-        <p>1. Gere uma chave abaixo. 2. Envie POST para <code>/api/posts</code> com o token no header <code>Authorization</code>.</p>
-        <p><a href="/doc" target="_blank" rel="noopener" class="btn btn--primary">📘 Documentação completa em /doc →</a></p>
+  return adminShell(env, {
+    active: 'api-keys',
+    title: 'API',
+    subtitle: 'Chaves de acesso para publicação externa via REST',
+    actions: `<a href="/doc" target="_blank" rel="noopener" class="btn btn--ghost">📘 Documentação</a>`,
+  }, `
+    ${newToken ? `<div class="alert alert--success">
+      <span class="alert__icon">🔑</span>
+      <div style="flex:1">
+        <strong>Chave criada com sucesso.</strong>
+        <p>Copie agora — ela <strong>não será exibida de novo</strong>.</p>
+        <pre class="token-display" onclick="navigator.clipboard?.writeText(this.textContent.trim()); this.classList.add('is-copied'); setTimeout(() => this.classList.remove('is-copied'), 1500)">${escapeHtml(newToken)}</pre>
+        <small class="muted">Clique no token pra copiar.</small>
       </div>
+    </div>` : ''}
 
-      <form method="POST" action="/admin/api-keys/new" class="editor-form">
-        <div class="field">
-          <label>Nome da chave (descrição)</label>
-          <input type="text" name="name" placeholder="ex: Bot de notícias, n8n, etc." required>
-        </div>
-        <div class="form-actions">
-          <button type="submit" class="btn btn--primary">+ Gerar nova chave</button>
-        </div>
-      </form>
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Gerar nova chave</h2>
+        <p class="card__desc">Cada chave deve ter um nome descritivo (de onde será usada).</p>
+      </header>
+      <div class="card__body">
+        <form method="POST" action="/admin/api-keys/new" class="inline-form">
+          <div class="field" style="flex:1">
+            <input type="text" name="name" placeholder="ex: Bot de notícias, n8n, Zapier..." required>
+          </div>
+          <button type="submit" class="btn btn--primary">Gerar chave</button>
+        </form>
+      </div>
+    </section>
 
-      <h2 style="margin-top:2rem">Chaves ativas</h2>
-      <table class="admin-table">
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Chaves ativas</h2>
+        <p class="card__desc">${keys.length} ${keys.length === 1 ? 'chave' : 'chaves'} ${keys.length === 0 ? '— gere uma acima' : ''}</p>
+      </header>
+      <table class="data-table">
         <thead><tr><th>Nome</th><th>Prefixo</th><th>Criada</th><th>Último uso</th><th></th></tr></thead>
         <tbody>
-          ${keys.length === 0 ? `<tr><td colspan="5" class="muted">Nenhuma chave ainda.</td></tr>` : keys.map((k) => `
+          ${keys.length === 0 ? `<tr><td colspan="5" class="empty-state">Nenhuma chave ainda.</td></tr>` : keys.map((k) => `
             <tr>
-              <td>${escapeHtml(k.name)}</td>
-              <td><code>${escapeHtml(k.key_prefix)}…</code></td>
-              <td>${formatDate(k.created_at)}</td>
-              <td>${k.last_used_at ? formatDate(k.last_used_at) : '<span class="muted">nunca</span>'}</td>
-              <td>
-                <form method="POST" action="/admin/api-keys/delete/${k.id}" onsubmit="return confirm('Revogar essa chave?')">
-                  <button class="btn btn--danger" type="submit">Revogar</button>
+              <td><strong>${escapeHtml(k.name)}</strong></td>
+              <td><code class="mono">${escapeHtml(k.key_prefix)}…</code></td>
+              <td><time class="muted">${formatDate(k.created_at)}</time></td>
+              <td>${k.last_used_at ? `<time class="muted">${formatDate(k.last_used_at)}</time>` : '<span class="muted">nunca</span>'}</td>
+              <td style="text-align:right">
+                <form method="POST" action="/admin/api-keys/delete/${k.id}" onsubmit="return confirm('Revogar a chave \\'${escapeHtml(k.name)}\\'?')" style="display:inline">
+                  <button class="btn btn--ghost btn--danger" type="submit">Revogar</button>
                 </form>
               </td>
             </tr>`).join('')}
         </tbody>
       </table>
-    </div>`,
-  );
+    </section>
+  `);
 }
 
 // ====== Admin: Cache ======
@@ -947,77 +1178,72 @@ export function renderAdminCache(
     ? new Date(data.lastPurgedAt).toLocaleString('pt-BR')
     : 'nunca';
 
-  return layout(
-    {
-      title: `Cache — ${env.SITE_TITLE}`,
-      description: 'Admin',
-      url: `${url.protocol}//${url.host}/admin/cache`,
-      siteTitle: env.SITE_TITLE,
-      bodyClass: 'admin',
-    },
-    `<div class="admin-import">
-      <header class="admin-header">
-        <h1>Cache</h1>
-        <form method="POST" action="/admin/logout" style="display:inline">
-          <button type="submit" class="btn">Sair</button>
-        </form>
-      </header>
-      ${adminTabs('cache')}
-
-      ${data.purgedNow ? `<div class="success">
-        <p><strong>✓ Cache invalidado.</strong> Nova versão: <code>${escapeHtml(data.version)}</code>.</p>
-        <p class="muted">As próximas visitas a cada página vão regenerar o cache. A limpeza acontece gradualmente, conforme cada página recebe acesso — sem causar sobrecarga.</p>
-      </div>` : ''}
-
-      <div class="kpi-grid">
-        <div class="kpi">
-          <div class="kpi__label">Versão do cache</div>
-          <div class="kpi__value">v${escapeHtml(data.version)}</div>
-        </div>
-        <div class="kpi">
-          <div class="kpi__label">Última limpeza</div>
-          <div class="kpi__value" style="font-size:1.125rem">${escapeHtml(lastPurgedText)}</div>
-        </div>
+  return adminShell(env, {
+    active: 'cache',
+    title: 'Cache',
+    subtitle: 'Gerenciamento de cache edge — invalidação gradual sem stampede',
+  }, `
+    ${data.purgedNow ? `<div class="alert alert--success">
+      <span class="alert__icon">✓</span>
+      <div>
+        <strong>Cache invalidado.</strong> Nova versão: <code>v${escapeHtml(data.version)}</code>.
+        <p>A regeneração acontece gradualmente conforme cada página recebe visitas.</p>
       </div>
+    </div>` : ''}
 
-      <section class="settings-section">
-        <h2>Como o cache funciona</h2>
-        <p class="muted" style="margin-bottom:1rem">
-          O site usa o cache do Cloudflare (Workers Cache API), por região (PoP). Cada página HTML
-          é guardada por <strong>10 min</strong> próximo aos visitantes e revalidada em background
-          por até 24h (stale-while-revalidate). Posts, home, RSS, sitemap são cacheados.
-        </p>
-        <p class="muted">
-          Páginas admin, API e imagens R2 já têm regras próprias (no-store / immutable) e não
-          são afetadas pela limpeza.
-        </p>
-      </section>
+    <section class="kpi-grid kpi-grid--2">
+      <div class="kpi-card">
+        <div class="kpi-card__label">Versão atual</div>
+        <div class="kpi-card__value mono">v${escapeHtml(data.version)}</div>
+        <div class="kpi-card__hint">Bumpa a cada limpeza</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-card__label">Última limpeza</div>
+        <div class="kpi-card__value" style="font-size:1.25rem">${escapeHtml(lastPurgedText)}</div>
+      </div>
+    </section>
 
-      <section class="settings-section">
-        <h2>Limpar cache</h2>
-        <p class="muted" style="margin-bottom:1rem">
-          Use após publicar/editar posts em lote, mudar configurações de AdSense ou ajustar o design.
-          A invalidação é <strong>imediata mas gradual</strong>: a versão é incrementada e cada página
-          é regenerada apenas quando alguém visitar — não há rebuild em massa do site.
-        </p>
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Como funciona</h2>
+      </header>
+      <div class="card__body">
+        <ul class="info-list">
+          <li><strong>Cache edge:</strong> cada HTML fica em cache no PoP do Cloudflare por <strong>10 min</strong>, revalidado em background por 24h (SWR).</li>
+          <li><strong>Páginas cacheadas:</strong> home, posts individuais, /privacidade, /doc, /sitemap.xml, /rss.xml.</li>
+          <li><strong>Não cacheado:</strong> /admin, /api, imagens R2 já têm regras próprias (no-store / immutable).</li>
+          <li><strong>Limpeza gradual:</strong> incrementa a versão. Cada PoP regenera só os paths que receberem acesso — sem sobrecarga em massa.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="card">
+      <header class="card__header">
+        <h2 class="card__title">Limpar cache</h2>
+        <p class="card__desc">Use após editar posts em lote, mudar AdSense ou ajustar o design.</p>
+      </header>
+      <div class="card__body">
         <form method="POST" action="/admin/cache/purge" id="purge-form">
-          <button type="submit" class="btn btn--danger" id="purge-btn">🧹 Limpar cache agora</button>
+          <button type="submit" class="btn btn--danger btn--lg" id="purge-btn">
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:6px"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 01-2 2H9a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a2 2 0 012-2h2a2 2 0 012 2v2"/></svg>
+            Limpar cache agora
+          </button>
         </form>
-      </section>
+      </div>
+    </section>
 
-      <script>
-      (() => {
-        const form = document.getElementById('purge-form');
-        const btn = document.getElementById('purge-btn');
-        form?.addEventListener('submit', () => {
-          if (!confirm('Confirma limpeza do cache?')) { event.preventDefault?.(); return false; }
-          btn.disabled = true;
-          btn.textContent = 'Limpando…';
-        });
-      })();
-      </script>
-    </div>`,
-  );
+    <script>
+    (() => {
+      const form = document.getElementById('purge-form');
+      const btn = document.getElementById('purge-btn');
+      form?.addEventListener('submit', (e) => {
+        if (!confirm('Confirmar limpeza do cache?')) { e.preventDefault(); return false; }
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner"></span> Limpando…';
+      });
+    })();
+    </script>
+  `);
 }
 
 // ====== Admin: editor ======
@@ -1042,68 +1268,84 @@ export function renderAdminEditor(
   };
   const pubDateInput = new Date(data.pub_date).toISOString().slice(0, 10);
 
-  return layout(
-    {
-      title: `${isNew ? 'Novo post' : 'Editar'} — ${env.SITE_TITLE}`,
-      description: 'Editor',
-      url: `${url.protocol}//${url.host}${url.pathname}`,
-      siteTitle: env.SITE_TITLE,
-      bodyClass: 'admin',
-    },
-    `<div class="admin-editor">
-      <header class="admin-header">
-        <h1>${isNew ? 'Novo post' : 'Editar post'}</h1>
-        <a href="/admin" class="btn">← Voltar</a>
-      </header>
-      ${error ? `<p class="error">${escapeHtml(error)}</p>` : ''}
-      <form method="POST" action="${isNew ? '/admin/new' : `/admin/edit/${post?.id}`}" class="editor-form">
-        <div class="field">
-          <label>Título</label>
-          <input type="text" name="title" value="${escapeHtml(data.title)}" required>
-        </div>
-        <div class="field">
-          <label>Slug (URL)</label>
-          <input type="text" name="slug" value="${escapeHtml(data.slug)}" placeholder="auto-gerado se vazio" pattern="[a-z0-9-]*">
-        </div>
-        <div class="field">
-          <label>Descrição (resumo)</label>
-          <textarea name="description" rows="2">${escapeHtml(data.description)}</textarea>
-        </div>
-        <div class="field-row">
+  void url;
+  return adminShell(env, {
+    active: 'posts',
+    title: isNew ? 'Novo post' : 'Editar post',
+    subtitle: isNew ? 'Crie um post novo no blog' : `Editando: ${data.title}`,
+    actions: `<a href="/admin/posts" class="btn btn--ghost">← Voltar</a>`,
+  }, `
+    ${error ? `<div class="alert alert--error"><span class="alert__icon">⚠</span><div>${escapeHtml(error)}</div></div>` : ''}
+    <form method="POST" action="${isNew ? '/admin/new' : `/admin/edit/${post?.id}`}">
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Conteúdo</h2>
+        </header>
+        <div class="card__body">
           <div class="field">
-            <label>Categoria</label>
-            <input type="text" name="category" value="${escapeHtml(data.category ?? '')}">
+            <label>Título</label>
+            <input type="text" name="title" value="${escapeHtml(data.title)}" required>
           </div>
           <div class="field">
-            <label>Tags (separadas por vírgula)</label>
-            <input type="text" name="tags" value="${escapeHtml(data.tags)}">
-          </div>
-        </div>
-        <div class="field-row">
-          <div class="field">
-            <label>Autor</label>
-            <input type="text" name="author" value="${escapeHtml(data.author)}">
+            <label>Slug (URL)</label>
+            <div class="input-group">
+              <span class="input-group__prefix">/</span>
+              <input type="text" name="slug" value="${escapeHtml(data.slug)}" placeholder="auto-gerado-do-titulo" pattern="[a-z0-9-]*">
+            </div>
+            <small class="field__help">Deixe em branco pra gerar automaticamente. Apenas <code>a-z 0-9 -</code>.</small>
           </div>
           <div class="field">
-            <label>Data de publicação</label>
-            <input type="date" name="pub_date" value="${pubDateInput}">
+            <label>Descrição (resumo)</label>
+            <textarea name="description" rows="2" placeholder="Resumo curto que aparece nos cards e meta description (até ~160 caracteres)">${escapeHtml(data.description)}</textarea>
+          </div>
+          <div class="field">
+            <label>Conteúdo</label>
+            <textarea name="content" rows="22" class="editor-content" placeholder="Texto do post (HTML ou Markdown)">${escapeHtml(data.content)}</textarea>
+            <small class="field__help">Aceita HTML ou Markdown. Imagens são processadas automaticamente.</small>
           </div>
         </div>
-        <div class="field">
-          <label>Imagem de capa (URL)</label>
-          <input type="url" name="hero_image" value="${escapeHtml(data.hero_image ?? '')}" placeholder="https://...">
+      </section>
+
+      <section class="card">
+        <header class="card__header">
+          <h2 class="card__title">Metadados</h2>
+        </header>
+        <div class="card__body">
+          <div class="field-row">
+            <div class="field">
+              <label>Categoria</label>
+              <input type="text" name="category" value="${escapeHtml(data.category ?? '')}" placeholder="Ex: Notícias">
+            </div>
+            <div class="field">
+              <label>Tags</label>
+              <input type="text" name="tags" value="${escapeHtml(data.tags)}" placeholder="separadas, por, vírgula">
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Autor</label>
+              <input type="text" name="author" value="${escapeHtml(data.author)}">
+            </div>
+            <div class="field">
+              <label>Data de publicação</label>
+              <input type="date" name="pub_date" value="${pubDateInput}">
+            </div>
+          </div>
+          <div class="field">
+            <label>Imagem de capa</label>
+            <input type="url" name="hero_image" value="${escapeHtml(data.hero_image ?? '')}" placeholder="https://...">
+            <small class="field__help">URL absoluta. Aparece como hero do post + thumbnail nos cards.</small>
+          </div>
+          <div class="field field--check">
+            <label class="check"><input type="checkbox" name="draft" value="1" ${data.draft ? 'checked' : ''}> <span>Salvar como rascunho (não fica visível publicamente)</span></label>
+          </div>
         </div>
-        <div class="field">
-          <label>Conteúdo (Markdown)</label>
-          <textarea name="content" rows="20" class="editor-content">${escapeHtml(data.content)}</textarea>
-        </div>
-        <div class="field field--check">
-          <label><input type="checkbox" name="draft" value="1" ${data.draft ? 'checked' : ''}> Salvar como rascunho</label>
-        </div>
-        <div class="form-actions">
-          <button type="submit" class="btn btn--primary">${isNew ? 'Criar post' : 'Salvar alterações'}</button>
-        </div>
-      </form>
-    </div>`,
-  );
+      </section>
+
+      <div class="sticky-actions">
+        <a href="/admin/posts" class="btn btn--ghost">Cancelar</a>
+        <button type="submit" class="btn btn--primary btn--lg">${isNew ? 'Publicar post' : 'Salvar alterações'}</button>
+      </div>
+    </form>
+  `);
 }
