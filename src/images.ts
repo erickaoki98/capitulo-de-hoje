@@ -198,7 +198,7 @@ export async function migrateImagesWithBudget(
 ): Promise<{
   urlMap: Map<string, string>;
   stats: ImageMigrationStats;
-  exhausted: boolean; // true se bateu no limite e tem mais pra fazer
+  exhausted: boolean;
 }> {
   const unique = Array.from(new Set(urls));
   const urlMap = new Map<string, string>();
@@ -211,26 +211,33 @@ export async function migrateImagesWithBudget(
   };
 
   let exhausted = false;
-  let processedThisRun = 0;
+  // Paraleliza em workers (Promise.all de N URLs por vez)
+  const CONCURRENCY = 8;
+  let nextIdx = 0;
 
-  for (const url of unique) {
-    // checa orçamento
-    const elapsed = Date.now() - budget.startedAt;
-    if (elapsed > budget.maxWallTimeMs || processedThisRun >= budget.maxImages) {
-      exhausted = true;
-      break;
-    }
+  async function worker(): Promise<void> {
+    while (true) {
+      // pega próximo URL
+      const idx = nextIdx++;
+      if (idx >= unique.length) return;
+      if (idx >= budget.maxImages) { exhausted = true; return; }
+      if (Date.now() - budget.startedAt > budget.maxWallTimeMs) { exhausted = true; return; }
 
-    const result = await migrateOne(url, bucket);
-    processedThisRun++;
-    if ('error' in result) {
-      stats.failed.push({ url, error: result.error });
-    } else {
-      urlMap.set(url, result.newPath);
-      if (result.skipped) stats.skipped++;
-      else stats.migrated++;
+      const url = unique[idx];
+      const result = await migrateOne(url, bucket);
+      if ('error' in result) {
+        stats.failed.push({ url, error: result.error });
+      } else {
+        urlMap.set(url, result.newPath);
+        if (result.skipped) stats.skipped++;
+        else stats.migrated++;
+      }
     }
   }
+
+  const workers: Promise<void>[] = [];
+  for (let i = 0; i < CONCURRENCY; i++) workers.push(worker());
+  await Promise.all(workers);
 
   return { urlMap, stats, exhausted };
 }

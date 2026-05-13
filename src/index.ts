@@ -4,13 +4,12 @@ import {
   createPost, updatePost, deletePost,
   upsertRedirect, findRedirect,
   countPostsWithExternalImages, countPostsWithAnyImages,
-  nextPostsToMigrate, updatePostContent,
+  nextPostsToMigrate, updatePostContent, markPostsMigrated,
   createPostsBatch, upsertRedirectsBatch, existingSlugs,
 } from './db';
 import {
   renderHome, renderPost, render404,
   renderLogin, renderAdminDashboard, renderAdminEditor,
-  renderAdminImport, renderAdminMigrate,
 } from './render';
 import { parseWxr, streamWxrCollect } from './wxr';
 import type { WxrPost } from './wxr';
@@ -302,12 +301,6 @@ ${urls}
         return new Response(null, { status: 303, headers: { Location: '/admin' } });
       }
 
-      // ===== Admin: import (GET) =====
-      if (pathname === '/admin/import' && request.method === 'GET') {
-        if (!authed) return redirectToLogin();
-        return new Response(renderAdminImport(env, request), { headers: NO_CACHE_HEADERS });
-      }
-
       // ===== Admin: import — endpoint legado (compat com curl simples) =====
       // Aceita POST direto se o arquivo for pequeno o suficiente.
       // Estratégia chunked é via /admin/import/chunk + /admin/import/finalize.
@@ -402,13 +395,7 @@ ${urls}
         return new Response('{"ok":true}', { headers: { 'Content-Type': 'application/json' } });
       }
 
-      // ===== Admin: migrate images (GET) — UI =====
-      if (pathname === '/admin/migrate-images' && request.method === 'GET') {
-        if (!authed) return redirectToLogin();
-        return new Response(renderAdminMigrate(env, request), { headers: NO_CACHE_HEADERS });
-      }
-
-      // ===== Admin: migrate images status (JSON) =====
+      // ===== Admin: migrate images status (JSON) — usado por script externo =====
       if (pathname === '/admin/migrate-images/status' && request.method === 'GET') {
         if (!authed) return new Response('{"error":"unauthorized"}', { status: 401, headers: { 'Content-Type': 'application/json' } });
         const [pending, totalWithImages] = await Promise.all([
@@ -427,52 +414,50 @@ ${urls}
         if (!authed) return new Response('{"error":"unauthorized"}', { status: 401, headers: { 'Content-Type': 'application/json' } });
 
         const startedAt = Date.now();
-        const BATCH_SIZE = 5;
+        const BATCH_SIZE = 25;
         const batch = await nextPostsToMigrate(env.DB, BATCH_SIZE);
 
-        const perPost: Array<{ slug: string; title: string; migrated: number; failed: number; skipped: number; partial: boolean }> = [];
-        const globalFailed: Array<{ url: string; error: string }> = [];
-
+        // 1) Coleta TODAS as URLs únicas do batch
+        const allUrls = new Set<string>();
         for (const post of batch) {
-          if (Date.now() - startedAt > 20_000) break;
+          if (post.hero_image && /^https?:\/\//.test(post.hero_image)) allUrls.add(post.hero_image);
+          for (const u of extractImageUrls(post.content)) allUrls.add(u);
+        }
+        const urlsArr = Array.from(allUrls);
 
-          const urls = [
-            ...(post.hero_image && /^https?:\/\//.test(post.hero_image) ? [post.hero_image] : []),
-            ...extractImageUrls(post.content),
-          ];
+        // 2) Migra TODAS em paralelo (8 concurrent)
+        const { urlMap, stats } = await migrateImagesWithBudget(urlsArr, env.IMAGES, {
+          startedAt,
+          maxWallTimeMs: 25_000,
+          maxImages: 500,
+        });
 
-          if (urls.length === 0) {
-            perPost.push({ slug: post.slug, title: post.title, migrated: 0, failed: 0, skipped: 0, partial: false });
-            continue;
-          }
-
-          const { urlMap, stats, exhausted } = await migrateImagesWithBudget(urls, env.IMAGES, {
-            startedAt,
-            maxWallTimeMs: 20_000,
-            maxImages: 40,
-          });
-
+        // 3) Atualiza posts em paralelo (D1 binding suporta concurrent)
+        const perPost: Array<{ slug: string; title: string; migrated: number; failed: number; skipped: number; partial: boolean }> = [];
+        await Promise.all(batch.map(async (post) => {
           const newContent = rewriteHtmlUrls(post.content, urlMap);
           const newHero = post.hero_image && urlMap.has(post.hero_image)
             ? urlMap.get(post.hero_image)!
             : post.hero_image;
-
           if (newContent !== post.content || newHero !== post.hero_image) {
             await updatePostContent(env.DB, post.id, newContent, newHero);
           }
-
+          const urls = [
+            ...(post.hero_image && /^https?:\/\//.test(post.hero_image) ? [post.hero_image] : []),
+            ...extractImageUrls(post.content),
+          ];
+          let mig = 0;
+          for (const u of urls) if (urlMap.has(u)) mig++;
           perPost.push({
-            slug: post.slug,
-            title: post.title,
-            migrated: stats.migrated,
-            failed: stats.failed.length,
-            skipped: stats.skipped,
-            partial: exhausted,
+            slug: post.slug, title: post.title,
+            migrated: mig, failed: urls.length - mig, skipped: 0,
+            partial: false,
           });
-          globalFailed.push(...stats.failed);
+        }));
 
-          if (exhausted) break;
-        }
+        // 4) Marca TODOS os posts do batch como "migração tentada" — mesmo que falhem
+        //    algumas imagens. Isso evita loop infinito em posts com imagens 404.
+        await markPostsMigrated(env.DB, batch.map((p) => p.id));
 
         const [remaining, totalWithImages] = await Promise.all([
           countPostsWithExternalImages(env.DB),
@@ -480,9 +465,9 @@ ${urls}
         ]);
 
         return new Response(JSON.stringify({
-          processedPosts: perPost.length,
+          processedPosts: batch.length,
           perPost,
-          failed: globalFailed.slice(0, 20),
+          failed: stats.failed.slice(0, 20),
           elapsedMs: Date.now() - startedAt,
           pending: remaining,
           totalWithImages,

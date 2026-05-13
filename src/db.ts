@@ -133,44 +133,55 @@ export async function findRedirect(db: D1Database, fromPath: string): Promise<st
 }
 
 /**
- * Conta posts com URLs externas (não em /img/) no hero_image ou content.
- * Usado para a página de migração de imagens.
+ * Conta posts pendentes de migração: têm URLs externas E ainda não tentamos migrar.
  */
 export async function countPostsWithExternalImages(db: D1Database): Promise<number> {
   const row = await db.prepare(
     `SELECT COUNT(*) AS n FROM posts
-     WHERE hero_image LIKE 'http%'
-        OR content LIKE '%<img%src="http%'
-        OR content LIKE '%<img%src=''http%'`,
+     WHERE images_migrated_at IS NULL
+       AND (hero_image LIKE 'http%'
+            OR content LIKE '%<img%src="http%'
+            OR content LIKE '%<img%src=''http%')`,
   ).first<{ n: number }>();
   return row?.n ?? 0;
 }
 
 /**
- * Conta posts que JÁ TIVERAM imagens (hero ou content), seja externa ou local.
- * Usado pra calcular o total da progress bar.
+ * Conta posts que têm qualquer imagem (pra denominator da progress bar).
  */
 export async function countPostsWithAnyImages(db: D1Database): Promise<number> {
   const row = await db.prepare(
     `SELECT COUNT(*) AS n FROM posts
-     WHERE hero_image IS NOT NULL
-        OR content LIKE '%<img%'`,
+     WHERE hero_image IS NOT NULL OR content LIKE '%<img%'`,
   ).first<{ n: number }>();
   return row?.n ?? 0;
 }
 
 /**
- * Pega o próximo lote de posts que ainda têm imagens externas.
+ * Pega o próximo lote de posts pendentes de migração.
  */
 export async function nextPostsToMigrate(db: D1Database, limit: number): Promise<Post[]> {
   const { results } = await db.prepare(
     `SELECT * FROM posts
-     WHERE hero_image LIKE 'http%'
-        OR content LIKE '%<img%src="http%'
-        OR content LIKE '%<img%src=''http%'
+     WHERE images_migrated_at IS NULL
+       AND (hero_image LIKE 'http%'
+            OR content LIKE '%<img%src="http%'
+            OR content LIKE '%<img%src=''http%')
      ORDER BY id ASC LIMIT ?`,
   ).bind(limit).all<Post>();
   return results ?? [];
+}
+
+/**
+ * Marca múltiplos posts como tendo migração de imagens tentada.
+ */
+export async function markPostsMigrated(db: D1Database, ids: number[]): Promise<void> {
+  if (ids.length === 0) return;
+  const now = Date.now();
+  const stmts = ids.map((id) =>
+    db.prepare('UPDATE posts SET images_migrated_at = ? WHERE id = ?').bind(now, id),
+  );
+  await db.batch(stmts);
 }
 
 /**
