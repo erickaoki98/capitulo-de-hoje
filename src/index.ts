@@ -12,11 +12,15 @@ import {
   listApiKeys, insertApiKey, findApiKeyByHash, touchApiKey, deleteApiKey,
 } from './db';
 import {
-  renderHome, renderPost, render404, renderPrivacy,
+  renderHome, renderPost, render404, renderPrivacy, renderDocs,
   renderLogin, renderAdminDashboard, renderAdminEditor,
   renderAdminSettings, renderAdminAnalytics, renderAdminApiKeys,
+  renderAdminCache,
   type SiteAdSettings,
 } from './render';
+import {
+  readCache, writeCache, bumpCacheVersion, cacheStatus,
+} from './cache';
 import { parseWxr, streamWxrCollect } from './wxr';
 import type { WxrPost } from './wxr';
 import {
@@ -132,18 +136,38 @@ export default {
 
       // ===== Public: home =====
       if (pathname === '/' && request.method === 'GET') {
+        const cached = await readCache(env, request);
+        if (cached) {
+          ctx.waitUntil(recordPageview(env.DB, '/').catch(() => {}));
+          return cached;
+        }
         const [posts, ads] = await Promise.all([
           listPosts(env.DB, { includeDrafts: false, limit: 60 }),
           loadAdSettings(env),
         ]);
         ctx.waitUntil(recordPageview(env.DB, '/').catch(() => {}));
-        return new Response(renderHome(env, request, posts, ads), { headers: PUBLIC_CACHE_HEADERS });
+        const resp = new Response(renderHome(env, request, posts, ads), { headers: PUBLIC_CACHE_HEADERS });
+        return writeCache(env, ctx, request, resp);
       }
 
       // ===== Public: privacy =====
       if (pathname === '/privacidade' && request.method === 'GET') {
+        const cached = await readCache(env, request);
+        if (cached) {
+          ctx.waitUntil(recordPageview(env.DB, '/privacidade').catch(() => {}));
+          return cached;
+        }
         ctx.waitUntil(recordPageview(env.DB, '/privacidade').catch(() => {}));
-        return new Response(renderPrivacy(env, request), { headers: PUBLIC_CACHE_HEADERS });
+        const resp = new Response(renderPrivacy(env, request), { headers: PUBLIC_CACHE_HEADERS });
+        return writeCache(env, ctx, request, resp);
+      }
+
+      // ===== Public: docs =====
+      if (pathname === '/doc' && request.method === 'GET') {
+        const cached = await readCache(env, request);
+        if (cached) return cached;
+        const resp = new Response(renderDocs(env, request), { headers: PUBLIC_CACHE_HEADERS });
+        return writeCache(env, ctx, request, resp);
       }
 
       // ===== Legacy /p/<slug> → 301 to /<slug> =====
@@ -172,6 +196,8 @@ Sitemap: ${canonical}/sitemap.xml
 
       // ===== Sitemap =====
       if (pathname === '/sitemap.xml' && request.method === 'GET') {
+        const cached = await readCache(env, request);
+        if (cached) return cached;
         const posts = await listPosts(env.DB, { includeDrafts: false, limit: 1000 });
         const base = canonicalUrl(env, url);
         const urls = [
@@ -182,23 +208,26 @@ Sitemap: ${canonical}/sitemap.xml
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${urls}
 </urlset>`;
-        return new Response(xml, {
+        const resp = new Response(xml, {
           headers: {
             'Content-Type': 'application/xml; charset=utf-8',
             'Cache-Control': 'public, max-age=3600',
           },
         });
+        return writeCache(env, ctx, request, resp);
       }
 
       // ===== RSS feed =====
       if (pathname === '/rss.xml' && request.method === 'GET') {
+        const cached = await readCache(env, request);
+        if (cached) return cached;
         const posts = await listPosts(env.DB, { includeDrafts: false, limit: 50 });
         const siteUrl = `${url.protocol}//${url.host}`;
         const items = posts.map((p) => `
   <item>
     <title>${escapeXml(p.title)}</title>
-    <link>${siteUrl}/p/${p.slug}</link>
-    <guid>${siteUrl}/p/${p.slug}</guid>
+    <link>${siteUrl}/${p.slug}</link>
+    <guid>${siteUrl}/${p.slug}</guid>
     <pubDate>${new Date(p.pub_date).toUTCString()}</pubDate>
     <description>${escapeXml(p.description)}</description>
   </item>`).join('');
@@ -209,12 +238,13 @@ ${urls}
 <description>${escapeXml(env.SITE_DESCRIPTION)}</description>
 <language>pt-BR</language>${items}
 </channel></rss>`;
-        return new Response(xml, {
+        const resp = new Response(xml, {
           headers: {
             'Content-Type': 'application/rss+xml; charset=utf-8',
             'Cache-Control': 'public, max-age=300',
           },
         });
+        return writeCache(env, ctx, request, resp);
       }
 
       // ===== Admin: login (GET) =====
@@ -544,6 +574,23 @@ ${urls}
         return new Response(null, { status: 303, headers: { Location: '/admin/api-keys' } });
       }
 
+      // ============= Admin: Cache =============
+      if (pathname === '/admin/cache' && request.method === 'GET') {
+        if (!authed) return redirectToLogin();
+        const status = await cacheStatus(env);
+        return new Response(renderAdminCache(env, request, {
+          version: status.version,
+          lastPurgedAt: status.lastPurgedAt,
+          purgedNow: url.searchParams.get('purged') === '1',
+        }), { headers: NO_CACHE_HEADERS });
+      }
+
+      if (pathname === '/admin/cache/purge' && request.method === 'POST') {
+        if (!authed) return redirectToLogin();
+        await bumpCacheVersion(env);
+        return new Response(null, { status: 303, headers: { Location: '/admin/cache?purged=1' } });
+      }
+
       // ============= External Posting API =============
       // POST /api/posts — auth: Bearer cdh_xxx
       if (pathname === '/api/posts' && request.method === 'POST') {
@@ -617,9 +664,14 @@ ${urls}
         }
         const slug = pathname.slice(1);
         if (/^[a-z0-9-]+$/.test(slug)) {
+          // try cache first
+          const cached = await readCache(env, request);
+          if (cached) {
+            ctx.waitUntil(recordPageview(env.DB, pathname).catch(() => {}));
+            return cached;
+          }
           const post = await getPostBySlug(env.DB, slug);
           if (post && !post.draft) {
-            // related: top 48h excluding this slug, fallback to recent if empty
             const [topViews, ads] = await Promise.all([
               topPostsByViews(env.DB, 48, 12, pathname),
               loadAdSettings(env),
@@ -628,12 +680,10 @@ ${urls}
             let relatedPosts = slugs.length > 0
               ? await getPostsBySlugList(env.DB, slugs)
               : [];
-            // ordenar pela ordem de views (mais visto primeiro)
             const slugOrder = new Map(slugs.map((s, i) => [s, i]));
             relatedPosts = relatedPosts.sort((a, b) =>
               (slugOrder.get(a.slug) ?? 999) - (slugOrder.get(b.slug) ?? 999),
             );
-            // se não tem dados suficientes, complementa com recentes
             if (relatedPosts.length < 6) {
               const recent = await listPosts(env.DB, { includeDrafts: false, limit: 20 });
               for (const r of recent) {
@@ -644,10 +694,11 @@ ${urls}
               }
             }
             ctx.waitUntil(recordPageview(env.DB, pathname).catch(() => {}));
-            return new Response(
+            const resp = new Response(
               renderPost(env, request, post, relatedPosts.slice(0, 12), ads),
               { headers: PUBLIC_CACHE_HEADERS },
             );
+            return writeCache(env, ctx, request, resp);
           }
         }
         // Não bateu como slug direto → checa tabela de redirects (URL antiga do WP)

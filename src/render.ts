@@ -118,9 +118,9 @@ ${headInject}
 <body class="${bodyClass}">
 <header class="site-header">
   <div class="container">
-    <a href="/" class="site-logo">${escapeHtml(siteTitle)}</a>
-    <nav>${bodyClass.includes('admin')
-      ? '<a href="/admin">Admin</a>'
+    <a href="${isAdmin ? '/admin' : '/'}" class="site-logo">${escapeHtml(siteTitle)}${isAdmin ? ' <span class="site-logo__suffix">admin</span>' : ''}</a>
+    <nav>${isAdmin
+      ? '<a href="/" target="_blank" rel="noopener">Ver site →</a>'
       : '<a href="/">Início</a><a href="/privacidade">Privacidade</a><a href="/rss.xml">RSS</a>'}</nav>
   </div>
 </header>
@@ -417,6 +417,138 @@ export function renderPrivacy(env: Env, request: Request): string {
   );
 }
 
+// ====== API Documentation ======
+export function renderDocs(env: Env, request: Request): string {
+  const url = new URL(request.url);
+  const siteUrl = siteCanonical(env, url);
+  const base = `${url.protocol}//${url.host}`;
+
+  return layout(
+    {
+      title: `Documentação da API — ${env.SITE_TITLE}`,
+      description: 'Documentação técnica da API para publicação externa de posts.',
+      url: `${siteUrl}/doc`,
+      siteTitle: env.SITE_TITLE,
+      bodyClass: 'is-doc',
+    },
+    `<article class="post privacy">
+  <header class="post__header">
+    <h1 class="post__title">Documentação da API</h1>
+    <p class="post__meta"><span>Atualizado em ${new Date().toLocaleDateString('pt-BR', { year: 'numeric', month: 'long', day: 'numeric' })}</span></p>
+  </header>
+  <div class="prose">
+    <p>Esta API permite criar posts no ${escapeHtml(env.SITE_TITLE)} a partir de sistemas externos (automações, bots, dashboards próprios, n8n, Zapier custom webhook, etc.).</p>
+
+    <h2 id="auth">Autenticação</h2>
+    <p>Toda requisição precisa de um <strong>Bearer token</strong> no header <code>Authorization</code>. Gere sua chave no painel:</p>
+    <p><a href="/admin/api-keys" class="btn btn--primary">Ir para o painel de API Keys →</a></p>
+    <pre><code>Authorization: Bearer cdh_xxxxxxxxxxxxxxxxxxxxxxxxx</code></pre>
+    <p>O token aparece <strong>uma única vez</strong> no momento da criação — anote em local seguro. Para revogar uma chave, vá no painel e clique em <em>Revogar</em>.</p>
+
+    <h2 id="endpoint">Endpoint</h2>
+    <pre><code>POST ${base}/api/posts
+Content-Type: application/json
+Authorization: Bearer cdh_xxx</code></pre>
+
+    <h2 id="body">Corpo da requisição (JSON)</h2>
+    <table class="docs-table">
+      <thead><tr><th>Campo</th><th>Tipo</th><th>Obrig.?</th><th>Descrição</th></tr></thead>
+      <tbody>
+        <tr><td><code>title</code></td><td>string</td><td>✓</td><td>Título do post</td></tr>
+        <tr><td><code>content</code></td><td>string</td><td>✓</td><td>Corpo do post em HTML (ou Markdown — vai ser renderizado)</td></tr>
+        <tr><td><code>slug</code></td><td>string</td><td></td><td>URL final. Se omitido, é gerado a partir do título. Aceita apenas <code>a-z0-9-</code></td></tr>
+        <tr><td><code>description</code></td><td>string</td><td></td><td>Resumo (até ~160 chars). Se omitido, gerado do <code>content</code></td></tr>
+        <tr><td><code>category</code></td><td>string</td><td></td><td>Categoria do post</td></tr>
+        <tr><td><code>tags</code></td><td>string[]</td><td></td><td>Lista de tags (array de strings)</td></tr>
+        <tr><td><code>author</code></td><td>string</td><td></td><td>Nome do autor (default: "Erick Aoki")</td></tr>
+        <tr><td><code>hero_image</code></td><td>string</td><td></td><td>URL absoluta da imagem de capa</td></tr>
+        <tr><td><code>pub_date</code></td><td>string ISO</td><td></td><td>Data de publicação no formato ISO 8601 (default: agora)</td></tr>
+        <tr><td><code>draft</code></td><td>boolean</td><td></td><td>Se <code>true</code>, o post não aparece publicamente (default: <code>false</code>)</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="response">Resposta</h2>
+    <p><strong>201 Created:</strong></p>
+    <pre><code>{
+  "id": 27586,
+  "slug": "titulo-do-post",
+  "url": "${base}/titulo-do-post"
+}</code></pre>
+
+    <h3>Códigos de erro</h3>
+    <table class="docs-table">
+      <thead><tr><th>Status</th><th>Significado</th></tr></thead>
+      <tbody>
+        <tr><td>400</td><td>JSON inválido, campo obrigatório faltando, slug inválido, pub_date malformado</td></tr>
+        <tr><td>401</td><td>Header Authorization faltando ou key inválida/revogada</td></tr>
+        <tr><td>409</td><td>Já existe um post com esse slug</td></tr>
+        <tr><td>500</td><td>Erro interno (raríssimo — entre em contato)</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="exemplos">Exemplos</h2>
+
+    <h3>curl</h3>
+    <pre><code>curl -X POST ${base}/api/posts \\
+  -H "Authorization: Bearer cdh_xxxxxxxxx" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "title": "Como migrar do WP para Cloudflare",
+    "content": "&lt;p&gt;Conteúdo HTML do post...&lt;/p&gt;",
+    "tags": ["tutorial","cloudflare"],
+    "category": "Tutoriais",
+    "hero_image": "https://exemplo.com/capa.jpg"
+  }'</code></pre>
+
+    <h3>Node.js (fetch)</h3>
+    <pre><code>const res = await fetch('${base}/api/posts', {
+  method: 'POST',
+  headers: {
+    'Authorization': 'Bearer ' + process.env.CDH_API_KEY,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    title: 'Como migrar do WP para Cloudflare',
+    content: '&lt;p&gt;Conteúdo HTML do post...&lt;/p&gt;',
+    tags: ['tutorial', 'cloudflare'],
+    hero_image: 'https://exemplo.com/capa.jpg',
+  }),
+});
+const data = await res.json();
+console.log(data.url);  // URL final do post</code></pre>
+
+    <h3>Python (requests)</h3>
+    <pre><code>import os, requests
+
+r = requests.post(
+    "${base}/api/posts",
+    headers={
+        "Authorization": f"Bearer {os.environ['CDH_API_KEY']}",
+        "Content-Type": "application/json",
+    },
+    json={
+        "title": "Como migrar do WP para Cloudflare",
+        "content": "&lt;p&gt;Conteúdo HTML do post...&lt;/p&gt;",
+        "tags": ["tutorial", "cloudflare"],
+    },
+)
+print(r.json())</code></pre>
+
+    <h2 id="limites">Limites & boas práticas</h2>
+    <ul>
+      <li>Não há rate limit explícito (por enquanto), mas evite mais de <strong>10 requests por segundo</strong> com a mesma chave.</li>
+      <li>O <code>content</code> pode ter HTML; tags como <code>&lt;script&gt;</code> são preservadas — só envie o que vai publicar.</li>
+      <li>Para reaproveitar imagens já no R2 do site, use URLs <code>/img/&lt;hash&gt;.&lt;ext&gt;</code> em vez de externas.</li>
+      <li>Slugs duplicados retornam <code>409</code>. Se você quer atualizar um post existente, use o painel manualmente.</li>
+    </ul>
+
+    <h2 id="suporte">Suporte</h2>
+    <p>Problemas com a API? <a href="mailto:contato@capitulodehoje.com.br">contato@capitulodehoje.com.br</a></p>
+  </div>
+</article>`,
+  );
+}
+
 // ====== 404 ======
 export function render404(env: Env, request: Request): string {
   const url = new URL(request.url);
@@ -508,12 +640,14 @@ export function renderAdminDashboard(env: Env, request: Request, posts: Post[]):
 }
 
 // ====== Admin: shared shell with tabs ======
-function adminTabs(active: 'posts' | 'settings' | 'analytics' | 'api-keys'): string {
-  const links: Array<[string, string, typeof active]> = [
+type AdminTab = 'posts' | 'settings' | 'analytics' | 'api-keys' | 'cache';
+function adminTabs(active: AdminTab): string {
+  const links: Array<[string, string, AdminTab]> = [
     ['/admin', 'Posts', 'posts'],
     ['/admin/settings', 'Configurações', 'settings'],
     ['/admin/analytics', 'Analytics', 'analytics'],
-    ['/admin/api-keys', 'API Keys', 'api-keys'],
+    ['/admin/api-keys', 'API', 'api-keys'],
+    ['/admin/cache', 'Cache', 'cache'],
   ];
   return `<nav class="admin-tabs">${links.map(([href, label, k]) =>
     `<a class="admin-tab ${active === k ? 'is-active' : ''}" href="${href}">${label}</a>`,
@@ -729,23 +863,9 @@ export function renderAdminApiKeys(
       </div>` : ''}
 
       <div class="import-info">
-        <p>Use a API para publicar posts a partir de sistemas externos:</p>
-        <pre class="api-example">POST https://${url.host}/api/posts
-Authorization: Bearer cdh_xxxxxxxx...
-Content-Type: application/json
-
-{
-  "title": "Título do post",
-  "slug": "titulo-do-post",          // opcional (gerado do título)
-  "description": "Resumo curto",
-  "content": "&lt;p&gt;Conteúdo HTML ou markdown&lt;/p&gt;",
-  "category": "Notícias",            // opcional
-  "tags": ["tag1", "tag2"],          // opcional
-  "author": "Erick Aoki",            // opcional
-  "hero_image": "https://...",       // opcional
-  "pub_date": "2026-05-13T10:00:00Z",// opcional (usa now)
-  "draft": false                     // opcional
-}</pre>
+        <p><strong>Para publicar posts via API:</strong></p>
+        <p>1. Gere uma chave abaixo. 2. Envie POST para <code>/api/posts</code> com o token no header <code>Authorization</code>.</p>
+        <p><a href="/doc" target="_blank" rel="noopener" class="btn btn--primary">📘 Documentação completa em /doc →</a></p>
       </div>
 
       <form method="POST" action="/admin/api-keys/new" class="editor-form">
@@ -776,6 +896,93 @@ Content-Type: application/json
             </tr>`).join('')}
         </tbody>
       </table>
+    </div>`,
+  );
+}
+
+// ====== Admin: Cache ======
+export function renderAdminCache(
+  env: Env, request: Request,
+  data: {
+    version: string;
+    lastPurgedAt: number | null;
+    purgedNow?: boolean;
+  },
+): string {
+  const url = new URL(request.url);
+  const lastPurgedText = data.lastPurgedAt
+    ? new Date(data.lastPurgedAt).toLocaleString('pt-BR')
+    : 'nunca';
+
+  return layout(
+    {
+      title: `Cache — ${env.SITE_TITLE}`,
+      description: 'Admin',
+      url: `${url.protocol}//${url.host}/admin/cache`,
+      siteTitle: env.SITE_TITLE,
+      bodyClass: 'admin',
+    },
+    `<div class="admin-import">
+      <header class="admin-header">
+        <h1>Cache</h1>
+        <form method="POST" action="/admin/logout" style="display:inline">
+          <button type="submit" class="btn">Sair</button>
+        </form>
+      </header>
+      ${adminTabs('cache')}
+
+      ${data.purgedNow ? `<div class="success">
+        <p><strong>✓ Cache invalidado.</strong> Nova versão: <code>${escapeHtml(data.version)}</code>.</p>
+        <p class="muted">As próximas visitas a cada página vão regenerar o cache. A limpeza acontece gradualmente, conforme cada página recebe acesso — sem causar sobrecarga.</p>
+      </div>` : ''}
+
+      <div class="kpi-grid">
+        <div class="kpi">
+          <div class="kpi__label">Versão do cache</div>
+          <div class="kpi__value">v${escapeHtml(data.version)}</div>
+        </div>
+        <div class="kpi">
+          <div class="kpi__label">Última limpeza</div>
+          <div class="kpi__value" style="font-size:1.125rem">${escapeHtml(lastPurgedText)}</div>
+        </div>
+      </div>
+
+      <section class="settings-section">
+        <h2>Como o cache funciona</h2>
+        <p class="muted" style="margin-bottom:1rem">
+          O site usa o cache do Cloudflare (Workers Cache API), por região (PoP). Cada página HTML
+          é guardada por <strong>10 min</strong> próximo aos visitantes e revalidada em background
+          por até 24h (stale-while-revalidate). Posts, home, RSS, sitemap são cacheados.
+        </p>
+        <p class="muted">
+          Páginas admin, API e imagens R2 já têm regras próprias (no-store / immutable) e não
+          são afetadas pela limpeza.
+        </p>
+      </section>
+
+      <section class="settings-section">
+        <h2>Limpar cache</h2>
+        <p class="muted" style="margin-bottom:1rem">
+          Use após publicar/editar posts em lote, mudar configurações de AdSense ou ajustar o design.
+          A invalidação é <strong>imediata mas gradual</strong>: a versão é incrementada e cada página
+          é regenerada apenas quando alguém visitar — não há rebuild em massa do site.
+        </p>
+        <form method="POST" action="/admin/cache/purge" id="purge-form">
+          <button type="submit" class="btn btn--danger" id="purge-btn">🧹 Limpar cache agora</button>
+        </form>
+      </section>
+
+      <script>
+      (() => {
+        const form = document.getElementById('purge-form');
+        const btn = document.getElementById('purge-btn');
+        form?.addEventListener('submit', () => {
+          if (!confirm('Confirma limpeza do cache?')) { event.preventDefault?.(); return false; }
+          btn.disabled = true;
+          btn.textContent = 'Limpando…';
+        });
+      })();
+      </script>
     </div>`,
   );
 }
