@@ -1,4 +1,4 @@
-import type { Env, PostInput } from './types';
+import type { Env, Post, PostInput } from './types';
 import {
   listPosts, getPostBySlug, getPostById,
   createPost, updatePost, deletePost,
@@ -7,7 +7,7 @@ import {
   nextPostsToMigrate, updatePostContent, markPostsMigrated,
   createPostsBatch, upsertRedirectsBatch, existingSlugs,
   getSetting, setSetting, getAllSettings,
-  recordPageview, topPostsByViews, getPostsBySlugList,
+  recordPageview, topPostsByViews, getPostsBySlugList, viewsForPath,
   pageviewsSummary, pageviewsByDay,
   listApiKeys, insertApiKey, findApiKeyByHash, touchApiKey, deleteApiKey,
 } from './db';
@@ -16,7 +16,7 @@ import {
   renderLogin, renderAdminDashboard, renderAdminPosts, renderAdminEditor,
   renderAdminSettings, renderAdminAnalytics, renderAdminApiKeys,
   renderAdminCache,
-  type SiteAdSettings,
+  type SiteAdSettings, type SiteTypography,
 } from './render';
 import {
   readCache, writeCache, bumpCacheVersion, cacheStatus,
@@ -141,12 +141,13 @@ export default {
           ctx.waitUntil(recordPageview(env.DB, '/').catch(() => {}));
           return cached;
         }
-        const [posts, ads] = await Promise.all([
+        const [posts, ads, typo] = await Promise.all([
           listPosts(env.DB, { includeDrafts: false, limit: 60 }),
           loadAdSettings(env),
+          loadTypography(env),
         ]);
         ctx.waitUntil(recordPageview(env.DB, '/').catch(() => {}));
-        const resp = new Response(renderHome(env, request, posts, ads), { headers: PUBLIC_CACHE_HEADERS });
+        const resp = new Response(renderHome(env, request, posts, ads, typo), { headers: PUBLIC_CACHE_HEADERS });
         return writeCache(env, ctx, request, resp);
       }
 
@@ -516,10 +517,17 @@ ${urls}
       if (pathname === '/admin/settings' && request.method === 'GET') {
         if (!authed) return redirectToLogin();
         const settings = await getAllSettings(env.DB);
+        const titleScale = (['sm','md','lg','xl'] as const).includes(settings['typography.title_scale'] as any)
+          ? settings['typography.title_scale'] as 'sm' | 'md' | 'lg' | 'xl'
+          : 'md';
+        const bodyScale = (['sm','md','lg'] as const).includes(settings['typography.body_scale'] as any)
+          ? settings['typography.body_scale'] as 'sm' | 'md' | 'lg'
+          : 'md';
         return new Response(renderAdminSettings(env, request, {
           publisherId: settings['adsense.publisher_id'] ?? '',
           autoAds: settings['adsense.auto_ads'] === '1',
           adConfig: parseAdConfig(settings['adsense.placements'] ?? null),
+          typography: { titleScale, bodyScale },
           saved: url.searchParams.get('saved') === '1',
         }), { headers: NO_CACHE_HEADERS });
       }
@@ -542,11 +550,18 @@ ${urls}
             ...(key === 'betweenCards' ? { everyNCards: Number.isFinite(n) && n > 0 ? n : 6 } : {}),
           };
         }
+        // typography
+        const titleScale = String(form.get('typography.title_scale') ?? 'md');
+        const bodyScale = String(form.get('typography.body_scale') ?? 'md');
         await Promise.all([
           setSetting(env.DB, 'adsense.publisher_id', pubId),
           setSetting(env.DB, 'adsense.auto_ads', autoAds),
           setSetting(env.DB, 'adsense.placements', JSON.stringify(cfg)),
+          setSetting(env.DB, 'typography.title_scale', titleScale),
+          setSetting(env.DB, 'typography.body_scale', bodyScale),
         ]);
+        // bump cache pra refletir nas páginas públicas
+        await bumpCacheVersion(env);
         return new Response(null, { status: 303, headers: { Location: '/admin/settings?saved=1' } });
       }
 
@@ -630,61 +645,162 @@ ${urls}
         return new Response(null, { status: 303, headers: { Location: '/admin/cache?purged=1' } });
       }
 
-      // ============= External Posting API =============
-      // POST /api/posts — auth: Bearer cdh_xxx
-      if (pathname === '/api/posts' && request.method === 'POST') {
+      // ============= External API =============
+      if (pathname.startsWith('/api/')) {
+        // Auth helper
         const auth = request.headers.get('Authorization') || '';
         const token = auth.startsWith('Bearer ') ? auth.slice(7).trim() : '';
         if (!token || !token.startsWith('cdh_')) {
-          return json({ error: 'Missing or invalid Authorization header' }, 401);
+          return json({ error: 'Missing or invalid Authorization header. Use: Bearer cdh_xxx' }, 401);
         }
         const hash = await sha256(token);
         const apiKey = await findApiKeyByHash(env.DB, hash);
-        if (!apiKey) return json({ error: 'Invalid API key' }, 401);
+        if (!apiKey) return json({ error: 'Invalid or revoked API key' }, 401);
         ctx.waitUntil(touchApiKey(env.DB, apiKey.id).catch(() => {}));
 
-        let payload: Record<string, unknown>;
-        try {
-          payload = await request.json();
-        } catch {
-          return json({ error: 'Body must be valid JSON' }, 400);
-        }
-
-        const title = String(payload.title ?? '').trim();
-        if (!title) return json({ error: 'title is required' }, 400);
-        const content = String(payload.content ?? '').trim();
-        if (!content) return json({ error: 'content is required' }, 400);
-
-        let slug = String(payload.slug ?? '').trim();
-        if (!slug) slug = slugify(title);
-        if (!/^[a-z0-9-]+$/.test(slug)) {
-          return json({ error: 'slug must contain only a-z, 0-9 and hyphens' }, 400);
-        }
-        // dedupe
-        const existing = await getPostBySlug(env.DB, slug);
-        if (existing) return json({ error: 'slug already exists', slug }, 409);
-
-        const description = String(payload.description ?? '').trim() || excerpt(content);
-        const tags = Array.isArray(payload.tags) ? (payload.tags as unknown[]).map(String).join(', ') : '';
-        const category = (payload.category != null && String(payload.category).trim()) || null;
-        const author = String(payload.author ?? 'Erick Aoki').trim();
-        const hero = (payload.hero_image != null && String(payload.hero_image).trim()) || null;
-        const draft = payload.draft === true || payload.draft === 1 ? 1 : 0;
-        const pubDateStr = String(payload.pub_date ?? '').trim();
-        const pub_date = pubDateStr ? new Date(pubDateStr).getTime() : Date.now();
-        if (pubDateStr && !Number.isFinite(pub_date)) {
-          return json({ error: 'pub_date must be a valid ISO timestamp' }, 400);
-        }
-
-        const id = await createPost(env.DB, {
-          slug, title, description, content, category, tags, author,
-          hero_image: hero, draft, pub_date,
-          source_url: typeof payload.source_url === 'string' ? payload.source_url : null,
-        });
         const siteOrigin = `${url.protocol}//${url.host}`;
-        return json({
-          id, slug, url: `${siteOrigin}/${slug}`,
-        }, 201);
+        // CORS headers para uso em browsers
+        const corsHeaders = {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers': 'Authorization, Content-Type',
+        };
+
+        const formatPost = (p: Post, views?: number) => ({
+          id: p.id,
+          slug: p.slug,
+          title: p.title,
+          description: p.description,
+          category: p.category,
+          tags: p.tags ? p.tags.split(',').map((t) => t.trim()).filter(Boolean) : [],
+          author: p.author,
+          hero_image: p.hero_image,
+          draft: !!p.draft,
+          pub_date: new Date(p.pub_date).toISOString(),
+          updated_date: new Date(p.updated_date).toISOString(),
+          url: `${siteOrigin}/${p.slug}`,
+          ...(views !== undefined ? { views_last_24h: views } : {}),
+        });
+
+        // ===== GET /api/posts/top?hours=24&limit=10 =====
+        if (pathname === '/api/posts/top' && request.method === 'GET') {
+          const hours = Math.min(720, Math.max(1, Number(url.searchParams.get('hours') ?? 24)));
+          const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? 10)));
+          const top = await topPostsByViews(env.DB, hours, limit);
+          const slugs = top.map((t) => t.path.replace(/^\//, ''));
+          const posts = slugs.length > 0 ? await getPostsBySlugList(env.DB, slugs) : [];
+          const byMap = new Map(posts.map((p) => [p.slug, p]));
+          const result = top
+            .map((t) => {
+              const p = byMap.get(t.path.replace(/^\//, ''));
+              if (!p) return null;
+              return formatPost(p, t.views);
+            })
+            .filter(Boolean);
+          return new Response(JSON.stringify({
+            window_hours: hours,
+            count: result.length,
+            posts: result,
+          }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+        }
+
+        // ===== GET /api/posts/:slug =====
+        const singleMatch = pathname.match(/^\/api\/posts\/([a-z0-9-]+)$/);
+        if (singleMatch && request.method === 'GET') {
+          const slug = singleMatch[1];
+          const post = await getPostBySlug(env.DB, slug);
+          if (!post) return new Response(JSON.stringify({ error: 'Post not found' }), {
+            status: 404, headers: { 'Content-Type': 'application/json', ...corsHeaders },
+          });
+          const views24h = await viewsForPath(env.DB, '/' + slug, 24);
+          return new Response(JSON.stringify({
+            ...formatPost(post, views24h),
+            content: post.content,  // só na single inclui o body completo
+          }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+        }
+
+        // ===== GET /api/posts (lista) =====
+        if (pathname === '/api/posts' && request.method === 'GET') {
+          const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? 20)));
+          const includeViews = url.searchParams.get('views') === '1';
+          const items = await listPosts(env.DB, { includeDrafts: false, limit });
+          // se views=1, busca contadores em paralelo
+          let viewsMap: Map<string, number> | null = null;
+          if (includeViews) {
+            viewsMap = new Map();
+            const promises = items.map(async (p) => {
+              const v = await viewsForPath(env.DB, '/' + p.slug, 24);
+              viewsMap!.set(p.slug, v);
+            });
+            await Promise.all(promises);
+          }
+          return new Response(JSON.stringify({
+            count: items.length,
+            posts: items.map((p) => formatPost(p, viewsMap?.get(p.slug))),
+          }), { headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+        }
+
+        // ===== POST /api/posts (criar) =====
+        if (pathname === '/api/posts' && request.method === 'POST') {
+          let payload: Record<string, unknown>;
+          try {
+            payload = await request.json();
+          } catch {
+            return new Response(JSON.stringify({ error: 'Body must be valid JSON' }), {
+              status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders },
+            });
+          }
+
+          const title = String(payload.title ?? '').trim();
+          if (!title) return new Response(JSON.stringify({ error: 'title is required' }), {
+            status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders },
+          });
+          const content = String(payload.content ?? '').trim();
+          if (!content) return new Response(JSON.stringify({ error: 'content is required' }), {
+            status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders },
+          });
+
+          let slug = String(payload.slug ?? '').trim();
+          if (!slug) slug = slugify(title);
+          if (!/^[a-z0-9-]+$/.test(slug)) {
+            return new Response(JSON.stringify({ error: 'slug must contain only a-z, 0-9 and hyphens' }), {
+              status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders },
+            });
+          }
+          // dedupe
+          const existing = await getPostBySlug(env.DB, slug);
+          if (existing) return new Response(JSON.stringify({ error: 'slug already exists', slug }), {
+            status: 409, headers: { 'Content-Type': 'application/json', ...corsHeaders },
+          });
+
+          const description = String(payload.description ?? '').trim() || excerpt(content);
+          const tags = Array.isArray(payload.tags) ? (payload.tags as unknown[]).map(String).join(', ') : '';
+          const category = (payload.category != null && String(payload.category).trim()) || null;
+          const author = String(payload.author ?? 'Erick Aoki').trim();
+          const hero = (payload.hero_image != null && String(payload.hero_image).trim()) || null;
+          const draft = payload.draft === true || payload.draft === 1 ? 1 : 0;
+          const pubDateStr = String(payload.pub_date ?? '').trim();
+          const pub_date = pubDateStr ? new Date(pubDateStr).getTime() : Date.now();
+          if (pubDateStr && !Number.isFinite(pub_date)) {
+            return new Response(JSON.stringify({ error: 'pub_date must be a valid ISO timestamp' }), {
+              status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders },
+            });
+          }
+
+          const id = await createPost(env.DB, {
+            slug, title, description, content, category, tags, author,
+            hero_image: hero, draft, pub_date,
+            source_url: typeof payload.source_url === 'string' ? payload.source_url : null,
+          });
+          return new Response(JSON.stringify({
+            id, slug, url: `${siteOrigin}/${slug}`,
+          }), { status: 201, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+        }
+
+        // ===== Endpoint não encontrado dentro de /api/* =====
+        return new Response(JSON.stringify({ error: 'Endpoint not found', method: request.method, path: pathname }), {
+          status: 404, headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        });
       }
 
       // ===== Admin: delete post =====
@@ -711,9 +827,10 @@ ${urls}
           }
           const post = await getPostBySlug(env.DB, slug);
           if (post && !post.draft) {
-            const [topViews, ads] = await Promise.all([
+            const [topViews, ads, typo] = await Promise.all([
               topPostsByViews(env.DB, 48, 12, pathname),
               loadAdSettings(env),
+              loadTypography(env),
             ]);
             const slugs = topViews.map((v) => v.path.replace(/^\//, ''));
             let relatedPosts = slugs.length > 0
@@ -734,7 +851,7 @@ ${urls}
             }
             ctx.waitUntil(recordPageview(env.DB, pathname).catch(() => {}));
             const resp = new Response(
-              renderPost(env, request, post, relatedPosts.slice(0, 12), ads),
+              renderPost(env, request, post, relatedPosts.slice(0, 12), ads, typo),
               { headers: PUBLIC_CACHE_HEADERS },
             );
             return writeCache(env, ctx, request, resp);
@@ -878,6 +995,19 @@ async function loadAdSettings(env: Env): Promise<SiteAdSettings | undefined> {
     autoAds: autoAds === '1',
     config: parseAdConfig(placements),
   };
+}
+
+/** Carrega typography (defaults se não configurado). */
+async function loadTypography(env: Env): Promise<SiteTypography> {
+  const [t, b] = await Promise.all([
+    getSetting(env.DB, 'typography.title_scale'),
+    getSetting(env.DB, 'typography.body_scale'),
+  ]);
+  const titleScale = (['sm','md','lg','xl'] as const).includes(t as any)
+    ? t as 'sm' | 'md' | 'lg' | 'xl' : 'md';
+  const bodyScale = (['sm','md','lg'] as const).includes(b as any)
+    ? b as 'sm' | 'md' | 'lg' : 'md';
+  return { titleScale, bodyScale };
 }
 
 function json(body: object, status = 200): Response {

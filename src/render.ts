@@ -10,6 +10,11 @@ export interface SiteAdSettings {
   config: AdConfig;
 }
 
+export interface SiteTypography {
+  titleScale: 'sm' | 'md' | 'lg' | 'xl';
+  bodyScale: 'sm' | 'md' | 'lg';
+}
+
 /**
  * URL canônica do site (preferindo CANONICAL_URL env var).
  * Garante que `<link rel=canonical>`, og:url e JSON-LD apontem
@@ -94,6 +99,7 @@ interface LayoutOptions {
   bodyClass?: string;
   headInject?: string;   // tags adicionais no <head> (AdSense script, etc.)
   stickyAd?: string;     // ad fixo no rodapé mobile
+  typography?: SiteTypography;
 }
 
 function layout(opts: LayoutOptions, body: string): string {
@@ -101,8 +107,10 @@ function layout(opts: LayoutOptions, body: string): string {
     title, description, url, siteTitle,
     type = 'website', pubDate, updatedDate, author,
     image, tags = [], category, jsonLd, bodyClass = '',
-    headInject = '', stickyAd = '',
+    headInject = '', stickyAd = '', typography,
   } = opts;
+  const typoClasses = typography ? `t-title-${typography.titleScale} t-body-${typography.bodyScale}` : '';
+  const finalBodyClass = `${bodyClass} ${typoClasses}`.trim();
 
   const isAdmin = bodyClass.includes('admin');
   const ld = jsonLd ? `<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>` : '';
@@ -145,7 +153,7 @@ ${isAdmin || bodyClass.includes('is-404') ? '<meta name="robots" content="noinde
 ${ld}
 ${headInject}
 </head>
-<body class="${bodyClass}">
+<body class="${finalBodyClass}">
 <header class="site-header">
   <div class="container">
     <a href="${isAdmin ? '/admin' : '/'}" class="site-logo">${escapeHtml(siteTitle)}${isAdmin ? ' <span class="site-logo__suffix">admin</span>' : ''}</a>
@@ -169,7 +177,8 @@ ${stickyAd}
 
 // ====== Home ======
 export function renderHome(
-  env: Env, request: Request, posts: Post[], ads?: SiteAdSettings,
+  env: Env, request: Request, posts: Post[],
+  ads?: SiteAdSettings, typography?: SiteTypography,
 ): string {
   const url = new URL(request.url);
   const siteUrl = siteCanonical(env, url);
@@ -214,6 +223,7 @@ export function renderHome(
       siteTitle: env.SITE_TITLE,
       headInject: adsHead,
       stickyAd,
+      typography,
       jsonLd: {
         '@context': 'https://schema.org',
         '@type': 'WebSite',
@@ -229,7 +239,7 @@ export function renderHome(
 // ====== Post page ======
 export function renderPost(
   env: Env, request: Request, post: Post,
-  related: Post[] = [], ads?: SiteAdSettings,
+  related: Post[] = [], ads?: SiteAdSettings, typography?: SiteTypography,
 ): string {
   const url = new URL(request.url);
   const siteOrigin = siteCanonical(env, url);
@@ -306,6 +316,7 @@ ${adIf('bottomOfPage', 'ad-slot--bottom')}
       category: post.category ?? undefined,
       headInject: adsHead,
       stickyAd,
+      typography,
       jsonLd: {
         '@context': 'https://schema.org',
         '@type': 'NewsArticle',
@@ -478,7 +489,18 @@ export function renderDocs(env: Env, request: Request): string {
     <pre><code>Authorization: Bearer cdh_xxxxxxxxxxxxxxxxxxxxxxxxx</code></pre>
     <p>O token aparece <strong>uma única vez</strong> no momento da criação — anote em local seguro. Para revogar uma chave, vá no painel e clique em <em>Revogar</em>.</p>
 
-    <h2 id="endpoint">Endpoint</h2>
+    <h2 id="endpoints">Endpoints</h2>
+    <table class="docs-table">
+      <thead><tr><th>Método</th><th>Endpoint</th><th>Descrição</th></tr></thead>
+      <tbody>
+        <tr><td><code>POST</code></td><td><code>/api/posts</code></td><td>Cria um post</td></tr>
+        <tr><td><code>GET</code></td><td><code>/api/posts</code></td><td>Lista os posts mais recentes (com views opcional)</td></tr>
+        <tr><td><code>GET</code></td><td><code>/api/posts/:slug</code></td><td>Detalhes de um post + views 24h</td></tr>
+        <tr><td><code>GET</code></td><td><code>/api/posts/top</code></td><td>Top posts por visualizações (janela configurável)</td></tr>
+      </tbody>
+    </table>
+
+    <h2 id="post-create">POST /api/posts — criar</h2>
     <pre><code>POST ${base}/api/posts
 Content-Type: application/json
 Authorization: Bearer cdh_xxx</code></pre>
@@ -519,7 +541,74 @@ Authorization: Bearer cdh_xxx</code></pre>
       </tbody>
     </table>
 
-    <h2 id="exemplos">Exemplos</h2>
+    <h2 id="get-list">GET /api/posts — listar</h2>
+    <p>Lista os posts mais recentes publicados.</p>
+    <p><strong>Query params</strong>:</p>
+    <ul>
+      <li><code>limit</code> — quantos retornar (default 20, max 100)</li>
+      <li><code>views=1</code> — inclui o campo <code>views_last_24h</code> em cada post (mais lento)</li>
+    </ul>
+    <p><strong>Exemplo:</strong></p>
+    <pre><code>curl -H "Authorization: Bearer cdh_xxx" \\
+  "${base}/api/posts?limit=10&amp;views=1"</code></pre>
+    <p><strong>Resposta:</strong></p>
+    <pre><code>{
+  "count": 10,
+  "posts": [
+    {
+      "id": 17472,
+      "slug": "titulo-do-post",
+      "title": "Título do post",
+      "description": "Resumo...",
+      "tags": ["novela", "spoiler"],
+      "author": "Erick Aoki",
+      "hero_image": "/img/abc.jpg",
+      "draft": false,
+      "pub_date": "2026-05-12T10:00:00.000Z",
+      "updated_date": "2026-05-12T10:00:00.000Z",
+      "url": "${base}/titulo-do-post",
+      "views_last_24h": 42
+    }
+  ]
+}</code></pre>
+
+    <h2 id="get-single">GET /api/posts/:slug — detalhes</h2>
+    <p>Retorna um post completo (com <code>content</code> HTML) e contagem de views nas últimas 24h.</p>
+    <pre><code>curl -H "Authorization: Bearer cdh_xxx" \\
+  "${base}/api/posts/jendal-vai-surtar"</code></pre>
+
+    <h2 id="get-top">GET /api/posts/top — mais visualizados</h2>
+    <p>Retorna os posts com mais visualizações em uma janela de tempo.</p>
+    <p><strong>Query params</strong>:</p>
+    <ul>
+      <li><code>hours</code> — janela em horas (default 24, max 720)</li>
+      <li><code>limit</code> — quantos retornar (default 10, max 100)</li>
+    </ul>
+    <p><strong>Exemplo:</strong></p>
+    <pre><code># top 10 das últimas 24h
+curl -H "Authorization: Bearer cdh_xxx" \\
+  "${base}/api/posts/top?hours=24&amp;limit=10"
+
+# top 5 da última semana
+curl -H "Authorization: Bearer cdh_xxx" \\
+  "${base}/api/posts/top?hours=168&amp;limit=5"</code></pre>
+    <p><strong>Resposta:</strong></p>
+    <pre><code>{
+  "window_hours": 24,
+  "count": 10,
+  "posts": [
+    {
+      "id": 17472,
+      "slug": "jendal-vai-surtar",
+      "title": "Jendal vai surtar...",
+      "url": "${base}/jendal-vai-surtar",
+      "views_last_24h": 1284,
+      ...
+    }
+  ]
+}</code></pre>
+
+    <h2 id="exemplos">Exemplos práticos</h2>
 
     <h3>curl</h3>
     <pre><code>curl -X POST ${base}/api/posts \\
@@ -729,8 +818,8 @@ export function renderAdminDashboard(
         <a href="/admin/settings" class="qa-card">
           <span class="qa-card__icon">💰</span>
           <div>
-            <strong>Configurar AdSense</strong>
-            <small>Monetização e placements</small>
+            <strong>Monetização</strong>
+            <small>AdSense e placements</small>
           </div>
         </a>
         <a href="/admin/cache" class="qa-card">
@@ -828,7 +917,7 @@ const ICONS: Record<AdminSection, string> = {
   dashboard: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>',
   posts:     '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>',
   analytics: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="3" y1="20" x2="21" y2="20"/></svg>',
-  settings:  '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+  settings:  '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>',
   'api-keys':'<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>',
   cache:     '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>',
 };
@@ -839,7 +928,7 @@ function adminShell(env: Env, opts: AdminShellOptions, body: string): string {
     ['dashboard', '/admin', 'Início'],
     ['posts',     '/admin/posts', 'Posts'],
     ['analytics', '/admin/analytics', 'Analytics'],
-    ['settings',  '/admin/settings', 'Configurações'],
+    ['settings',  '/admin/settings', 'Monetização'],
     ['api-keys',  '/admin/api-keys', 'API'],
     ['cache',     '/admin/cache', 'Cache'],
   ];
@@ -924,87 +1013,210 @@ export function renderAdminSettings(
     publisherId: string;
     autoAds: boolean;
     adConfig: AdConfig;
+    typography: { titleScale: 'sm' | 'md' | 'lg' | 'xl'; bodyScale: 'sm' | 'md' | 'lg' };
     saved?: boolean;
     error?: string;
   },
 ): string {
-  const url = new URL(request.url);
+  void request;
   const { publisherId, autoAds, adConfig, saved, error } = data;
-  const placements: Array<{ key: keyof AdConfig; label: string; help: string; hasN?: 'paragraphs' | 'cards' }> = [
-    { key: 'beforePost',   label: 'Antes do título',           help: 'Aparece acima da imagem de capa. Use com moderação.' },
-    { key: 'topOfContent', label: 'Topo do conteúdo',          help: 'Logo após o título, antes do primeiro parágrafo. Alto RPM.' },
-    { key: 'inContent',    label: 'No meio do texto',          help: 'A cada N parágrafos. Formato "in-article" recomendado.', hasN: 'paragraphs' },
-    { key: 'afterContent', label: 'Final do conteúdo',         help: 'Após o último parágrafo, antes dos posts relacionados.' },
-    { key: 'bottomOfPage', label: 'Rodapé da página',          help: 'Depois dos posts relacionados.' },
-    { key: 'betweenCards', label: 'Entre cards (home)',        help: 'Insere um card de anúncio a cada N cards da listagem.', hasN: 'cards' },
-    { key: 'stickyFooter', label: 'Sticky no rodapé (mobile)', help: 'Anúncio fixo na parte inferior em telas pequenas.' },
+
+  const placements: Array<{
+    key: keyof AdConfig;
+    label: string;
+    help: string;
+    icon: string;
+    hasN?: 'paragraphs' | 'cards';
+  }> = [
+    {
+      key: 'beforePost', label: 'Antes do título', icon: '⬆',
+      help: 'Aparece acima da imagem de capa. RPM baixo — use com moderação.',
+    },
+    {
+      key: 'topOfContent', label: 'Topo do conteúdo', icon: '🎯',
+      help: 'Logo após o título, antes do primeiro parágrafo. Alto RPM — recomendado.',
+    },
+    {
+      key: 'inContent', label: 'No meio do texto', icon: '📝',
+      help: 'A cada N parágrafos. Formato in-article é o que melhor performa.',
+      hasN: 'paragraphs',
+    },
+    {
+      key: 'afterContent', label: 'Final do conteúdo', icon: '⬇',
+      help: 'Após o último parágrafo, antes dos posts relacionados.',
+    },
+    {
+      key: 'bottomOfPage', label: 'Rodapé da página', icon: '⏚',
+      help: 'Depois dos posts relacionados, no fim da página.',
+    },
+    {
+      key: 'betweenCards', label: 'Entre cards (home)', icon: '⊞',
+      help: 'Insere um card de anúncio a cada N cards na listagem.',
+      hasN: 'cards',
+    },
+    {
+      key: 'stickyFooter', label: 'Sticky mobile', icon: '📱',
+      help: 'Anúncio fixo no rodapé em telas pequenas — alto CTR mas pode incomodar.',
+    },
   ];
 
-  const placementInputs = placements.map((pl) => {
+  const placementsHtml = placements.map((pl) => {
     const cfg = adConfig[pl.key];
     const n = pl.hasN === 'paragraphs' ? (cfg as any).everyNParagraphs
             : pl.hasN === 'cards'      ? (cfg as any).everyNCards : null;
-    return `<fieldset class="placement">
-      <legend>${pl.label}</legend>
-      <p class="muted">${pl.help}</p>
-      <label class="placement__check">
-        <input type="checkbox" name="enabled.${pl.key}" value="1" ${cfg.enabled ? 'checked' : ''}>
-        Ativar
-      </label>
-      <div class="field-row">
-        <div class="field">
-          <label>Slot ID (data-ad-slot)</label>
-          <input type="text" name="slot.${pl.key}" value="${escapeHtml(cfg.slotId ?? '')}" placeholder="1234567890">
+    const isOn = cfg.enabled && cfg.slotId;
+    return `<div class="placement-card ${isOn ? 'is-on' : ''}" data-placement="${pl.key}">
+      <header class="placement-card__header">
+        <span class="placement-card__icon">${pl.icon}</span>
+        <div class="placement-card__heading">
+          <h3>${pl.label}</h3>
+          <p>${pl.help}</p>
         </div>
-        <div class="field">
-          <label>Formato</label>
-          <select name="format.${pl.key}">
-            ${(['auto','fluid','banner','rectangle','in-article'] as const).map((f) =>
-              `<option value="${f}" ${cfg.format === f ? 'selected' : ''}>${f}</option>`).join('')}
-          </select>
+        <label class="toggle">
+          <input type="checkbox" name="enabled.${pl.key}" value="1" ${cfg.enabled ? 'checked' : ''}>
+          <span class="toggle__track"><span class="toggle__thumb"></span></span>
+        </label>
+      </header>
+      <div class="placement-card__body">
+        <div class="field-row">
+          <div class="field">
+            <label>Slot ID</label>
+            <input type="text" name="slot.${pl.key}" value="${escapeHtml(cfg.slotId ?? '')}" placeholder="1234567890" inputmode="numeric">
+          </div>
+          <div class="field">
+            <label>Formato</label>
+            <select name="format.${pl.key}">
+              ${(['auto','fluid','banner','rectangle','in-article'] as const).map((f) =>
+                `<option value="${f}" ${cfg.format === f ? 'selected' : ''}>${f}</option>`).join('')}
+            </select>
+          </div>
+          ${pl.hasN ? `<div class="field">
+            <label>${pl.hasN === 'paragraphs' ? 'A cada N par.' : 'A cada N cards'}</label>
+            <input type="number" name="n.${pl.key}" min="1" max="20" value="${n ?? (pl.hasN === 'paragraphs' ? 4 : 6)}">
+          </div>` : ''}
         </div>
-        ${pl.hasN ? `<div class="field">
-          <label>${pl.hasN === 'paragraphs' ? 'A cada N parágrafos' : 'A cada N cards'}</label>
-          <input type="number" name="n.${pl.key}" min="1" max="20" value="${n ?? (pl.hasN === 'paragraphs' ? 4 : 6)}">
-        </div>` : ''}
       </div>
-    </fieldset>`;
+    </div>`;
   }).join('');
+
+  // resumo: quantos ativos
+  const activeCount = placements.filter((pl) => {
+    const cfg = adConfig[pl.key];
+    return cfg.enabled && cfg.slotId;
+  }).length;
+  const adsenseConfigured = publisherId.length >= 10;
 
   return adminShell(env, {
     active: 'settings',
-    title: 'Configurações',
-    subtitle: 'Gerencie integrações e ajustes globais do site',
+    title: 'Monetização',
+    subtitle: 'Configure Google AdSense, placements e ferramentas de receita',
   }, `
     ${saved ? `<div class="alert alert--success"><span class="alert__icon">✓</span><div><strong>Configurações salvas.</strong></div></div>` : ''}
     ${error ? `<div class="alert alert--error"><span class="alert__icon">⚠</span><div>${escapeHtml(error)}</div></div>` : ''}
 
+    <section class="status-strip">
+      <div class="status-strip__item ${adsenseConfigured ? 'is-on' : 'is-off'}">
+        <span class="status-strip__dot"></span>
+        <div>
+          <strong>AdSense</strong>
+          <small>${adsenseConfigured ? 'Conectado' : 'Não configurado'}</small>
+        </div>
+      </div>
+      <div class="status-strip__item ${autoAds ? 'is-on' : 'is-off'}">
+        <span class="status-strip__dot"></span>
+        <div>
+          <strong>Auto Ads</strong>
+          <small>${autoAds ? 'Ativado' : 'Desativado'}</small>
+        </div>
+      </div>
+      <div class="status-strip__item is-info">
+        <span class="status-strip__dot"></span>
+        <div>
+          <strong>Placements</strong>
+          <small>${activeCount} de ${placements.length} ativos</small>
+        </div>
+      </div>
+    </section>
+
     <form method="POST" action="/admin/settings">
       <section class="card">
-        <header class="card__header">
-          <h2 class="card__title">Google AdSense</h2>
-          <p class="card__desc">Cole o ID do seu publisher AdSense. Os slots individuais são configurados abaixo.</p>
+        <header class="card__header card__header--icon">
+          <span class="card__header-icon">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>
+          </span>
+          <div>
+            <h2 class="card__title">Conta Google AdSense</h2>
+            <p class="card__desc">ID do publisher e configurações globais. Sem isso, nenhum anúncio é exibido.</p>
+          </div>
         </header>
         <div class="card__body">
           <div class="field">
             <label>Publisher ID</label>
-            <input type="text" name="adsense.publisher_id" value="${escapeHtml(publisherId)}" placeholder="ca-pub-XXXXXXXXXXXXXXXX">
-            <small class="field__help">Formato: <code>ca-pub-</code> seguido de 16 dígitos.</small>
+            <input type="text" name="adsense.publisher_id" value="${escapeHtml(publisherId)}" placeholder="ca-pub-XXXXXXXXXXXXXXXX" inputmode="text" autocomplete="off">
+            <small class="field__help">Encontre em <a href="https://www.google.com/adsense" target="_blank" rel="noopener">adsense.google.com</a> → Conta → Informações de pagamento. Formato: <code>ca-pub-</code> + 16 dígitos.</small>
           </div>
           <div class="field field--check">
             <label class="check"><input type="checkbox" name="adsense.auto_ads" value="1" ${autoAds ? 'checked' : ''}> <span>Ativar <strong>Auto Ads</strong> do Google</span></label>
-            <small class="field__help">O Google decide automaticamente onde inserir anúncios extras. Funciona em conjunto com os placements manuais abaixo.</small>
+            <small class="field__help">O Google escolhe automaticamente onde inserir anúncios extras. Coexiste com os placements manuais abaixo.</small>
           </div>
         </div>
       </section>
 
       <section class="card">
-        <header class="card__header">
-          <h2 class="card__title">Inserção de anúncios</h2>
-          <p class="card__desc">Ative os pontos onde quer exibir anúncios. Cada um precisa de um <strong>Slot ID</strong> criado no painel do AdSense.</p>
+        <header class="card__header card__header--icon">
+          <span class="card__header-icon">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+          </span>
+          <div>
+            <h2 class="card__title">Posicionamento de anúncios</h2>
+            <p class="card__desc">Ative os pontos onde quer veicular. Cada slot precisa de um <strong>Slot ID</strong> criado no painel do AdSense.</p>
+          </div>
+        </header>
+        <div class="card__body placements-list">
+          ${placementsHtml}
+        </div>
+      </section>
+
+      <section class="card">
+        <header class="card__header card__header--icon">
+          <span class="card__header-icon">
+            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
+          </span>
+          <div>
+            <h2 class="card__title">Tipografia do site</h2>
+            <p class="card__desc">Ajuste o tamanho dos títulos e do texto dos posts. Afeta apenas o blog público, não o admin.</p>
+          </div>
         </header>
         <div class="card__body">
-          ${placementInputs}
+          <div class="field-row">
+            <div class="field">
+              <label>Tamanho dos títulos</label>
+              <div class="seg-control">
+                ${(['sm', 'md', 'lg', 'xl'] as const).map((s) => `
+                  <label class="seg-control__opt ${data.typography.titleScale === s ? 'is-active' : ''}">
+                    <input type="radio" name="typography.title_scale" value="${s}" ${data.typography.titleScale === s ? 'checked' : ''}>
+                    <span>${ {sm: 'Pequeno', md: 'Médio', lg: 'Grande', xl: 'Extra'}[s] }</span>
+                  </label>`).join('')}
+              </div>
+              <small class="field__help">Controla o tamanho dos H1/H2/H3 nos posts.</small>
+            </div>
+            <div class="field">
+              <label>Tamanho do texto</label>
+              <div class="seg-control">
+                ${(['sm', 'md', 'lg'] as const).map((s) => `
+                  <label class="seg-control__opt ${data.typography.bodyScale === s ? 'is-active' : ''}">
+                    <input type="radio" name="typography.body_scale" value="${s}" ${data.typography.bodyScale === s ? 'checked' : ''}>
+                    <span>${ {sm: 'Compacto', md: 'Padrão', lg: 'Confortável'}[s] }</span>
+                  </label>`).join('')}
+              </div>
+              <small class="field__help">Tamanho do corpo dos parágrafos.</small>
+            </div>
+          </div>
+          <div class="type-preview" data-title-scale="${data.typography.titleScale}" data-body-scale="${data.typography.bodyScale}">
+            <div class="type-preview__label">Pré-visualização</div>
+            <h1 class="type-preview__h1">Título de exemplo</h1>
+            <p class="type-preview__p">Este é um parágrafo de exemplo do corpo do texto. Use essas configurações para encontrar o tamanho mais confortável para os leitores.</p>
+          </div>
         </div>
       </section>
 
@@ -1025,79 +1237,162 @@ export function renderAdminAnalytics(
     daily: Array<{ day: string; views: number }>;
   },
 ): string {
-  const url = new URL(request.url);
+  void request;
   const max = Math.max(1, ...data.daily.map((d) => d.views));
-  const chart = data.daily.length === 0 ? '<p class="muted">Sem dados ainda. As páginas visitadas começarão a aparecer aqui em alguns minutos.</p>' : `
-    <div class="chart">
+
+  // KPI trends: comparar com período anterior
+  // 7d vs 7d anteriores: precisaria de dados — uso média diária
+  const avg7 = data.totals.last7d / 7;
+  const avg30 = data.totals.last30d / 30;
+  const trend24h = data.totals.last24h > avg7
+    ? { label: `+${pct((data.totals.last24h - avg7) / Math.max(1, avg7))}`, dir: 'up' as const }
+    : data.totals.last24h < avg7
+      ? { label: `-${pct((avg7 - data.totals.last24h) / Math.max(1, avg7))}`, dir: 'down' as const }
+      : { label: 'estável', dir: 'flat' as const };
+  const trend7d: { label: string; dir: 'up' | 'down' | 'flat' } = avg7 > avg30
+    ? { label: `+${pct((avg7 - avg30) / Math.max(1, avg30))}`, dir: 'up' }
+    : avg7 < avg30
+      ? { label: `-${pct((avg30 - avg7) / Math.max(1, avg30))}`, dir: 'down' }
+      : { label: 'estável', dir: 'flat' };
+
+  const chart = data.daily.length === 0
+    ? `<div class="chart-empty">
+        <span class="chart-empty__icon">📊</span>
+        <p>Sem dados ainda</p>
+        <small>As visitas aparecem aqui em poucos minutos.</small>
+      </div>`
+    : `<div class="chart">
       ${data.daily.map((d) => `
-        <div class="chart__col" title="${d.day}: ${d.views} views">
+        <div class="chart__col" title="${d.day}: ${d.views.toLocaleString('pt-BR')} views">
           <div class="chart__bar" style="height:${(d.views / max * 100).toFixed(1)}%"></div>
           <div class="chart__label">${d.day.slice(8)}</div>
         </div>
       `).join('')}
     </div>`;
 
-  const topRows = (list: Array<{ path: string; views: number; title?: string }>) =>
+  const topRows = (list: Array<{ path: string; views: number; title?: string }>, maxView: number) =>
     list.length === 0
-      ? `<tr><td colspan="3" class="muted">Sem dados.</td></tr>`
-      : list.map((r) => `
+      ? `<tr><td colspan="3" class="empty-state">Sem dados ainda.</td></tr>`
+      : list.map((r, i) => `
         <tr>
-          <td class="path"><a href="${escapeHtml(r.path)}" target="_blank" rel="noopener">${escapeHtml(r.title ?? r.path)}</a><div class="muted">${escapeHtml(r.path)}</div></td>
-          <td class="views">${r.views.toLocaleString('pt-BR')}</td>
+          <td style="width:32px"><span class="rank">${i + 1}</span></td>
+          <td class="path">
+            <a href="${escapeHtml(r.path)}" target="_blank" rel="noopener" class="path-title">${escapeHtml(r.title ?? r.path)}</a>
+            <div class="muted">${escapeHtml(r.path)}</div>
+          </td>
+          <td>
+            <div class="views-bar">
+              <span class="views-bar__fill" style="width:${(r.views / Math.max(1, maxView) * 100).toFixed(1)}%"></span>
+              <strong>${r.views.toLocaleString('pt-BR')}</strong>
+            </div>
+          </td>
         </tr>`).join('');
+
+  const max48 = Math.max(1, ...data.top48h.map((p) => p.views));
+  const max30d = Math.max(1, ...data.top30d.map((p) => p.views));
+
+  // Ícones SVG inline
+  const iEye = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+  const iCalDay = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="12" y1="14" x2="12" y2="18"/></svg>';
+  const iCalMo  = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>';
+  const iTrend  = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>';
+  const iFire   = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0011 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 11-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 002.5 2.5z"/></svg>';
+  const iChart  = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="3" y1="20" x2="21" y2="20"/></svg>';
 
   return adminShell(env, {
     active: 'analytics',
     title: 'Analytics',
     subtitle: 'Visualizações, páginas populares e tendências',
   }, `
-    <section class="kpi-grid">
+    <section class="kpi-grid kpi-grid--4">
       <div class="kpi-card">
-        <div class="kpi-card__label">Últimas 24h</div>
+        <div class="kpi-card__head">
+          <span class="kpi-card__label">Últimas 24h</span>
+          <span class="kpi-card__icon">${iEye}</span>
+        </div>
         <div class="kpi-card__value">${data.totals.last24h.toLocaleString('pt-BR')}</div>
-        <div class="kpi-card__hint">visualizações</div>
+        <div class="kpi-card__hint">
+          <span class="kpi-card__trend kpi-card__trend--${trend24h.dir}">
+            ${trend24h.dir === 'up' ? '↑' : trend24h.dir === 'down' ? '↓' : '→'} ${trend24h.label}
+          </span>
+          vs média 7d
+        </div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-card__label">Últimos 7 dias</div>
+        <div class="kpi-card__head">
+          <span class="kpi-card__label">Últimos 7 dias</span>
+          <span class="kpi-card__icon kpi-card__icon--success">${iCalDay}</span>
+        </div>
         <div class="kpi-card__value">${data.totals.last7d.toLocaleString('pt-BR')}</div>
-        <div class="kpi-card__hint">visualizações</div>
+        <div class="kpi-card__hint">
+          <span class="kpi-card__trend kpi-card__trend--${trend7d.dir}">
+            ${trend7d.dir === 'up' ? '↑' : trend7d.dir === 'down' ? '↓' : '→'} ${trend7d.label}
+          </span>
+          vs média 30d
+        </div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-card__label">Últimos 30 dias</div>
+        <div class="kpi-card__head">
+          <span class="kpi-card__label">Últimos 30 dias</span>
+          <span class="kpi-card__icon">${iCalMo}</span>
+        </div>
         <div class="kpi-card__value">${data.totals.last30d.toLocaleString('pt-BR')}</div>
-        <div class="kpi-card__hint">visualizações</div>
+        <div class="kpi-card__hint">~${Math.round(avg30).toLocaleString('pt-BR')} views/dia em média</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-card__head">
+          <span class="kpi-card__label">Pico diário</span>
+          <span class="kpi-card__icon kpi-card__icon--warning">${iTrend}</span>
+        </div>
+        <div class="kpi-card__value">${(data.daily.length ? Math.max(...data.daily.map((d) => d.views)) : 0).toLocaleString('pt-BR')}</div>
+        <div class="kpi-card__hint">maior volume diário em 30 dias</div>
       </div>
     </section>
 
     <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Visualizações por dia</h2>
-        <p class="card__desc">Últimos 30 dias</p>
+      <header class="card__header card__header--icon">
+        <span class="card__header-icon">${iChart}</span>
+        <div>
+          <h2 class="card__title">Visualizações por dia</h2>
+          <p class="card__desc">Últimos 30 dias — passe o mouse pra ver detalhes</p>
+        </div>
       </header>
       <div class="card__body">${chart}</div>
     </section>
 
     <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Top posts</h2>
-        <p class="card__desc">Mais visualizados nas últimas 48 horas</p>
+      <header class="card__header card__header--icon">
+        <span class="card__header-icon">${iFire}</span>
+        <div>
+          <h2 class="card__title">Em alta — 48 horas</h2>
+          <p class="card__desc">Posts mais visualizados nas últimas 48h</p>
+        </div>
       </header>
-      <table class="data-table">
-        <thead><tr><th>Página</th><th class="num">Views</th></tr></thead>
-        <tbody>${topRows(data.top48h)}</tbody>
+      <table class="data-table data-table--ranked">
+        <thead><tr><th>#</th><th>Página</th><th>Visualizações</th></tr></thead>
+        <tbody>${topRows(data.top48h, max48)}</tbody>
       </table>
     </section>
 
     <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Top posts — 30 dias</h2>
+      <header class="card__header card__header--icon">
+        <span class="card__header-icon">${iCalMo}</span>
+        <div>
+          <h2 class="card__title">Top de todos os tempos — 30 dias</h2>
+          <p class="card__desc">Conteúdo mais consistente do último mês</p>
+        </div>
       </header>
-      <table class="data-table">
-        <thead><tr><th>Página</th><th class="num">Views</th></tr></thead>
-        <tbody>${topRows(data.top30d)}</tbody>
+      <table class="data-table data-table--ranked">
+        <thead><tr><th>#</th><th>Página</th><th>Visualizações</th></tr></thead>
+        <tbody>${topRows(data.top30d, max30d)}</tbody>
       </table>
     </section>
   `);
+}
+
+function pct(n: number): string {
+  const v = Math.round(n * 100);
+  return Number.isFinite(v) ? `${v}%` : '0%';
 }
 
 // ====== Admin: API Keys ======

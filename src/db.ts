@@ -252,6 +252,15 @@ export async function getPostsBySlugList(db: D1Database, slugs: string[]): Promi
   return results ?? [];
 }
 
+/** Views de um único path nas últimas N horas. */
+export async function viewsForPath(db: D1Database, path: string, hours: number): Promise<number> {
+  const since = new Date(Date.now() - hours * 3600_000).toISOString().slice(0, 13);
+  const row = await db.prepare(
+    'SELECT SUM(count) AS views FROM pageviews_hourly WHERE path = ? AND bucket >= ?',
+  ).bind(path, since).first<{ views: number }>();
+  return row?.views ?? 0;
+}
+
 /** Pageviews agregados nas últimas N horas — total e por path */
 export async function pageviewsSummary(db: D1Database, hours: number): Promise<{
   total: number;
