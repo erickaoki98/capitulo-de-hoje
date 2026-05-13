@@ -413,65 +413,15 @@ ${urls}
       if (pathname === '/admin/migrate-images/batch' && request.method === 'POST') {
         if (!authed) return new Response('{"error":"unauthorized"}', { status: 401, headers: { 'Content-Type': 'application/json' } });
 
-        const startedAt = Date.now();
-        const BATCH_SIZE = 25;
-        const batch = await nextPostsToMigrate(env.DB, BATCH_SIZE);
-
-        // 1) Coleta TODAS as URLs únicas do batch
-        const allUrls = new Set<string>();
-        for (const post of batch) {
-          if (post.hero_image && /^https?:\/\//.test(post.hero_image)) allUrls.add(post.hero_image);
-          for (const u of extractImageUrls(post.content)) allUrls.add(u);
-        }
-        const urlsArr = Array.from(allUrls);
-
-        // 2) Migra TODAS em paralelo (8 concurrent)
-        const { urlMap, stats } = await migrateImagesWithBudget(urlsArr, env.IMAGES, {
-          startedAt,
-          maxWallTimeMs: 25_000,
-          maxImages: 500,
-        });
-
-        // 3) Atualiza posts em paralelo (D1 binding suporta concurrent)
-        const perPost: Array<{ slug: string; title: string; migrated: number; failed: number; skipped: number; partial: boolean }> = [];
-        await Promise.all(batch.map(async (post) => {
-          const newContent = rewriteHtmlUrls(post.content, urlMap);
-          const newHero = post.hero_image && urlMap.has(post.hero_image)
-            ? urlMap.get(post.hero_image)!
-            : post.hero_image;
-          if (newContent !== post.content || newHero !== post.hero_image) {
-            await updatePostContent(env.DB, post.id, newContent, newHero);
-          }
-          const urls = [
-            ...(post.hero_image && /^https?:\/\//.test(post.hero_image) ? [post.hero_image] : []),
-            ...extractImageUrls(post.content),
-          ];
-          let mig = 0;
-          for (const u of urls) if (urlMap.has(u)) mig++;
-          perPost.push({
-            slug: post.slug, title: post.title,
-            migrated: mig, failed: urls.length - mig, skipped: 0,
-            partial: false,
-          });
-        }));
-
-        // 4) Marca TODOS os posts do batch como "migração tentada" — mesmo que falhem
-        //    algumas imagens. Isso evita loop infinito em posts com imagens 404.
-        await markPostsMigrated(env.DB, batch.map((p) => p.id));
-
-        const [remaining, totalWithImages] = await Promise.all([
-          countPostsWithExternalImages(env.DB),
-          countPostsWithAnyImages(env.DB),
-        ]);
-
+        const result = await runImageMigrationBatch(env, 25);
         return new Response(JSON.stringify({
-          processedPosts: batch.length,
-          perPost,
-          failed: stats.failed.slice(0, 20),
-          elapsedMs: Date.now() - startedAt,
-          pending: remaining,
-          totalWithImages,
-          migrated: totalWithImages - remaining,
+          processedPosts: result.batchSize,
+          perPost: result.perPost,
+          failed: result.failed.slice(0, 20),
+          elapsedMs: result.elapsedMs,
+          pending: result.pending,
+          totalWithImages: result.totalWithImages,
+          migrated: result.migrated,
         }), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
       }
 
@@ -514,7 +464,98 @@ ${urls}
       });
     }
   },
+
+  /**
+   * Cron Trigger — roda dentro da infra do Cloudflare, sem rate limit de IP.
+   * Configurado pra disparar a cada minuto via wrangler.jsonc.
+   * Cada tick processa um batch grande de posts pendentes.
+   */
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil((async () => {
+      try {
+        // batch maior pra aproveitar a janela do worker no cron (sem cap de IP)
+        const result = await runImageMigrationBatch(env, 50);
+        console.log(`[cron] migrated batch: ${result.batchSize} posts, ${result.pending} pending, ${result.elapsedMs}ms`);
+      } catch (e) {
+        console.error('[cron] migration error:', e);
+      }
+    })());
+  },
 };
+
+/** Lógica de migração de imagens reutilizada por endpoint POST e por cron */
+async function runImageMigrationBatch(env: Env, batchSize: number): Promise<{
+  batchSize: number;
+  perPost: Array<{ slug: string; title: string; migrated: number; failed: number; skipped: number; partial: boolean }>;
+  failed: Array<{ url: string; error: string }>;
+  elapsedMs: number;
+  pending: number;
+  totalWithImages: number;
+  migrated: number;
+}> {
+  const startedAt = Date.now();
+  const batch = await nextPostsToMigrate(env.DB, batchSize);
+
+  if (batch.length === 0) {
+    const [remaining, totalWithImages] = await Promise.all([
+      countPostsWithExternalImages(env.DB),
+      countPostsWithAnyImages(env.DB),
+    ]);
+    return {
+      batchSize: 0, perPost: [], failed: [], elapsedMs: Date.now() - startedAt,
+      pending: remaining, totalWithImages, migrated: totalWithImages - remaining,
+    };
+  }
+
+  const allUrls = new Set<string>();
+  for (const post of batch) {
+    if (post.hero_image && /^https?:\/\//.test(post.hero_image)) allUrls.add(post.hero_image);
+    for (const u of extractImageUrls(post.content)) allUrls.add(u);
+  }
+
+  const { urlMap, stats } = await migrateImagesWithBudget(Array.from(allUrls), env.IMAGES, {
+    startedAt,
+    maxWallTimeMs: 25_000,
+    maxImages: 500,
+  });
+
+  const perPost: Array<{ slug: string; title: string; migrated: number; failed: number; skipped: number; partial: boolean }> = [];
+  await Promise.all(batch.map(async (post) => {
+    const newContent = rewriteHtmlUrls(post.content, urlMap);
+    const newHero = post.hero_image && urlMap.has(post.hero_image)
+      ? urlMap.get(post.hero_image)!
+      : post.hero_image;
+    if (newContent !== post.content || newHero !== post.hero_image) {
+      await updatePostContent(env.DB, post.id, newContent, newHero);
+    }
+    const urls = [
+      ...(post.hero_image && /^https?:\/\//.test(post.hero_image) ? [post.hero_image] : []),
+      ...extractImageUrls(post.content),
+    ];
+    let mig = 0;
+    for (const u of urls) if (urlMap.has(u)) mig++;
+    perPost.push({
+      slug: post.slug, title: post.title,
+      migrated: mig, failed: urls.length - mig, skipped: 0, partial: false,
+    });
+  }));
+
+  await markPostsMigrated(env.DB, batch.map((p) => p.id));
+
+  const [remaining, totalWithImages] = await Promise.all([
+    countPostsWithExternalImages(env.DB),
+    countPostsWithAnyImages(env.DB),
+  ]);
+
+  return {
+    batchSize: batch.length, perPost,
+    failed: stats.failed,
+    elapsedMs: Date.now() - startedAt,
+    pending: remaining,
+    totalWithImages,
+    migrated: totalWithImages - remaining,
+  };
+}
 
 function redirectToLogin(): Response {
   return new Response(null, { status: 303, headers: { Location: '/admin' } });

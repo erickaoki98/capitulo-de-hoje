@@ -159,6 +159,7 @@ export async function countPostsWithAnyImages(db: D1Database): Promise<number> {
 
 /**
  * Pega o próximo lote de posts pendentes de migração.
+ * Ordem: pub_date DESC — os mais recentes (mais visíveis na home) vêm primeiro.
  */
 export async function nextPostsToMigrate(db: D1Database, limit: number): Promise<Post[]> {
   const { results } = await db.prepare(
@@ -167,7 +168,7 @@ export async function nextPostsToMigrate(db: D1Database, limit: number): Promise
        AND (hero_image LIKE 'http%'
             OR content LIKE '%<img%src="http%'
             OR content LIKE '%<img%src=''http%')
-     ORDER BY id ASC LIMIT ?`,
+     ORDER BY pub_date DESC LIMIT ?`,
   ).bind(limit).all<Post>();
   return results ?? [];
 }

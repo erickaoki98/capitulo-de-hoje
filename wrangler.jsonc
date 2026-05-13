@@ -5,6 +5,11 @@
   "compatibility_date": "2025-05-12",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  "triggers": {
+    // Cron interno: roda a migração de imagens automaticamente a cada minuto.
+    // Sem rate limit de IP (executa dentro da infra do Cloudflare).
+    "crons": ["*/1 * * * *"]
+  },
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
