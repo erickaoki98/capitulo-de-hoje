@@ -128,18 +128,13 @@ export function renderHome(env: Env, request: Request, posts: Post[]): string {
 
   const cards = posts
     .map((p, i) => {
-      const tags = parseTags(p.tags);
-      const eager = i < 2;
+      const eager = i < 3;
       return `<article class="post-card">
-        ${p.hero_image ? `<a href="/${escapeHtml(p.slug)}" class="post-card__image"><img src="${escapeHtml(p.hero_image)}" alt="" loading="${eager ? 'eager' : 'lazy'}" ${eager ? 'fetchpriority="high"' : ''} decoding="async"></a>` : ''}
+        ${p.hero_image ? `<a href="/${escapeHtml(p.slug)}" class="post-card__image" aria-hidden="true" tabindex="-1"><img src="${escapeHtml(p.hero_image)}" alt="" loading="${eager ? 'eager' : 'lazy'}" ${eager ? 'fetchpriority="high"' : ''} decoding="async"></a>` : ''}
         <div class="post-card__body">
-          ${p.category ? `<div class="post-card__category">${escapeHtml(p.category)}</div>` : ''}
           <h2 class="post-card__title"><a href="/${escapeHtml(p.slug)}">${escapeHtml(p.title)}</a></h2>
           <p class="post-card__desc">${escapeHtml(p.description)}</p>
-          <div class="post-card__meta">
-            <time datetime="${isoDate(p.pub_date)}">${formatDate(p.pub_date)}</time>
-            ${tags.length ? `<span class="dot">·</span><span>${tags.map((t) => escapeHtml(t)).join(', ')}</span>` : ''}
-          </div>
+          <time class="post-card__date" datetime="${isoDate(p.pub_date)}">${formatDate(p.pub_date)}</time>
         </div>
       </article>`;
     })
@@ -147,7 +142,7 @@ export function renderHome(env: Env, request: Request, posts: Post[]): string {
 
   const body = posts.length === 0
     ? `<div class="empty"><p>Ainda não há posts. <a href="/admin">Criar o primeiro</a>.</p></div>`
-    : `<section class="posts-list">${cards}</section>`;
+    : `<section class="posts-grid">${cards}</section>`;
 
   return layout(
     {
@@ -179,7 +174,6 @@ export function renderPost(env: Env, request: Request, post: Post): string {
 <article class="post">
   ${post.hero_image ? `<img src="${escapeHtml(post.hero_image)}" alt="" class="post__hero" loading="eager" fetchpriority="high" decoding="async">` : ''}
   <header class="post__header">
-    ${post.category ? `<div class="post__category">${escapeHtml(post.category)}</div>` : ''}
     <h1 class="post__title">${escapeHtml(post.title)}</h1>
     <div class="post__meta">
       <time datetime="${isoDate(post.pub_date)}">${formatDate(post.pub_date)}</time>
@@ -188,7 +182,6 @@ export function renderPost(env: Env, request: Request, post: Post): string {
       <span>·</span>
       <span>${readingTime(post.content)}</span>
     </div>
-    ${tags.length ? `<div class="tag-list">${tags.map((t) => `<span class="tag">${escapeHtml(t)}</span>`).join('')}</div>` : ''}
   </header>
   <div class="prose">${html}</div>
 </article>

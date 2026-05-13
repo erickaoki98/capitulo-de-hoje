@@ -20,7 +20,7 @@ import type { ImageMigrationStats } from './images';
 import {
   createSession, sessionCookie, clearSessionCookie, requireAuth,
 } from './auth';
-import { excerpt } from './markdown';
+import { excerpt, sanitizeDescription } from './markdown';
 
 const HTML_HEADERS = {
   'Content-Type': 'text/html; charset=utf-8',
@@ -719,7 +719,7 @@ async function importPostsBatch(
         slice.map((p) => ({
           slug: p.slug,
           title: p.title,
-          description: p.description || excerpt(p.content),
+          description: sanitizeDescription(p.description) || excerpt(p.content),
           content: p.content,
           category: p.category,
           tags: p.tags.join(', '),
