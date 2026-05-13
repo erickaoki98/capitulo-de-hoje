@@ -47,6 +47,36 @@ function parseTags(s: string): string[] {
   return s.split(',').map((t) => t.trim()).filter(Boolean);
 }
 
+/**
+ * Normaliza pra comparação fuzzy: lowercase, sem acentos, sem pontuação, sem espaços extras.
+ */
+function normalize(s: string): string {
+  return s
+    .toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+/**
+ * Remove o primeiro <h1>...</h1> do HTML se o texto for muito similar ao título do post.
+ * Usado pra evitar duplicação visual quando o WP exporta o título dentro do <content>.
+ */
+function stripDuplicateH1(html: string, postTitle: string): string {
+  const target = normalize(postTitle);
+  if (!target) return html;
+  return html.replace(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i, (full, inner) => {
+    const innerText = normalize(String(inner).replace(/<[^>]*>/g, ' '));
+    if (!innerText) return full;
+    // Match exato OU substring forte (90%+ overlap)
+    if (innerText === target) return '';
+    const longer = innerText.length > target.length ? innerText : target;
+    const shorter = innerText.length > target.length ? target : innerText;
+    if (longer.includes(shorter) && shorter.length / longer.length > 0.8) return '';
+    return full;
+  });
+}
+
 // ====== Layout ======
 interface LayoutOptions {
   title: string;
@@ -206,6 +236,9 @@ export function renderPost(
   const postUrl = `${siteOrigin}/${post.slug}`;
   const tags = parseTags(post.tags);
   let html = renderMarkdown(post.content);
+  // Stripa <h1> duplicado no início do content (WP exporta o título dentro do body).
+  // Remove o primeiro <h1>...</h1> se o texto bater ~80% com o título do post.
+  html = stripDuplicateH1(html, post.title);
 
   // injeta ads in-content se configurado
   const pubId = ads?.publisherId;
