@@ -10,11 +10,12 @@ import {
   recordPageview, topPostsByViews, getPostsBySlugList, viewsForPath,
   pageviewsSummary, pageviewsByDay,
   listApiKeys, insertApiKey, findApiKeyByHash, touchApiKey, deleteApiKey,
+  countPublishedPosts, listPostsForSitemap,
 } from './db';
 import {
   renderHome, renderPost, render404, renderPrivacy, renderDocs,
   renderLogin, renderAdminDashboard, renderAdminPosts, renderAdminEditor,
-  renderAdminSettings, renderAdminAnalytics, renderAdminApiKeys,
+  renderAdminSettings, renderAdminConfiguracoes, renderAdminAnalytics, renderAdminApiKeys,
   renderAdminCache,
   type SiteAdSettings, type SiteTypography,
 } from './render';
@@ -27,7 +28,7 @@ import {
   extractImageUrls, rewriteHtmlUrls, migrateImagesWithBudget,
 } from './images';
 import type { ImageMigrationStats } from './images';
-import { parseAdConfig, type AdConfig, DEFAULT_AD_CONFIG } from './adsense';
+import { parseAdConfig, renderAdsTxt, type AdConfig, DEFAULT_AD_CONFIG } from './adsense';
 import { generateApiKey, sha256 } from './apikey';
 import {
   createSession, sessionCookie, clearSessionCookie, requireAuth,
@@ -95,12 +96,25 @@ export default {
     const { pathname } = url;
 
     try {
+      // ===== www → apex redirect =====
+      if (url.hostname.startsWith('www.')) {
+        const dest = new URL(url.toString());
+        dest.hostname = dest.hostname.replace(/^www\./, '');
+        return Response.redirect(dest.toString(), 301);
+      }
+
       // ===== Static assets (CSS, favicon, etc) =====
       if (pathname.startsWith('/styles.css') || pathname.startsWith('/favicon')) {
         const res = await env.ASSETS.fetch(request);
-        // adiciona cache de longo prazo (mutaremos via versão se precisar)
         const headers = new Headers(res.headers);
-        headers.set('Cache-Control', 'public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800');
+        // Admin pages use ?v=timestamp for cache-busting; short cache for versioned URLs
+        const hasVersion = url.searchParams.has('v');
+        headers.set(
+          'Cache-Control',
+          hasVersion
+            ? 'no-cache, no-store, must-revalidate'
+            : 'public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800'
+        );
         return new Response(res.body, { status: res.status, headers });
       }
 
@@ -171,10 +185,59 @@ export default {
         return writeCache(env, ctx, request, resp);
       }
 
+      // ===== Legacy WP: /?p=123 (shortlinks por ID) =====
+      if ((request.method === 'GET' || request.method === 'HEAD') && url.searchParams.has('p')) {
+        const wpId = url.searchParams.get('p');
+        if (wpId && /^\d+$/.test(wpId)) {
+          const target = await findRedirect(env.DB, `/?p=${wpId}`);
+          if (target) {
+            return Response.redirect(`${url.protocol}//${url.host}/${target}`, 301);
+          }
+        }
+      }
+
+      // ===== WP bot targets → 410 Gone =====
+      if (/^\/(wp-login\.php|wp-admin|xmlrpc\.php|wp-cron\.php|wp-comments-post\.php|trackback)(\/|$)/.test(pathname)) {
+        return new Response('Gone', { status: 410, headers: { 'Cache-Control': 'public, max-age=86400' } });
+      }
+
       // ===== Legacy /p/<slug> → 301 to /<slug> =====
-      if (pathname.startsWith('/p/') && request.method === 'GET') {
+      if (pathname.startsWith('/p/') && (request.method === 'GET' || request.method === 'HEAD')) {
         const slug = pathname.slice(3).replace(/\/$/, '');
         return Response.redirect(`${url.protocol}//${url.host}/${slug}`, 301);
+      }
+
+      // ===== Legacy WordPress redirects =====
+      // /category/<name>/ → home (WP usava categorias; nosso site não tem páginas de categoria)
+      if (pathname.startsWith('/category/') && (request.method === 'GET' || request.method === 'HEAD')) {
+        return Response.redirect(`${url.protocol}//${url.host}/`, 301);
+      }
+      // /author/<name>/ → home
+      if (pathname.startsWith('/author/') && (request.method === 'GET' || request.method === 'HEAD')) {
+        return Response.redirect(`${url.protocol}//${url.host}/`, 301);
+      }
+      // /tag/<name>/ → home (WP tag archives)
+      if (pathname.startsWith('/tag/') && (request.method === 'GET' || request.method === 'HEAD')) {
+        return Response.redirect(`${url.protocol}//${url.host}/`, 301);
+      }
+      // /page/<n>/ → home (WP pagination)
+      if (pathname.startsWith('/page/') && (request.method === 'GET' || request.method === 'HEAD')) {
+        return Response.redirect(`${url.protocol}//${url.host}/`, 301);
+      }
+      // WP pages: sobre-nos, contato, termos-de-uso, politica-de-privacidade → /privacidade ou home
+      if (/^\/(sobre-nos|contato|termos-de-uso|politica-de-privacidade)\/?$/.test(pathname)) {
+        const dest = pathname.startsWith('/termos') || pathname.startsWith('/politica')
+          ? '/privacidade'
+          : '/';
+        return Response.redirect(`${url.protocol}//${url.host}${dest}`, 301);
+      }
+      // /feed/, /feed/rss2/, etc → /rss.xml
+      if (/^\/feed(\/.*)?$/.test(pathname) && (request.method === 'GET' || request.method === 'HEAD')) {
+        return Response.redirect(`${url.protocol}//${url.host}/rss.xml`, 301);
+      }
+      // /wp-content/* → 410 Gone (old media paths)
+      if (pathname.startsWith('/wp-content/') || pathname.startsWith('/wp-includes/') || pathname.startsWith('/wp-json/')) {
+        return new Response('Gone', { status: 410, headers: { 'Cache-Control': 'public, max-age=86400' } });
       }
 
       // ===== robots.txt =====
@@ -195,19 +258,70 @@ Sitemap: ${canonical}/sitemap.xml
         });
       }
 
-      // ===== Sitemap =====
+      // ===== ads.txt (AdSense — IAB Authorized Digital Sellers) =====
+      if (pathname === '/ads.txt' && request.method === 'GET') {
+        const adSettings = await loadAdSettings(env);
+        if (adSettings?.publisherId) {
+          return new Response(renderAdsTxt(adSettings.publisherId), {
+            headers: {
+              'Content-Type': 'text/plain; charset=utf-8',
+              'Cache-Control': 'public, max-age=86400',
+            },
+          });
+        }
+        return new Response('', { status: 404 });
+      }
+
+      // ===== Sitemap index =====
       if (pathname === '/sitemap.xml' && request.method === 'GET') {
         const cached = await readCache(env, request);
         if (cached) return cached;
-        const posts = await listPosts(env.DB, { includeDrafts: false, limit: 1000 });
+        const total = await countPublishedPosts(env.DB);
+        const SITEMAP_PAGE_SIZE = 1000;
+        const pages = Math.max(1, Math.ceil(total / SITEMAP_PAGE_SIZE));
         const base = canonicalUrl(env, url);
-        const urls = [
-          `<url><loc>${base}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>`,
-          ...posts.map((p) => `<url><loc>${base}/${p.slug}</loc><lastmod>${new Date(p.updated_date || p.pub_date).toISOString()}</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>`),
-        ].join('\n');
+        const sitemaps = [];
+        for (let i = 1; i <= pages; i++) {
+          sitemaps.push(`<sitemap><loc>${base}/sitemap-${i}.xml</loc></sitemap>`);
+        }
+        // Inclui sitemap de páginas estáticas
+        sitemaps.push(`<sitemap><loc>${base}/sitemap-pages.xml</loc></sitemap>`);
+        const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${sitemaps.join('\n')}
+</sitemapindex>`;
+        const resp = new Response(xml, {
+          headers: {
+            'Content-Type': 'application/xml; charset=utf-8',
+            'Cache-Control': 'public, max-age=3600',
+          },
+        });
+        return writeCache(env, ctx, request, resp);
+      }
+
+      // ===== Sitemap de posts paginado: /sitemap-{n}.xml =====
+      const sitemapMatch = pathname.match(/^\/sitemap-(\d+)\.xml$/);
+      if (sitemapMatch && request.method === 'GET') {
+        const cached = await readCache(env, request);
+        if (cached) return cached;
+        const page = Number(sitemapMatch[1]);
+        const SITEMAP_PAGE_SIZE = 1000;
+        const offset = (page - 1) * SITEMAP_PAGE_SIZE;
+        const posts = await listPostsForSitemap(env.DB, SITEMAP_PAGE_SIZE, offset);
+        if (posts.length === 0) {
+          return new Response(render404(env, request), { status: 404, headers: HTML_HEADERS });
+        }
+        const base = canonicalUrl(env, url);
+        const urls = posts.map((p) =>
+          `<url><loc>${base}/${p.slug}</loc><lastmod>${new Date(p.updated_date || p.pub_date).toISOString()}</lastmod><changefreq>monthly</changefreq><priority>0.8</priority></url>`
+        );
+        // Primeira página inclui a home
+        if (page === 1) {
+          urls.unshift(`<url><loc>${base}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>`);
+        }
         const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-${urls}
+${urls.join('\n')}
 </urlset>`;
         const resp = new Response(xml, {
           headers: {
@@ -218,12 +332,31 @@ ${urls}
         return writeCache(env, ctx, request, resp);
       }
 
+      // ===== Sitemap de páginas estáticas =====
+      if (pathname === '/sitemap-pages.xml' && request.method === 'GET') {
+        const cached = await readCache(env, request);
+        if (cached) return cached;
+        const base = canonicalUrl(env, url);
+        const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<url><loc>${base}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>
+<url><loc>${base}/privacidade</loc><changefreq>yearly</changefreq><priority>0.3</priority></url>
+</urlset>`;
+        const resp = new Response(xml, {
+          headers: {
+            'Content-Type': 'application/xml; charset=utf-8',
+            'Cache-Control': 'public, max-age=86400',
+          },
+        });
+        return writeCache(env, ctx, request, resp);
+      }
+
       // ===== RSS feed =====
       if (pathname === '/rss.xml' && request.method === 'GET') {
         const cached = await readCache(env, request);
         if (cached) return cached;
         const posts = await listPosts(env.DB, { includeDrafts: false, limit: 50 });
-        const siteUrl = `${url.protocol}//${url.host}`;
+        const siteUrl = canonicalUrl(env, url);
         const items = posts.map((p) => `
   <item>
     <title>${escapeXml(p.title)}</title>
@@ -513,21 +646,14 @@ ${urls}
         }), { headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' } });
       }
 
-      // ============= Admin: Settings =============
+      // ============= Admin: Settings (Monetização) =============
       if (pathname === '/admin/settings' && request.method === 'GET') {
         if (!authed) return redirectToLogin();
         const settings = await getAllSettings(env.DB);
-        const titleScale = (['sm','md','lg','xl'] as const).includes(settings['typography.title_scale'] as any)
-          ? settings['typography.title_scale'] as 'sm' | 'md' | 'lg' | 'xl'
-          : 'md';
-        const bodyScale = (['sm','md','lg'] as const).includes(settings['typography.body_scale'] as any)
-          ? settings['typography.body_scale'] as 'sm' | 'md' | 'lg'
-          : 'md';
         return new Response(renderAdminSettings(env, request, {
           publisherId: settings['adsense.publisher_id'] ?? '',
           autoAds: settings['adsense.auto_ads'] === '1',
           adConfig: parseAdConfig(settings['adsense.placements'] ?? null),
-          typography: { titleScale, bodyScale },
           saved: url.searchParams.get('saved') === '1',
         }), { headers: NO_CACHE_HEADERS });
       }
@@ -537,7 +663,6 @@ ${urls}
         const form = await request.formData();
         const pubId = String(form.get('adsense.publisher_id') ?? '').trim();
         const autoAds = form.get('adsense.auto_ads') === '1' ? '1' : '0';
-        // monta AdConfig do form
         const cfg: AdConfig = { ...DEFAULT_AD_CONFIG };
         for (const key of Object.keys(cfg) as Array<keyof AdConfig>) {
           const enabled = form.get(`enabled.${key}`) === '1';
@@ -550,19 +675,43 @@ ${urls}
             ...(key === 'betweenCards' ? { everyNCards: Number.isFinite(n) && n > 0 ? n : 6 } : {}),
           };
         }
-        // typography
-        const titleScale = String(form.get('typography.title_scale') ?? 'md');
-        const bodyScale = String(form.get('typography.body_scale') ?? 'md');
         await Promise.all([
           setSetting(env.DB, 'adsense.publisher_id', pubId),
           setSetting(env.DB, 'adsense.auto_ads', autoAds),
           setSetting(env.DB, 'adsense.placements', JSON.stringify(cfg)),
+        ]);
+        await bumpCacheVersion(env);
+        return new Response(null, { status: 303, headers: { Location: '/admin/settings?saved=1' } });
+      }
+
+      // ============= Admin: Configurações (Typography) =============
+      if (pathname === '/admin/configuracoes' && request.method === 'GET') {
+        if (!authed) return redirectToLogin();
+        const [t, b] = await Promise.all([
+          getSetting(env.DB, 'typography.title_scale'),
+          getSetting(env.DB, 'typography.body_scale'),
+        ]);
+        const titleScale = (['sm','md','lg','xl'] as const).includes(t as any)
+          ? t as 'sm' | 'md' | 'lg' | 'xl' : 'md';
+        const bodyScale = (['sm','md','lg'] as const).includes(b as any)
+          ? b as 'sm' | 'md' | 'lg' : 'md';
+        return new Response(renderAdminConfiguracoes(env, request, {
+          typography: { titleScale, bodyScale },
+          saved: url.searchParams.get('saved') === '1',
+        }), { headers: NO_CACHE_HEADERS });
+      }
+
+      if (pathname === '/admin/configuracoes' && request.method === 'POST') {
+        if (!authed) return redirectToLogin();
+        const form = await request.formData();
+        const titleScale = String(form.get('typography.title_scale') ?? 'md');
+        const bodyScale = String(form.get('typography.body_scale') ?? 'md');
+        await Promise.all([
           setSetting(env.DB, 'typography.title_scale', titleScale),
           setSetting(env.DB, 'typography.body_scale', bodyScale),
         ]);
-        // bump cache pra refletir nas páginas públicas
         await bumpCacheVersion(env);
-        return new Response(null, { status: 303, headers: { Location: '/admin/settings?saved=1' } });
+        return new Response(null, { status: 303, headers: { Location: '/admin/configuracoes?saved=1' } });
       }
 
       // ============= Admin: Analytics =============
@@ -812,7 +961,7 @@ ${urls}
       }
 
       // ===== Public: post at bare /<slug> (catch-all) =====
-      if (request.method === 'GET' && pathname !== '/' && !pathname.startsWith('/admin') && !pathname.startsWith('/api')) {
+      if ((request.method === 'GET' || request.method === 'HEAD') && pathname !== '/' && !pathname.startsWith('/admin') && !pathname.startsWith('/api')) {
         // trailing slash → 301 to canonical
         if (pathname.endsWith('/') && pathname.length > 1) {
           return Response.redirect(`${url.protocol}//${url.host}${pathname.slice(0, -1)}`, 301);
@@ -851,7 +1000,7 @@ ${urls}
             }
             ctx.waitUntil(recordPageview(env.DB, pathname).catch(() => {}));
             const resp = new Response(
-              renderPost(env, request, post, relatedPosts.slice(0, 12), ads, typo),
+              renderPost(env, request, post, relatedPosts.slice(0, 12), ads, typo, relatedPosts.slice(0, 6)),
               { headers: PUBLIC_CACHE_HEADERS },
             );
             return writeCache(env, ctx, request, resp);

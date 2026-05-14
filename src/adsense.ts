@@ -4,6 +4,9 @@
  *   adsense.publisher_id: 'ca-pub-XXX'  (sem o ca-pub- prefix opcional)
  *   adsense.auto_ads:     '1' ou '0'    (script de Auto Ads do Google)
  *   adsense.placements:   JSON          (regras de posicionamento manual)
+ *
+ * Ref: https://support.google.com/adsense/answer/9274019
+ *      https://support.google.com/adsense/answer/9261306
  */
 
 export interface AdPlacementConfig {
@@ -54,25 +57,52 @@ export function parseAdConfig(raw: string | null): AdConfig {
 
 /**
  * Renderiza a tag <script async> do AdSense (header).
- * Inclui Auto Ads se ativado.
+ * Conforme documentação atual do Google, o Auto Ads é ativado
+ * apenas pelo parâmetro ?client= na URL do script — o antigo
+ * `enable_page_level_ads` foi descontinuado.
+ *
+ * Usa Google Consent Mode v2 para sinalizar o estado de consentimento
+ * ao AdSense — o Google gerencia internamente quais cookies usar.
+ * Ads sempre carregam, mas respeitam o consent mode (ads não-personalizados
+ * quando o usuário rejeita cookies publicitários).
  */
 export function renderAdSenseScript(publisherId: string, autoAds: boolean): string {
   const id = publisherId.startsWith('ca-pub-') ? publisherId : `ca-pub-${publisherId}`;
-  return `<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${escapeAttr(id)}" crossorigin="anonymous"></script>
-${autoAds ? `<script>
-(adsbygoogle = window.adsbygoogle || []).push({
-  google_ad_client: "${escapeAttr(id)}",
-  enable_page_level_ads: true
+  return `<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('consent', 'default', {
+  'ad_storage': 'denied',
+  'ad_user_data': 'denied',
+  'ad_personalization': 'denied',
+  'analytics_storage': 'denied',
+  'wait_for_update': 500
 });
-</script>` : ''}`;
+(function(){
+  var consent = localStorage.getItem('cookie_consent');
+  if (consent === 'accepted') {
+    gtag('consent', 'update', {
+      'ad_storage': 'granted',
+      'ad_user_data': 'granted',
+      'ad_personalization': 'granted',
+      'analytics_storage': 'granted'
+    });
+  }
+})();
+</script>
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${escapeAttr(id)}" crossorigin="anonymous"></script>`;
 }
 
-/** Renderiza uma unidade de anúncio individual (display ad). */
+/**
+ * Renderiza uma unidade de anúncio individual (display ad).
+ * Usa lazy loading nativo para ads abaixo do fold (melhor Core Web Vitals).
+ */
 export function renderAdUnit(
   publisherId: string,
   slotId: string,
   format: AdPlacementConfig['format'] = 'auto',
   layout?: string,
+  lazy = true,
 ): string {
   const id = publisherId.startsWith('ca-pub-') ? publisherId : `ca-pub-${publisherId}`;
   const isInArticle = format === 'in-article';
@@ -82,7 +112,7 @@ export function renderAdUnit(
   data-ad-slot="${escapeAttr(slotId)}"
   ${isInArticle ? 'data-ad-layout="in-article" data-ad-format="fluid"' : `data-ad-format="${escapeAttr(format ?? 'auto')}"`}
   ${layout ? `data-ad-layout="${escapeAttr(layout)}"` : ''}
-  data-full-width-responsive="true"></ins>
+  data-full-width-responsive="true"${lazy ? '\n  loading="lazy"' : ''}></ins>
 <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>`;
 }
 
@@ -94,7 +124,10 @@ function escapeAttr(s: string): string {
 
 /**
  * Injeta unidades de anúncio "in-content" a cada N parágrafos no HTML do post.
- * Encontra `</p>` no top-level e injeta o ad depois.
+ * Conta apenas `</p>` top-level (ignora parágrafos dentro de blockquote, figure, etc.)
+ * para não posicionar ads em locais estranhos.
+ * Nunca injeta se o conteúdo total tiver menos de everyN*2 parágrafos
+ * (evita excesso de ads em conteúdos curtos — política Google).
  */
 export function injectInContentAds(
   html: string,
@@ -103,12 +136,51 @@ export function injectInContentAds(
   format: AdPlacementConfig['format'],
   everyN: number,
 ): string {
-  let count = 0;
-  return html.replace(/<\/p>/gi, (match) => {
-    count++;
-    if (count % everyN === 0) {
-      return match + `\n<div class="ad-inarticle">${renderAdUnit(publisherId, slotId, format)}</div>\n`;
+  // Separa o HTML em tokens: tags de abertura/fechamento de blocos + conteúdo
+  // para rastrear profundidade e contar apenas </p> de nível 0.
+  const BLOCK_TAGS = /^(blockquote|figure|table|ul|ol|details|aside|div|nav|section|header|footer)$/i;
+  let depth = 0;
+  let topLevelPCount = 0;
+
+  // Primeira passagem: conta parágrafos top-level pra decidir se vale injetar
+  const tagRe = /<\/?([a-zA-Z][a-zA-Z0-9]*)[^>]*>/g;
+  let m: RegExpExecArray | null;
+  const tempHtml = html;
+  while ((m = tagRe.exec(tempHtml)) !== null) {
+    const [full, tag] = m;
+    if (BLOCK_TAGS.test(tag)) {
+      if (full[1] === '/') depth = Math.max(0, depth - 1);
+      else if (!full.endsWith('/>')) depth++;
     }
-    return match;
+    if (depth === 0 && full.toLowerCase() === '</p>') topLevelPCount++;
+  }
+
+  // Muito pouco conteúdo — não injeta (evita ad density excessivo)
+  if (topLevelPCount < everyN * 2) return html;
+
+  // Segunda passagem: injeta ads nos pontos certos
+  depth = 0;
+  let count = 0;
+  return html.replace(/<\/?([a-zA-Z][a-zA-Z0-9]*)[^>]*>/g, (full, tag) => {
+    if (BLOCK_TAGS.test(tag)) {
+      if (full[1] === '/') depth = Math.max(0, depth - 1);
+      else if (!full.endsWith('/>')) depth++;
+    }
+    if (depth === 0 && full.toLowerCase() === '</p>') {
+      count++;
+      if (count % everyN === 0 && count < topLevelPCount) {
+        return full + `\n<div class="ad-inarticle">${renderAdUnit(publisherId, slotId, format)}</div>\n`;
+      }
+    }
+    return full;
   });
+}
+
+/**
+ * Gera a linha ads.txt necessária para o publisher.
+ * Formato IAB Tech Lab: google.com, pub-XXXX, DIRECT, f08c47fec0942fa0
+ */
+export function renderAdsTxt(publisherId: string): string {
+  const pubNum = publisherId.replace('ca-pub-', '').replace('pub-', '');
+  return `google.com, pub-${pubNum}, DIRECT, f08c47fec0942fa0\n`;
 }

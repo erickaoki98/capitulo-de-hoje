@@ -127,8 +127,11 @@ function layout(opts: LayoutOptions, body: string): string {
 <meta name="description" content="${escapeHtml(description)}">
 <link rel="canonical" href="${escapeHtml(url)}">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="preload" href="/styles.css" as="style">
-<link rel="stylesheet" href="/styles.css">
+<link rel="preload" href="/styles.css?v=${Date.now()}" as="style">
+<link rel="stylesheet" href="/styles.css?v=${Date.now()}">
+${isAdmin ? `<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap">` : ''}
 ${image ? `<link rel="preload" as="image" href="${escapeHtml(image)}" ${type === 'article' ? 'fetchpriority="high"' : ''}>` : ''}
 ${!isAdmin ? `<link rel="alternate" type="application/rss+xml" title="${escapeHtml(siteTitle)}" href="/rss.xml">` : ''}
 <meta property="og:type" content="${type}">
@@ -156,10 +159,8 @@ ${headInject}
 <body class="${finalBodyClass}">
 <header class="site-header">
   <div class="container">
-    <a href="${isAdmin ? '/admin' : '/'}" class="site-logo">${escapeHtml(siteTitle)}${isAdmin ? ' <span class="site-logo__suffix">admin</span>' : ''}</a>
-    <nav>${isAdmin
-      ? '<a href="/" target="_blank" rel="noopener">Ver site →</a>'
-      : '<a href="/">Início</a><a href="/privacidade">Privacidade</a><a href="/rss.xml">RSS</a>'}</nav>
+    <a href="${isAdmin ? '/admin' : '/'}" class="site-logo">${isAdmin ? `${escapeHtml(siteTitle)} <span class="site-logo__suffix">admin</span>` : `<img src="/img/logo-v2.png" alt="${escapeHtml(siteTitle)}" class="site-logo__img" width="500" height="197">`}</a>
+    ${isAdmin ? '<nav><a href="/" target="_blank" rel="noopener">Ver site →</a></nav>' : ''}
   </div>
 </header>
 <main class="container">
@@ -167,10 +168,52 @@ ${body}
 </main>
 <footer class="site-footer">
   <div class="container">
-    <p>© ${new Date().getFullYear()} ${escapeHtml(siteTitle)} · <a href="/privacidade">Política de Privacidade</a></p>
+    <p>© ${new Date().getFullYear()} ${escapeHtml(siteTitle)} · <a href="/privacidade">Privacidade</a> · <a href="/rss.xml">RSS</a></p>
   </div>
 </footer>
 ${stickyAd}
+${!isAdmin ? `<div id="cookie-consent" style="display:none;position:fixed;bottom:12px;left:50%;z-index:9999;transform:translateX(-50%) translateY(20px);opacity:0;max-width:min(440px,calc(100% - 32px));display:none">
+  <div style="display:flex;align-items:center;gap:12px;background:#1a1a2e;color:#d4d4d8;padding:8px 10px 8px 16px;border-radius:10px;font-size:0.75rem;line-height:1.4;box-shadow:0 4px 24px rgba(0,0,0,0.2)">
+    <span>Usamos cookies. <a href="/privacidade" style="color:#93b5ff;text-decoration:underline">Privacidade</a></span>
+    <button onclick="acceptCookies()" style="background:rgba(79,127,255,0.15);color:#93b5ff;border:none;padding:6px 14px;border-radius:6px;font-size:0.6875rem;font-weight:600;cursor:pointer;white-space:nowrap;text-transform:uppercase;letter-spacing:0.04em;transition:background 0.15s" onmouseover="this.style.background='rgba(79,127,255,0.25)'" onmouseout="this.style.background='rgba(79,127,255,0.15)'">Aceitar</button>
+  </div>
+</div>
+<script>
+(function(){
+  var k='cookie_consent';
+  if (localStorage.getItem(k)) return;
+  var el = document.getElementById('cookie-consent');
+  if (!el) return;
+  var sticky = document.querySelector('.ad-sticky-footer');
+  if (sticky) sticky.style.display = 'none';
+
+  // Mostra com animação após 1.2s
+  setTimeout(function(){
+    el.style.display = 'block';
+    // Force reflow antes de animar
+    el.offsetHeight;
+    el.style.transition = 'opacity 0.3s ease-out, transform 0.3s ease-out';
+    el.style.opacity = '1';
+    el.style.transform = 'translateX(-50%) translateY(0)';
+  }, 1200);
+
+  window.acceptCookies = function(){
+    localStorage.setItem(k, 'accepted');
+    if (typeof gtag === 'function') {
+      gtag('consent', 'update', {
+        'ad_storage': 'granted',
+        'ad_user_data': 'granted',
+        'ad_personalization': 'granted',
+        'analytics_storage': 'granted'
+      });
+    }
+    // Fade out
+    el.style.opacity = '0';
+    el.style.transform = 'translateX(-50%) translateY(10px)';
+    setTimeout(function(){ el.style.display = 'none'; if (sticky) sticky.style.removeProperty('display'); }, 250);
+  };
+})();
+</script>` : ''}
 </body>
 </html>`;
 }
@@ -240,6 +283,7 @@ export function renderHome(
 export function renderPost(
   env: Env, request: Request, post: Post,
   related: Post[] = [], ads?: SiteAdSettings, typography?: SiteTypography,
+  trending: Post[] = [],
 ): string {
   const url = new URL(request.url);
   const siteOrigin = siteCanonical(env, url);
@@ -259,6 +303,11 @@ export function renderPost(
     );
   }
 
+  // injeta box de trending (Em Alta) antes de cada <h2>
+  if (trending.length > 0) {
+    html = injectTrendingBoxes(html, trending.slice(0, 6), post.slug);
+  }
+
   // helper que renderiza um ad slot se config + slotId
   const adIf = (key: keyof AdConfig, wrapperClass: string): string => {
     if (!pubId || !ads) return '';
@@ -273,7 +322,7 @@ export function renderPost(
   const body = `
 <article class="post">
   ${adIf('beforePost', 'ad-slot--before-post')}
-  ${post.hero_image ? `<img src="${escapeHtml(post.hero_image)}" alt="" class="post__hero" loading="eager" fetchpriority="high" decoding="async">` : ''}
+  ${post.hero_image ? `<div class="post__hero-wrap"><img src="${escapeHtml(post.hero_image)}" alt="" class="post__hero" loading="eager" fetchpriority="high" decoding="async"></div>` : ''}
   <header class="post__header">
     <h1 class="post__title">${escapeHtml(post.title)}</h1>
     <div class="post__meta">
@@ -290,7 +339,120 @@ export function renderPost(
 </article>
 ${relatedHtml}
 ${adIf('bottomOfPage', 'ad-slot--bottom')}
-<p class="back"><a href="/">← Voltar</a></p>`;
+<p class="back"><a href="/">← Voltar</a></p>
+<script>
+(function(){
+  var article = document.querySelector('.post');
+  if (!article || !('IntersectionObserver' in window)) return;
+  var prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // --- 1. Header progress bar ---
+  var header = document.querySelector('.site-header');
+  var hpBar = document.createElement('div');
+  hpBar.className = 'header-progress';
+  if (header) header.appendChild(hpBar);
+
+  var prose = document.querySelector('.prose');
+  var ticking = false;
+  function updateProgress() {
+    if (!prose) return;
+    var r = prose.getBoundingClientRect();
+    var vh = window.innerHeight;
+    var start = r.top + window.scrollY;
+    var end = start + r.height - vh;
+    var pct = Math.min(100, Math.max(0, ((window.scrollY - start) / (end - start)) * 100));
+    hpBar.style.width = pct + '%';
+    return pct;
+  }
+
+  // --- 2. Hero color-shift ---
+  var hero = document.querySelector('.post__hero');
+  function updateHero() {
+    if (!hero) return;
+    var r = hero.getBoundingClientRect();
+    if (r.bottom < 0) {
+      hero.classList.add('hero-faded');
+    } else {
+      var pct = 1 - (r.bottom / (window.innerHeight + r.height));
+      if (pct > 0.4) hero.classList.add('hero-faded');
+      else hero.classList.remove('hero-faded');
+    }
+  }
+
+  // --- 3. Image parallax on scroll ---
+  // Wrap figure imgs in overflow container so caption stays outside
+  document.querySelectorAll('.prose figure > img').forEach(function(img) {
+    if (img.parentElement.classList.contains('img-parallax-wrap')) return;
+    var wrap = document.createElement('div');
+    wrap.className = 'img-parallax-wrap';
+    img.parentElement.insertBefore(wrap, img);
+    wrap.appendChild(img);
+  });
+  var proseImgs = document.querySelectorAll('.prose .img-parallax-wrap img, .prose > img');
+  function updateImageParallax() {
+    if (prefersReduced) return;
+    var vh = window.innerHeight;
+    for (var i = 0; i < proseImgs.length; i++) {
+      var img = proseImgs[i];
+      var r = img.getBoundingClientRect();
+      if (r.bottom > -100 && r.top < vh + 100) {
+        // Map position: when center of img is at bottom of viewport → -15px, at top → +15px
+        var center = r.top + r.height / 2;
+        var ratio = (center / vh - 0.5) * 2; // -1 to 1
+        var shift = ratio * -15;
+        img.style.setProperty('--img-y', shift + 'px');
+      }
+    }
+  }
+
+  // --- Scroll handler (throttled via rAF) ---
+  window.addEventListener('scroll', function() {
+    if (!ticking) {
+      requestAnimationFrame(function() {
+        updateProgress();
+        updateHero();
+        updateImageParallax();
+        ticking = false;
+      });
+      ticking = true;
+    }
+  }, { passive: true });
+  updateProgress();
+  updateHero();
+  updateImageParallax();
+
+  // --- 4. Fade-in + highlight via IntersectionObserver ---
+  article.classList.add('ed-ready');
+
+  // Prose blocks: fade in
+  var blockSel = '.prose > p, .prose > h2, .prose > h3, .prose > h4,' +
+    '.prose > blockquote, .prose > ul, .prose > ol,' +
+    '.prose > pre, .prose > table, .prose > figure,' +
+    '.prose > .ad-inarticle, .prose > img';
+  var blocks = document.querySelectorAll(blockSel);
+  var blockIO = new IntersectionObserver(function(entries) {
+    entries.forEach(function(e) {
+      if (e.isIntersecting) {
+        e.target.classList.add('is-visible');
+        blockIO.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
+  blocks.forEach(function(el) { blockIO.observe(el); });
+
+  // Highlight: strong/em marker effect
+  var highlights = document.querySelectorAll('.prose strong, .prose em');
+  var hlIO = new IntersectionObserver(function(entries) {
+    entries.forEach(function(e) {
+      if (e.isIntersecting) {
+        e.target.classList.add('hl-visible');
+        hlIO.unobserve(e.target);
+      }
+    });
+  }, { threshold: 0.5, rootMargin: '0px 0px -20px 0px' });
+  highlights.forEach(function(el) { hlIO.observe(el); });
+})();
+</script>`;
 
   const heroAbs = post.hero_image
     ? (post.hero_image.startsWith('http') ? post.hero_image : `${siteOrigin}${post.hero_image}`)
@@ -339,6 +501,33 @@ ${adIf('bottomOfPage', 'ad-slot--bottom')}
     },
     body,
   );
+}
+
+// ====== Trending Box (Em Alta — 6 posts, 3x2 grid) ======
+function renderTrendingBox(posts: Post[]): string {
+  const items = posts.map((p) => `<a class="trending-item" href="/${escapeHtml(p.slug)}">
+      ${p.hero_image ? `<img class="trending-item__img" src="${escapeHtml(p.hero_image)}" alt="" loading="lazy" decoding="async">` : `<span class="trending-item__img trending-item__img--ph"></span>`}
+      <span class="trending-item__title">${escapeHtml(p.title)}</span>
+    </a>`).join('');
+  return `<aside class="trending-box" aria-label="Em alta">
+  <div class="trending-box__header"><svg class="trending-box__icon" viewBox="0 0 20 20" fill="currentColor" width="16" height="16"><path d="M12.395 2.553a1 1 0 00-1.45-.385c-.345.23-.614.558-.822.88-.214.33-.403.713-.57 1.116-.334.804-.614 1.768-.84 2.734a31.365 31.365 0 00-.613 3.58 2.64 2.64 0 01-.945-1.067c-.328-.68-.398-1.534-.398-2.654A1 1 0 005.05 6.05 6.981 6.981 0 003 11a7 7 0 1011.95-4.95c-.592-.591-.98-.985-1.348-1.467-.363-.476-.724-1.063-1.207-2.03zM12.12 15.12A3 3 0 017 13s.879.5 2.5.5c0-1 .5-4 1.25-4.5.5 1 .786 1.293 1.371 1.879A2.99 2.99 0 0113 13a2.99 2.99 0 01-.879 2.121z"/></svg> Em Alta</div>
+  <div class="trending-box__grid">${items}</div>
+</aside>`;
+}
+
+function injectTrendingBoxes(html: string, trending: Post[], currentSlug: string): string {
+  // Filtra o post atual dos trending
+  const filtered = trending.filter((p) => p.slug !== currentSlug).slice(0, 2);
+  if (filtered.length < 2) return html;
+
+  const box = renderTrendingBox(filtered);
+  // Injeta antes de cada <h2> (exceto o primeiro — muito próximo do topo)
+  let count = 0;
+  return html.replace(/<h2[\s>]/gi, (match) => {
+    count++;
+    if (count <= 1) return match; // pula o primeiro h2
+    return box + '\n' + match;
+  });
 }
 
 // ====== Related Posts ======
@@ -704,7 +893,7 @@ export function renderLogin(env: Env, request: Request, error?: string): string 
         </div>
         <h1>${escapeHtml(env.SITE_TITLE)}</h1>
         <p class="muted">Painel administrativo</p>
-        ${error ? `<div class="alert alert--error" style="margin-top:1rem"><span class="alert__icon">⚠</span><div>${escapeHtml(error)}</div></div>` : ''}
+        ${error ? `<div class="alert alert--error" style="margin-top:1rem"><span class="alert__icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span><div>${escapeHtml(error)}</div></div>` : ''}
         <form method="POST" action="/admin/login" autocomplete="off" class="adm-login__form">
           <div class="field">
             <label>Usuário</label>
@@ -734,39 +923,42 @@ export function renderAdminDashboard(
   void request;
   const { stats, recent, topToday } = data;
 
+  // Greeting contextual
+  const hour = new Date().getUTCHours() - 3; // BRT
+  const h = hour < 0 ? hour + 24 : hour;
+  const greeting = h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite';
+
   return adminShell(env, {
     active: 'dashboard',
-    title: 'Início',
-    subtitle: 'Visão geral do seu blog',
+    title: greeting,
+    subtitle: `${stats.total.toLocaleString('pt-BR')} posts · ${stats.views24h.toLocaleString('pt-BR')} views hoje`,
     actions: `<a href="/admin/new" class="btn btn--primary">+ Novo post</a>`,
   }, `
-    <section class="kpi-grid kpi-grid--4">
-      <div class="kpi-card">
-        <div class="kpi-card__label">Posts</div>
-        <div class="kpi-card__value">${stats.total.toLocaleString('pt-BR')}</div>
-        <div class="kpi-card__hint">${stats.published} publicados · ${stats.drafts} rascunhos</div>
+    <section class="dash-hero">
+      <div class="dash-hero__stat">
+        <span class="dash-hero__number">${stats.total.toLocaleString('pt-BR')}</span>
+        <span class="dash-hero__label">posts publicados</span>
       </div>
-      <div class="kpi-card">
-        <div class="kpi-card__label">Views 24h</div>
-        <div class="kpi-card__value">${stats.views24h.toLocaleString('pt-BR')}</div>
-        <div class="kpi-card__hint"><a href="/admin/analytics" class="muted-link">Ver detalhes →</a></div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-card__label">Site</div>
-        <div class="kpi-card__value" style="font-size:1.125rem">capitulodehoje</div>
-        <div class="kpi-card__hint"><a href="/" target="_blank" rel="noopener" class="muted-link">Abrir →</a></div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-card__label">Status</div>
-        <div class="kpi-card__value" style="font-size:1.125rem; color:#10b981">● Online</div>
-        <div class="kpi-card__hint">Cloudflare Workers</div>
+      <div class="dash-hero__meta">
+        <div class="dash-hero__pill">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+          <strong>${stats.views24h.toLocaleString('pt-BR')}</strong> views 24h
+        </div>
+        <div class="dash-hero__pill">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <strong>${stats.published}</strong> publicados · <strong>${stats.drafts}</strong> rascunhos
+        </div>
+        <div class="dash-hero__pill dash-hero__pill--success">
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          Online
+        </div>
       </div>
     </section>
 
     <div class="adm-split">
       <section class="card">
         <header class="card__header">
-          <h2 class="card__title">Posts recentes</h2>
+          <h2 class="card__title">Recentes</h2>
           <a href="/admin/posts" class="muted-link">Ver todos →</a>
         </header>
         <ul class="recent-list">
@@ -783,54 +975,18 @@ export function renderAdminDashboard(
 
       <section class="card">
         <header class="card__header">
-          <h2 class="card__title">Em alta agora</h2>
-          <span class="muted">últimas 24h</span>
+          <h2 class="card__title">Em alta</h2>
+          <span class="muted">24h</span>
         </header>
         <ul class="recent-list">
-          ${topToday.length === 0 ? `<li class="empty-state">Sem dados ainda — os visitantes começam a contar conforme acessam.</li>` : topToday.map((t) => `
+          ${topToday.length === 0 ? `<li class="empty-state">Sem dados ainda.</li>` : topToday.map((t) => `
             <li class="recent-item">
               <a href="${escapeHtml(t.path)}" target="_blank" rel="noopener" class="recent-item__title">${escapeHtml(t.title ?? t.path)}</a>
-              <span class="recent-item__meta"><strong>${t.views.toLocaleString('pt-BR')}</strong> views</span>
+              <span class="recent-item__meta"><strong>${t.views.toLocaleString('pt-BR')}</strong></span>
             </li>`).join('')}
         </ul>
       </section>
     </div>
-
-    <section class="card">
-      <header class="card__header">
-        <h2 class="card__title">Ações rápidas</h2>
-      </header>
-      <div class="card__body quick-actions">
-        <a href="/admin/new" class="qa-card">
-          <span class="qa-card__icon">✏️</span>
-          <div>
-            <strong>Novo post</strong>
-            <small>Criar conteúdo manualmente</small>
-          </div>
-        </a>
-        <a href="/admin/api-keys" class="qa-card">
-          <span class="qa-card__icon">🔑</span>
-          <div>
-            <strong>Gerar API key</strong>
-            <small>Publicar via integração externa</small>
-          </div>
-        </a>
-        <a href="/admin/settings" class="qa-card">
-          <span class="qa-card__icon">💰</span>
-          <div>
-            <strong>Monetização</strong>
-            <small>AdSense e placements</small>
-          </div>
-        </a>
-        <a href="/admin/cache" class="qa-card">
-          <span class="qa-card__icon">🧹</span>
-          <div>
-            <strong>Limpar cache</strong>
-            <small>Forçar regeneração das páginas</small>
-          </div>
-        </a>
-      </div>
-    </section>
   `);
 }
 
@@ -859,7 +1015,7 @@ export function renderAdminPosts(
     <section class="card">
       <header class="card__header" style="gap:1rem; flex-wrap:wrap">
         <form method="GET" action="/admin/posts" class="search-form" style="flex:1; min-width:240px">
-          <input type="search" name="q" placeholder="🔍 Buscar por título ou slug…" value="${escapeHtml(q)}">
+          <input type="search" name="q" placeholder="Buscar por título ou slug…" value="${escapeHtml(q)}">
           <input type="hidden" name="status" value="${status}">
         </form>
         <div class="filter-pills">
@@ -902,7 +1058,7 @@ export function renderAdminPosts(
 }
 
 // ====== Admin: shell with sidebar nav ======
-type AdminSection = 'dashboard' | 'posts' | 'settings' | 'analytics' | 'api-keys' | 'cache';
+type AdminSection = 'dashboard' | 'posts' | 'settings' | 'configuracoes' | 'analytics' | 'api-keys' | 'cache';
 
 interface AdminShellOptions {
   active: AdminSection;
@@ -918,6 +1074,7 @@ const ICONS: Record<AdminSection, string> = {
   posts:     '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>',
   analytics: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="3" y1="20" x2="21" y2="20"/></svg>',
   settings:  '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>',
+  configuracoes: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>',
   'api-keys':'<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>',
   cache:     '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>',
 };
@@ -929,8 +1086,18 @@ function adminShell(env: Env, opts: AdminShellOptions, body: string): string {
     ['posts',     '/admin/posts', 'Posts'],
     ['analytics', '/admin/analytics', 'Analytics'],
     ['settings',  '/admin/settings', 'Monetização'],
+    ['configuracoes', '/admin/configuracoes', 'Configurações'],
     ['api-keys',  '/admin/api-keys', 'API'],
     ['cache',     '/admin/cache', 'Cache'],
+  ];
+
+  // Mobile bottom nav: show only the 5 most important items
+  const mobileNavItems: Array<[AdminSection, string, string]> = [
+    ['dashboard', '/admin', 'Início'],
+    ['posts',     '/admin/posts', 'Posts'],
+    ['analytics', '/admin/analytics', 'Analytics'],
+    ['settings',  '/admin/settings', 'Ads'],
+    ['configuracoes', '/admin/configuracoes', 'Config'],
   ];
 
   const nav = navItems.map(([k, href, label]) => `
@@ -939,10 +1106,15 @@ function adminShell(env: Env, opts: AdminShellOptions, body: string): string {
       <span class="adm-nav__label">${label}</span>
     </a>`).join('');
 
-  // Reusa o layout() público mas com sidebar+main no body
+  const bottomNav = mobileNavItems.map(([k, href, label]) => `
+    <a class="adm-bnav__item ${active === k ? 'is-active' : ''}" href="${href}">
+      <span class="adm-bnav__icon">${ICONS[k]}</span>
+      <span class="adm-bnav__label">${label}</span>
+    </a>`).join('');
+
   const innerBody = `
 <div class="adm-shell">
-  <aside class="adm-sidebar" id="adm-sidebar">
+  <aside class="adm-sidebar">
     <a href="/admin" class="adm-brand">
       <span class="adm-brand__logo">${escapeHtml((env.SITE_TITLE.match(/\b[A-ZÀ-Ú]/g) ?? []).slice(0, 2).join('') || 'CH')}</span>
       <span class="adm-brand__text">
@@ -965,10 +1137,6 @@ function adminShell(env: Env, opts: AdminShellOptions, body: string): string {
     </div>
   </aside>
 
-  <button class="adm-menu-toggle" id="adm-toggle" aria-label="Menu">
-    <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
-  </button>
-
   <main class="adm-main">
     <header class="adm-page-header">
       <div class="adm-page-header__left">
@@ -979,20 +1147,9 @@ function adminShell(env: Env, opts: AdminShellOptions, body: string): string {
     </header>
     <div class="adm-content">${body}</div>
   </main>
-</div>
-<script>
-(() => {
-  const sb = document.getElementById('adm-sidebar');
-  const btn = document.getElementById('adm-toggle');
-  btn?.addEventListener('click', () => sb?.classList.toggle('is-open'));
-  document.addEventListener('click', (e) => {
-    if (window.innerWidth >= 900) return;
-    if (sb?.classList.contains('is-open') && !sb.contains(e.target) && e.target !== btn) {
-      sb.classList.remove('is-open');
-    }
-  });
-})();
-</script>`;
+
+  <nav class="adm-bottom-nav">${bottomNav}</nav>
+</div>`;
 
   return layout(
     {
@@ -1013,7 +1170,6 @@ export function renderAdminSettings(
     publisherId: string;
     autoAds: boolean;
     adConfig: AdConfig;
-    typography: { titleScale: 'sm' | 'md' | 'lg' | 'xl'; bodyScale: 'sm' | 'md' | 'lg' };
     saved?: boolean;
     error?: string;
   },
@@ -1029,33 +1185,40 @@ export function renderAdminSettings(
     hasN?: 'paragraphs' | 'cards';
   }> = [
     {
-      key: 'beforePost', label: 'Antes do título', icon: '⬆',
+      key: 'beforePost', label: 'Antes do título',
+      icon: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>',
       help: 'Aparece acima da imagem de capa. RPM baixo — use com moderação.',
     },
     {
-      key: 'topOfContent', label: 'Topo do conteúdo', icon: '🎯',
+      key: 'topOfContent', label: 'Topo do conteúdo',
+      icon: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>',
       help: 'Logo após o título, antes do primeiro parágrafo. Alto RPM — recomendado.',
     },
     {
-      key: 'inContent', label: 'No meio do texto', icon: '📝',
+      key: 'inContent', label: 'No meio do texto',
+      icon: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg>',
       help: 'A cada N parágrafos. Formato in-article é o que melhor performa.',
       hasN: 'paragraphs',
     },
     {
-      key: 'afterContent', label: 'Final do conteúdo', icon: '⬇',
+      key: 'afterContent', label: 'Final do conteúdo',
+      icon: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg>',
       help: 'Após o último parágrafo, antes dos posts relacionados.',
     },
     {
-      key: 'bottomOfPage', label: 'Rodapé da página', icon: '⏚',
+      key: 'bottomOfPage', label: 'Rodapé da página',
+      icon: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="15" x2="21" y2="15"/></svg>',
       help: 'Depois dos posts relacionados, no fim da página.',
     },
     {
-      key: 'betweenCards', label: 'Entre cards (home)', icon: '⊞',
+      key: 'betweenCards', label: 'Entre cards (home)',
+      icon: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>',
       help: 'Insere um card de anúncio a cada N cards na listagem.',
       hasN: 'cards',
     },
     {
-      key: 'stickyFooter', label: 'Sticky mobile', icon: '📱',
+      key: 'stickyFooter', label: 'Sticky mobile',
+      icon: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>',
       help: 'Anúncio fixo no rodapé em telas pequenas — alto CTR mas pode incomodar.',
     },
   ];
@@ -1111,8 +1274,8 @@ export function renderAdminSettings(
     title: 'Monetização',
     subtitle: 'Configure Google AdSense, placements e ferramentas de receita',
   }, `
-    ${saved ? `<div class="alert alert--success"><span class="alert__icon">✓</span><div><strong>Configurações salvas.</strong></div></div>` : ''}
-    ${error ? `<div class="alert alert--error"><span class="alert__icon">⚠</span><div>${escapeHtml(error)}</div></div>` : ''}
+    ${saved ? `<div class="alert alert--success"><span class="alert__icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></span><div><strong>Configurações salvas.</strong></div></div>` : ''}
+    ${error ? `<div class="alert alert--error"><span class="alert__icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span><div>${escapeHtml(error)}</div></div>` : ''}
 
     <section class="status-strip">
       <div class="status-strip__item ${adsenseConfigured ? 'is-on' : 'is-off'}">
@@ -1177,6 +1340,38 @@ export function renderAdminSettings(
         </div>
       </section>
 
+      <div class="sticky-actions">
+        <button type="submit" class="btn btn--primary btn--lg">Salvar configurações</button>
+      </div>
+    </form>
+    <script>
+      document.querySelectorAll('.placement-card input[type="checkbox"]').forEach(cb => {
+        cb.addEventListener('change', () => {
+          cb.closest('.placement-card').classList.toggle('is-on', cb.checked);
+        });
+      });
+    </script>
+  `);
+}
+
+// ====== Admin: Configurações (Typography) ======
+export function renderAdminConfiguracoes(
+  env: Env, request: Request,
+  data: {
+    typography: { titleScale: 'sm' | 'md' | 'lg' | 'xl'; bodyScale: 'sm' | 'md' | 'lg' };
+    saved?: boolean;
+  },
+): string {
+  void request;
+
+  return adminShell(env, {
+    active: 'configuracoes',
+    title: 'Configurações',
+    subtitle: 'Tipografia, aparência e preferências do site público',
+  }, `
+    ${data.saved ? `<div class="alert alert--success"><span class="alert__icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></span><div><strong>Configurações salvas.</strong> O cache do site foi limpo automaticamente.</div></div>` : ''}
+
+    <form method="POST" action="/admin/configuracoes">
       <section class="card">
         <header class="card__header card__header--icon">
           <span class="card__header-icon">
@@ -1191,7 +1386,7 @@ export function renderAdminSettings(
           <div class="field-row">
             <div class="field">
               <label>Tamanho dos títulos</label>
-              <div class="seg-control">
+              <div class="seg-control" id="seg-title">
                 ${(['sm', 'md', 'lg', 'xl'] as const).map((s) => `
                   <label class="seg-control__opt ${data.typography.titleScale === s ? 'is-active' : ''}">
                     <input type="radio" name="typography.title_scale" value="${s}" ${data.typography.titleScale === s ? 'checked' : ''}>
@@ -1202,7 +1397,7 @@ export function renderAdminSettings(
             </div>
             <div class="field">
               <label>Tamanho do texto</label>
-              <div class="seg-control">
+              <div class="seg-control" id="seg-body">
                 ${(['sm', 'md', 'lg'] as const).map((s) => `
                   <label class="seg-control__opt ${data.typography.bodyScale === s ? 'is-active' : ''}">
                     <input type="radio" name="typography.body_scale" value="${s}" ${data.typography.bodyScale === s ? 'checked' : ''}>
@@ -1212,10 +1407,10 @@ export function renderAdminSettings(
               <small class="field__help">Tamanho do corpo dos parágrafos.</small>
             </div>
           </div>
-          <div class="type-preview" data-title-scale="${data.typography.titleScale}" data-body-scale="${data.typography.bodyScale}">
+          <div class="type-preview" id="type-preview">
             <div class="type-preview__label">Pré-visualização</div>
             <h1 class="type-preview__h1">Título de exemplo</h1>
-            <p class="type-preview__p">Este é um parágrafo de exemplo do corpo do texto. Use essas configurações para encontrar o tamanho mais confortável para os leitores.</p>
+            <p class="type-preview__p">Este é um parágrafo de exemplo do corpo do texto. Use essas configurações para encontrar o tamanho mais confortável para os leitores do seu blog.</p>
           </div>
         </div>
       </section>
@@ -1224,6 +1419,36 @@ export function renderAdminSettings(
         <button type="submit" class="btn btn--primary btn--lg">Salvar configurações</button>
       </div>
     </form>
+
+    <script>
+    (() => {
+      const TITLE_SIZES = { sm: '22px', md: '28px', lg: '34px', xl: '42px' };
+      const BODY_SIZES  = { sm: '14px', md: '16px', lg: '18px' };
+      const preview = document.getElementById('type-preview');
+      const h1 = preview?.querySelector('.type-preview__h1');
+      const p  = preview?.querySelector('.type-preview__p');
+
+      function activateSegment(container) {
+        container.querySelectorAll('.seg-control__opt').forEach(opt => {
+          const radio = opt.querySelector('input[type="radio"]');
+          opt.classList.toggle('is-active', radio?.checked);
+        });
+      }
+
+      document.querySelectorAll('.seg-control').forEach(seg => {
+        seg.addEventListener('change', (e) => {
+          activateSegment(seg);
+          const input = e.target;
+          if (input.name === 'typography.title_scale' && h1) {
+            h1.style.fontSize = TITLE_SIZES[input.value] || '28px';
+          }
+          if (input.name === 'typography.body_scale' && p) {
+            p.style.fontSize = BODY_SIZES[input.value] || '16px';
+          }
+        });
+      });
+    })();
+    </script>
   `);
 }
 
@@ -1257,7 +1482,7 @@ export function renderAdminAnalytics(
 
   const chart = data.daily.length === 0
     ? `<div class="chart-empty">
-        <span class="chart-empty__icon">📊</span>
+        <span class="chart-empty__icon"><svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="3" y1="20" x2="21" y2="20"/></svg></span>
         <p>Sem dados ainda</p>
         <small>As visitas aparecem aqui em poucos minutos.</small>
       </div>`
@@ -1406,10 +1631,10 @@ export function renderAdminApiKeys(
     active: 'api-keys',
     title: 'API',
     subtitle: 'Chaves de acesso para publicação externa via REST',
-    actions: `<a href="/doc" target="_blank" rel="noopener" class="btn btn--ghost">📘 Documentação</a>`,
+    actions: `<a href="/doc" target="_blank" rel="noopener" class="btn btn--ghost"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;margin-right:4px"><path d="M4 19.5A2.5 2.5 0 016.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z"/></svg>Documentação</a>`,
   }, `
     ${newToken ? `<div class="alert alert--success">
-      <span class="alert__icon">🔑</span>
+      <span class="alert__icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 11-7.778 7.778 5.5 5.5 0 017.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg></span>
       <div style="flex:1">
         <strong>Chave criada com sucesso.</strong>
         <p>Copie agora — ela <strong>não será exibida de novo</strong>.</p>
@@ -1479,7 +1704,7 @@ export function renderAdminCache(
     subtitle: 'Gerenciamento de cache edge — invalidação gradual sem stampede',
   }, `
     ${data.purgedNow ? `<div class="alert alert--success">
-      <span class="alert__icon">✓</span>
+      <span class="alert__icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></span>
       <div>
         <strong>Cache invalidado.</strong> Nova versão: <code>v${escapeHtml(data.version)}</code>.
         <p>A regeneração acontece gradualmente conforme cada página recebe visitas.</p>
@@ -1494,7 +1719,7 @@ export function renderAdminCache(
       </div>
       <div class="kpi-card">
         <div class="kpi-card__label">Última limpeza</div>
-        <div class="kpi-card__value" style="font-size:1.25rem">${escapeHtml(lastPurgedText)}</div>
+        <div class="kpi-card__value kpi-card__value--sm">${escapeHtml(lastPurgedText)}</div>
       </div>
     </section>
 
@@ -1570,7 +1795,7 @@ export function renderAdminEditor(
     subtitle: isNew ? 'Crie um post novo no blog' : `Editando: ${data.title}`,
     actions: `<a href="/admin/posts" class="btn btn--ghost">← Voltar</a>`,
   }, `
-    ${error ? `<div class="alert alert--error"><span class="alert__icon">⚠</span><div>${escapeHtml(error)}</div></div>` : ''}
+    ${error ? `<div class="alert alert--error"><span class="alert__icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span><div>${escapeHtml(error)}</div></div>` : ''}
     <form method="POST" action="${isNew ? '/admin/new' : `/admin/edit/${post?.id}`}">
       <section class="card">
         <header class="card__header">

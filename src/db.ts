@@ -13,6 +13,22 @@ export async function listPosts(
   return results ?? [];
 }
 
+/** Conta posts publicados (para sitemap index) */
+export async function countPublishedPosts(db: D1Database): Promise<number> {
+  const row = await db.prepare('SELECT COUNT(*) AS n FROM posts WHERE draft = 0').first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+/** Lista posts paginados com offset (para sitemap paginado) — retorna só slug + datas */
+export async function listPostsForSitemap(
+  db: D1Database, limit: number, offset: number,
+): Promise<Array<{ slug: string; updated_date: number; pub_date: number }>> {
+  const { results } = await db.prepare(
+    'SELECT slug, updated_date, pub_date FROM posts WHERE draft = 0 ORDER BY pub_date DESC LIMIT ? OFFSET ?',
+  ).bind(limit, offset).all<{ slug: string; updated_date: number; pub_date: number }>();
+  return results ?? [];
+}
+
 export async function getPostBySlug(db: D1Database, slug: string): Promise<Post | null> {
   const stmt = db.prepare('SELECT * FROM posts WHERE slug = ? LIMIT 1').bind(slug);
   return await stmt.first<Post>();
@@ -234,8 +250,8 @@ export async function topPostsByViews(
     `SELECT path, SUM(count) AS views
      FROM pageviews_hourly
      WHERE bucket >= ? AND path != ? AND path LIKE '/%' AND path NOT LIKE '/admin%'
-       AND path NOT LIKE '/api%' AND path NOT LIKE '/img%' AND path NOT LIKE '/_%'
-       AND path NOT IN ('/', '/sitemap.xml', '/robots.txt', '/rss.xml', '/privacidade', '/favicon.svg')
+       AND path NOT LIKE '/api%' AND path NOT LIKE '/img%'
+       AND path NOT IN ('/', '/sitemap.xml', '/robots.txt', '/rss.xml', '/privacidade', '/favicon.svg', '/styles.css', '/doc')
      GROUP BY path
      ORDER BY views DESC LIMIT ?`,
   ).bind(since, exclude, limit).all<{ path: string; views: number }>();
