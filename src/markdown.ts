@@ -5,8 +5,50 @@ marked.setOptions({
   breaks: false,
 });
 
+/**
+ * Renderiza conteúdo para HTML.
+ * Se o input já for HTML puro (contém tags block-level como <p>, <figure>, <div>),
+ * retorna diretamente sem passar pelo marked — evita escaping de tags.
+ * Se for um documento HTML completo (<!DOCTYPE>, <html>, <body>),
+ * extrai apenas o conteúdo do <body>.
+ */
 export function renderMarkdown(md: string): string {
-  return marked.parse(md, { async: false }) as string;
+  const trimmed = md.trim();
+
+  // Detecta documento HTML completo — extrai só o body
+  if (/^(<!\s*--)|(<!DOCTYPE\s)/i.test(trimmed) && /<body[\s>]/i.test(trimmed)) {
+    const bodyMatch = trimmed.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+    const body = bodyMatch ? bodyMatch[1].trim() : trimmed;
+    return stripSceneMarkers(body);
+  }
+
+  // Se o conteúdo já é HTML (tem tags block-level), retorna direto
+  if (/^(<!\s*--[\s\S]*?-->\s*)?<(h[1-6]|p|div|figure|article|section|ul|ol|table|blockquote)\b/i.test(trimmed)) {
+    return stripSceneMarkers(trimmed);
+  }
+
+  // Caso contrário é Markdown — converte via marked
+  return stripSceneMarkers(marked.parse(md, { async: false }) as string);
+}
+
+/**
+ * Remove marcadores SCENE_N (placeholders de geração de imagem) do HTML.
+ * Formato: "SCENE_1: descrição | legenda -->" dentro de <p> ou solto.
+ */
+function stripSceneMarkers(html: string): string {
+  return html
+    .replace(/<p[^>]*>\s*SCENE_\d+:[\s\S]*?<\/p>/gi, '')
+    .replace(/^SCENE_\d+:.*(?:-->)?\s*$/gm, '')
+    .replace(/\n{3,}/g, '\n\n');
+}
+
+/** Remove <figure> tags com imagens de domínios mortos (Supabase antigo) */
+export function stripBrokenImageFigures(html: string): string {
+  // Remove <figure> inteiros que referenciam o projeto Supabase antigo (desativado)
+  return html.replace(
+    /<figure[^>]*>[\s\S]*?<img[^>]*src="https?:\/\/njclovklgqrsuwagxcck\.supabase\.co[^"]*"[^>]*>[\s\S]*?<\/figure>/gi,
+    ''
+  );
 }
 
 export function excerpt(input: string, maxChars = 160): string {
