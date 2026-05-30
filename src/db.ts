@@ -1,4 +1,9 @@
-import type { Post, PostInput } from './types';
+import type {
+  Post, PostInput,
+  CreditCard, CreditCardInput,
+  Job, JobInput,
+  OutboundClickKind,
+} from './types';
 
 export async function listPosts(
   db: D1Database,
@@ -385,4 +390,187 @@ export async function updatePost(db: D1Database, id: number, input: PostInput): 
 
 export async function deletePost(db: D1Database, id: number): Promise<void> {
   await db.prepare('DELETE FROM posts WHERE id = ?').bind(id).run();
+}
+
+// ============== CARTÕES DE CRÉDITO ==============
+
+export async function listCreditCards(
+  db: D1Database,
+  opts: { activeOnly?: boolean; category?: string } = {},
+): Promise<CreditCard[]> {
+  const { activeOnly = true, category } = opts;
+  const clauses: string[] = [];
+  const binds: unknown[] = [];
+  if (activeOnly) clauses.push('active = 1');
+  if (category) { clauses.push('category = ?'); binds.push(category); }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  const { results } = await db.prepare(
+    `SELECT * FROM credit_cards ${where} ORDER BY featured DESC, sort_order ASC, created_at DESC`,
+  ).bind(...binds).all<CreditCard>();
+  return results ?? [];
+}
+
+export async function getCreditCardById(db: D1Database, id: number): Promise<CreditCard | null> {
+  return await db.prepare('SELECT * FROM credit_cards WHERE id = ? LIMIT 1').bind(id).first<CreditCard>();
+}
+
+export async function getCreditCardBySlug(db: D1Database, slug: string): Promise<CreditCard | null> {
+  return await db.prepare('SELECT * FROM credit_cards WHERE slug = ? LIMIT 1').bind(slug).first<CreditCard>();
+}
+
+/** Categorias distintas de cartões ativos (para os filtros do comparador). */
+export async function creditCardCategories(db: D1Database): Promise<string[]> {
+  const { results } = await db.prepare(
+    `SELECT DISTINCT category FROM credit_cards WHERE active = 1 AND category != '' ORDER BY category`,
+  ).all<{ category: string }>();
+  return (results ?? []).map((r) => r.category);
+}
+
+export async function createCreditCard(db: D1Database, input: CreditCardInput): Promise<number> {
+  const now = Date.now();
+  const r = await db.prepare(
+    `INSERT INTO credit_cards
+       (slug, name, issuer, image_url, tagline, annual_fee, benefits, badges, rating,
+        affiliate_url, cta_label, category, featured, sort_order, active, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    input.slug, input.name, input.issuer, input.image_url, input.tagline, input.annual_fee,
+    input.benefits, input.badges, input.rating, input.affiliate_url, input.cta_label,
+    input.category, input.featured, input.sort_order, input.active, now, now,
+  ).run();
+  return Number(r.meta.last_row_id);
+}
+
+export async function updateCreditCard(db: D1Database, id: number, input: CreditCardInput): Promise<void> {
+  await db.prepare(
+    `UPDATE credit_cards SET
+       slug = ?, name = ?, issuer = ?, image_url = ?, tagline = ?, annual_fee = ?,
+       benefits = ?, badges = ?, rating = ?, affiliate_url = ?, cta_label = ?,
+       category = ?, featured = ?, sort_order = ?, active = ?, updated_at = ?
+     WHERE id = ?`,
+  ).bind(
+    input.slug, input.name, input.issuer, input.image_url, input.tagline, input.annual_fee,
+    input.benefits, input.badges, input.rating, input.affiliate_url, input.cta_label,
+    input.category, input.featured, input.sort_order, input.active, Date.now(), id,
+  ).run();
+}
+
+export async function deleteCreditCard(db: D1Database, id: number): Promise<void> {
+  await db.prepare('DELETE FROM credit_cards WHERE id = ?').bind(id).run();
+}
+
+// ============== EMPREGOS ==============
+
+export async function listJobs(
+  db: D1Database,
+  opts: { activeOnly?: boolean; category?: string; limit?: number } = {},
+): Promise<Job[]> {
+  const { activeOnly = true, category, limit = 200 } = opts;
+  const clauses: string[] = [];
+  const binds: unknown[] = [];
+  if (activeOnly) {
+    clauses.push('active = 1');
+    // Esconde vagas expiradas (expires_at no passado).
+    clauses.push('(expires_at IS NULL OR expires_at > ?)');
+    binds.push(Date.now());
+  }
+  if (category) { clauses.push('category = ?'); binds.push(category); }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
+  binds.push(limit);
+  const { results } = await db.prepare(
+    `SELECT * FROM jobs ${where} ORDER BY featured DESC, posted_at DESC LIMIT ?`,
+  ).bind(...binds).all<Job>();
+  return results ?? [];
+}
+
+export async function getJobById(db: D1Database, id: number): Promise<Job | null> {
+  return await db.prepare('SELECT * FROM jobs WHERE id = ? LIMIT 1').bind(id).first<Job>();
+}
+
+export async function getJobBySlug(db: D1Database, slug: string): Promise<Job | null> {
+  return await db.prepare('SELECT * FROM jobs WHERE slug = ? LIMIT 1').bind(slug).first<Job>();
+}
+
+/** Categorias (áreas) distintas de vagas ativas — para os filtros da listagem. */
+export async function jobCategories(db: D1Database): Promise<string[]> {
+  const { results } = await db.prepare(
+    `SELECT DISTINCT category FROM jobs
+     WHERE active = 1 AND category != '' AND (expires_at IS NULL OR expires_at > ?)
+     ORDER BY category`,
+  ).bind(Date.now()).all<{ category: string }>();
+  return (results ?? []).map((r) => r.category);
+}
+
+export async function createJob(db: D1Database, input: JobInput): Promise<number> {
+  const now = Date.now();
+  const r = await db.prepare(
+    `INSERT INTO jobs
+       (slug, title, company, company_logo, location, remote, salary, type, category,
+        description, apply_url, featured, active, posted_at, expires_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).bind(
+    input.slug, input.title, input.company, input.company_logo, input.location, input.remote,
+    input.salary, input.type, input.category, input.description, input.apply_url,
+    input.featured, input.active, input.posted_at, input.expires_at, now, now,
+  ).run();
+  return Number(r.meta.last_row_id);
+}
+
+export async function updateJob(db: D1Database, id: number, input: JobInput): Promise<void> {
+  await db.prepare(
+    `UPDATE jobs SET
+       slug = ?, title = ?, company = ?, company_logo = ?, location = ?, remote = ?,
+       salary = ?, type = ?, category = ?, description = ?, apply_url = ?,
+       featured = ?, active = ?, posted_at = ?, expires_at = ?, updated_at = ?
+     WHERE id = ?`,
+  ).bind(
+    input.slug, input.title, input.company, input.company_logo, input.location, input.remote,
+    input.salary, input.type, input.category, input.description, input.apply_url,
+    input.featured, input.active, input.posted_at, input.expires_at, Date.now(), id,
+  ).run();
+}
+
+export async function deleteJob(db: D1Database, id: number): Promise<void> {
+  await db.prepare('DELETE FROM jobs WHERE id = ?').bind(id).run();
+}
+
+// ============== CLIQUES DE SAÍDA (afiliado / candidatura / promo) ==============
+
+/** Dia UTC atual no formato 'YYYY-MM-DD'. */
+export function currentDayBucket(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+/** Incrementa o contador de cliques de saída para (kind, target_id) no dia atual. */
+export async function recordOutboundClick(
+  db: D1Database, kind: OutboundClickKind, targetId: string,
+): Promise<void> {
+  await db.prepare(
+    `INSERT INTO outbound_clicks (bucket, kind, target_id, count) VALUES (?, ?, ?, 1)
+     ON CONFLICT(bucket, kind, target_id) DO UPDATE SET count = count + 1`,
+  ).bind(currentDayBucket(), kind, targetId).run();
+}
+
+/** Cliques agregados por target nos últimos N dias, para um tipo. */
+export async function outboundClicksByTarget(
+  db: D1Database, kind: OutboundClickKind, days: number,
+): Promise<Array<{ target_id: string; clicks: number }>> {
+  const since = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10);
+  const { results } = await db.prepare(
+    `SELECT target_id, SUM(count) AS clicks FROM outbound_clicks
+     WHERE kind = ? AND bucket >= ?
+     GROUP BY target_id ORDER BY clicks DESC`,
+  ).bind(kind, since).all<{ target_id: string; clicks: number }>();
+  return results ?? [];
+}
+
+/** Total de cliques de um tipo nos últimos N dias. */
+export async function outboundClicksTotal(
+  db: D1Database, kind: OutboundClickKind, days: number,
+): Promise<number> {
+  const since = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10);
+  const row = await db.prepare(
+    `SELECT SUM(count) AS n FROM outbound_clicks WHERE kind = ? AND bucket >= ?`,
+  ).bind(kind, since).first<{ n: number }>();
+  return row?.n ?? 0;
 }

@@ -1,4 +1,4 @@
-import type { Env, Post, PostInput } from './types';
+import type { Env, Post, PostInput, CreditCardInput } from './types';
 import {
   listPosts, getPostBySlug, getPostById,
   createPost, updatePost, deletePost,
@@ -11,12 +11,16 @@ import {
   pageviewsSummary, pageviewsByDay,
   listApiKeys, insertApiKey, findApiKeyByHash, touchApiKey, deleteApiKey,
   countPublishedPosts, listPostsForSitemap,
+  listCreditCards, getCreditCardById, creditCardCategories,
+  createCreditCard, updateCreditCard, deleteCreditCard,
+  recordOutboundClick,
 } from './db';
 import {
   renderHome, renderPost, render404, renderPrivacy, renderDocs,
   renderLogin, renderAdminDashboard, renderAdminPosts, renderAdminEditor,
   renderAdminSettings, renderAdminConfiguracoes, renderAdminAnalytics, renderAdminApiKeys,
   renderAdminCache,
+  renderCardsHub, renderAdminCards,
   type SiteAdSettings, type SiteTypography,
 } from './render';
 import {
@@ -183,6 +187,48 @@ export default {
         if (cached) return cached;
         const resp = new Response(renderDocs(env, request), { headers: PUBLIC_CACHE_HEADERS });
         return writeCache(env, ctx, request, resp);
+      }
+
+      // ===== Public: Cartões de crédito (comparador) =====
+      if (pathname === '/cartoes' && request.method === 'GET') {
+        const cached = await readCache(env, request);
+        if (cached) {
+          ctx.waitUntil(recordPageview(env.DB, '/cartoes').catch(() => {}));
+          return cached;
+        }
+        const cat = url.searchParams.get('cat');
+        const [cards, cats, ads, typo] = await Promise.all([
+          listCreditCards(env.DB, { activeOnly: true, category: cat ?? undefined }),
+          creditCardCategories(env.DB),
+          loadAdSettings(env),
+          loadTypography(env),
+        ]);
+        ctx.waitUntil(recordPageview(env.DB, '/cartoes').catch(() => {}));
+        const resp = new Response(renderCardsHub(env, request, cards, cats, cat, ads, typo), { headers: PUBLIC_CACHE_HEADERS });
+        return writeCache(env, ctx, request, resp);
+      }
+
+      // ===== Redirect rastreado de afiliado: /ir/cartao/:id =====
+      // Mantém o link de afiliado fora do HTML público e conta o clique.
+      if (pathname.startsWith('/ir/cartao/') && (request.method === 'GET' || request.method === 'HEAD')) {
+        const id = Number(pathname.slice('/ir/cartao/'.length).replace(/\/$/, ''));
+        if (Number.isFinite(id) && id > 0) {
+          const card = await getCreditCardById(env.DB, id);
+          if (card && card.affiliate_url) {
+            ctx.waitUntil(recordOutboundClick(env.DB, 'card', String(id)).catch(() => {}));
+            return Response.redirect(card.affiliate_url, 302);
+          }
+        }
+        return Response.redirect(`${url.protocol}//${url.host}/cartoes`, 302);
+      }
+
+      // ===== Redirect rastreado do bloco promo interno: /ir/promo/:area =====
+      if (pathname.startsWith('/ir/promo/') && (request.method === 'GET' || request.method === 'HEAD')) {
+        const area = pathname.slice('/ir/promo/'.length).replace(/\/$/, '');
+        const dest = area === 'empregos' ? '/empregos' : '/cartoes';
+        const targetId = area === 'empregos' ? 'empregos' : 'cartoes';
+        ctx.waitUntil(recordOutboundClick(env.DB, 'promo', targetId).catch(() => {}));
+        return Response.redirect(`${url.protocol}//${url.host}${dest}`, 302);
       }
 
       // ===== Legacy WP: /?p=123 (shortlinks por ID) =====
@@ -647,6 +693,43 @@ ${urls.join('\n')}
       }
 
       // ============= Admin: Settings (Monetização) =============
+      // ============= Admin: Cartões de crédito =============
+      if (pathname === '/admin/cartoes' && request.method === 'GET') {
+        if (!authed) return redirectToLogin();
+        const editId = Number(url.searchParams.get('edit'));
+        const [cards, editing] = await Promise.all([
+          listCreditCards(env.DB, { activeOnly: false }),
+          Number.isFinite(editId) && editId > 0 ? getCreditCardById(env.DB, editId) : Promise.resolve(null),
+        ]);
+        return new Response(renderAdminCards(env, request, {
+          cards, editing, saved: url.searchParams.get('saved') === '1',
+        }), { headers: NO_CACHE_HEADERS });
+      }
+
+      if (pathname === '/admin/cartoes' && request.method === 'POST') {
+        if (!authed) return redirectToLogin();
+        const form = await parseFormData(request);
+        await createCreditCard(env.DB, formToCardInput(form));
+        await bumpCacheVersion(env);
+        return new Response(null, { status: 303, headers: { Location: '/admin/cartoes?saved=1' } });
+      }
+
+      const cardEditMatch = pathname.match(/^\/admin\/cartoes\/(\d+)$/);
+      if (cardEditMatch && request.method === 'POST') {
+        if (!authed) return redirectToLogin();
+        await updateCreditCard(env.DB, Number(cardEditMatch[1]), formToCardInput(await parseFormData(request)));
+        await bumpCacheVersion(env);
+        return new Response(null, { status: 303, headers: { Location: '/admin/cartoes?saved=1' } });
+      }
+
+      const cardRemoveMatch = pathname.match(/^\/admin\/cartoes\/(\d+)\/remove$/);
+      if (cardRemoveMatch && request.method === 'POST') {
+        if (!authed) return redirectToLogin();
+        await deleteCreditCard(env.DB, Number(cardRemoveMatch[1]));
+        await bumpCacheVersion(env);
+        return new Response(null, { status: 303, headers: { Location: '/admin/cartoes' } });
+      }
+
       if (pathname === '/admin/settings' && request.method === 'GET') {
         if (!authed) return redirectToLogin();
         const settings = await getAllSettings(env.DB);
@@ -1118,6 +1201,32 @@ async function runImageMigrationBatch(env: Env, batchSize: number): Promise<{
 
 function redirectToLogin(): Response {
   return new Response(null, { status: 303, headers: { Location: '/admin' } });
+}
+
+/** Converte o formulário do admin num CreditCardInput (parse de listas e flags). */
+function formToCardInput(form: FormData): CreditCardInput {
+  const s = (k: string) => String(form.get(k) ?? '').trim();
+  const lines = (k: string) => s(k).split('\n').map((x) => x.trim()).filter(Boolean);
+  const name = s('name');
+  const ratingRaw = s('rating');
+  const rating = ratingRaw === '' ? null : Math.max(0, Math.min(5, Number(ratingRaw) || 0));
+  return {
+    slug: s('slug') || slugify(name),
+    name,
+    issuer: s('issuer'),
+    image_url: s('image_url') || null,
+    tagline: s('tagline'),
+    annual_fee: s('annual_fee'),
+    benefits: JSON.stringify(lines('benefits')),
+    badges: JSON.stringify(lines('badges')),
+    rating,
+    affiliate_url: s('affiliate_url'),
+    cta_label: s('cta_label') || 'Peça já',
+    category: s('category'),
+    featured: form.get('featured') === '1' ? 1 : 0,
+    sort_order: Number(s('sort_order')) || 0,
+    active: form.get('active') === '1' ? 1 : 0,
+  };
 }
 
 /**

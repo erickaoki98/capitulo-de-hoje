@@ -1,4 +1,4 @@
-import type { Env, Post, PostCard } from './types';
+import type { Env, Post, PostCard, CreditCard, Job } from './types';
 import type { ShopeeProduct, AdminUser, ShopeeClickDay, ShopeeProductDayClicks } from './db';
 import type { ShopeeApiProduct } from './shopee';
 import type { UserRole } from './auth';
@@ -308,7 +308,10 @@ ${!isAdmin ? '<script src="/personalize.js" defer></script>' : ''}
 <header class="site-header">
   <div class="container">
     <a href="${isAdmin ? '/admin' : '/'}" class="site-logo">${isAdmin ? `${escapeHtml(siteTitle)} <span class="site-logo__suffix">admin</span>` : `<img src="/img/logo-v2.png" alt="${escapeHtml(siteTitle)}" class="site-logo__img" width="500" height="197">`}</a>
-    ${isAdmin ? '<nav><a href="/" target="_blank" rel="noopener">Ver site →</a></nav>' : ''}
+    ${isAdmin ? '<nav><a href="/" target="_blank" rel="noopener">Ver site →</a></nav>' : `<nav class="site-nav">
+      <a href="/">Novelas</a>
+      <a href="/cartoes" class="site-nav__hot">Cartões</a>
+    </nav>`}
   </div>
 </header>
 <main class="container">
@@ -772,6 +775,7 @@ function planAndInjectBlocks(
   _minGap: number = 2,
   extraAdSlots: import('./adsense').InContentExtraSlot[] = [],
   publisherIdForExtras?: string,
+  promoHtml: string | null = null,
 ): string {
   const { totalP, h2Positions } = analyzeContentStructure(html);
   if (totalP < 4) return html; // conteúdo muito curto
@@ -793,7 +797,7 @@ function planAndInjectBlocks(
 
   // Se não tem ad NEM shopee NEM extras, nada a fazer
   const hasShopee = shopeeConfig && shopeeConfig.products.length > 0 && shopeeConfig.firstAfter > 0;
-  if (!adHtml && !hasShopee && validExtras.length === 0) return html;
+  if (!adHtml && !hasShopee && validExtras.length === 0 && !promoHtml) return html;
 
   // Posições proibidas: parágrafo do H2 (evita ads colados em headings)
   const forbidden = new Set<number>();
@@ -837,6 +841,21 @@ function planAndInjectBlocks(
     }
   }
 
+  // --- 1b. Promo interno (1 bloco, ~1/3 do artigo, evita H2 e Shopee) ---
+  const promoBlocks: ContentBlock[] = [];
+  const promoOccupied = new Set<number>();
+  if (promoHtml) {
+    let pos = Math.min(Math.max(2, Math.round(totalP / 3)), totalP - 2);
+    if (forbidden.has(pos)) {
+      if (!forbidden.has(pos + 1) && pos + 1 < totalP - 1) pos += 1;
+      else if (!forbidden.has(pos - 1) && pos - 1 > 1) pos -= 1;
+    }
+    if (pos > 0 && pos < totalP && !shopeeOccupied.has(pos)) {
+      promoBlocks.push({ html: promoHtml, afterParagraph: pos });
+      promoOccupied.add(pos);
+    }
+  }
+
   // --- 2. AdSense preenche posições regulares (FOCO PRINCIPAL) ---
   // Usa o intervalo configurado no admin (everyNParagraphs). Mínimo de 2 parágrafos
   // (gap enforcement garante que nunca fiquem adjacentes). Google controla fill rate.
@@ -851,8 +870,8 @@ function planAndInjectBlocks(
         if (!forbidden.has(para + 1) && para + 1 < totalP) para = para + 1;
         else continue;
       }
-      // Não colocar ad na MESMA posição que Shopee
-      if (shopeeOccupied.has(para)) continue;
+      // Não colocar ad na MESMA posição que Shopee/promo
+      if (shopeeOccupied.has(para) || promoOccupied.has(para)) continue;
 
       blocks.push({ html: adHtml, afterParagraph: para });
     }
@@ -887,7 +906,7 @@ function planAndInjectBlocks(
   const recurringNoConflict = blocks.filter((b) => !extraOccupied.has(b.afterParagraph));
 
   // --- 3. Combina: todos os ads + shopee + extras, ordenados por posição ---
-  const allBlocks = [...recurringNoConflict, ...shopeeBlocks, ...extraBlocks]
+  const allBlocks = [...recurringNoConflict, ...shopeeBlocks, ...extraBlocks, ...promoBlocks]
     .sort((a, b) => a.afterParagraph - b.afterParagraph);
 
   return injectContentBlocks(html, allBlocks, 1);
@@ -1126,7 +1145,10 @@ export function renderPost(
     ? { publisherId: pubId, slotId: ads.config.inContent.slotId, format: ads.config.inContent.format, everyN: ads.config.inContent.everyNParagraphs ?? 4 }
     : null;
   const extraSlots = (pubId && ads?.config.inContentExtra) ? ads.config.inContentExtra : [];
-  html = planAndInjectBlocks(html, adPlan, shopeeConfig ?? null, 2, extraSlots, pubId);
+  // Bloco promo interno: leva o leitor das novelas para as áreas de alto valor.
+  // Injetado automaticamente em todo artigo (rotação cartões/empregos virá c/ a área de empregos).
+  const promoHtml = renderInternalPromo('cartoes');
+  html = planAndInjectBlocks(html, adPlan, shopeeConfig ?? null, 2, extraSlots, pubId, promoHtml);
 
   // helper que renderiza um ad slot se config + slotId
   type SinglePlacementKey = Exclude<keyof AdConfig, 'inContentExtra'>;
@@ -1564,6 +1586,239 @@ function renderRelatedSection(posts: (Post | PostCard)[]): string {
 }
 
 // ====== Privacy Policy ======
+// ===================================================================
+// ÁREA: CARTÕES DE CRÉDITO  (comparador público + afiliado + admin)
+// ===================================================================
+
+/** Parse seguro de um campo TEXT que guarda um JSON array de strings. */
+function parseStrArray(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const a = JSON.parse(raw);
+    return Array.isArray(a) ? a.filter((x): x is string => typeof x === 'string' && x.trim() !== '') : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Estrelas de avaliação (0–5, com fração). Decorativo + aria-label. */
+function renderStars(rating: number | null): string {
+  if (rating == null || rating <= 0) return '';
+  const r = Math.max(0, Math.min(5, rating));
+  const pct = (r / 5) * 100;
+  return `<span class="cc-stars" role="img" aria-label="Nota ${r.toFixed(1).replace('.', ',')} de 5">
+    <span class="cc-stars__rate">
+      <span class="cc-stars__track">★★★★★</span>
+      <span class="cc-stars__fill" style="width:${pct.toFixed(1)}%">★★★★★</span>
+    </span>
+    <span class="cc-stars__num">${r.toFixed(1).replace('.', ',')}</span>
+  </span>`;
+}
+
+/** Disclosure de afiliado — transparência (confiança do leitor + política de anúncios). */
+const AFFILIATE_DISCLOSURE = `<p class="affiliate-disclosure">⚖️ <strong>Transparência:</strong> podemos receber comissão das instituições parceiras quando você é aprovado — sem custo extra pra você, e isso não influencia nossa seleção. Anuidade e benefícios podem mudar; confirme sempre as condições no site oficial do emissor.</p>`;
+
+const ARROW_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>';
+
+/** Card de cartão usado no comparador. CTA passa pelo redirect rastreado /ir/cartao/:id. */
+function renderCreditCardItem(card: CreditCard): string {
+  const benefits = parseStrArray(card.benefits);
+  const badges = parseStrArray(card.badges);
+  const href = `/ir/cartao/${card.id}`;
+  return `<article class="cc-card${card.featured ? ' cc-card--featured' : ''}">
+    ${card.featured ? `<div class="cc-card__ribbon">★ Recomendado</div>` : ''}
+    <div class="cc-card__media">
+      ${card.image_url
+        ? `<img src="${escapeHtml(card.image_url)}" alt="Cartão ${escapeHtml(card.name)}" loading="lazy" decoding="async" width="320" height="202">`
+        : `<div class="cc-card__media-ph" aria-hidden="true">💳</div>`}
+    </div>
+    <div class="cc-card__head">
+      <h3 class="cc-card__name">${escapeHtml(card.name)}</h3>
+      ${card.issuer ? `<p class="cc-card__issuer">${escapeHtml(card.issuer)}</p>` : ''}
+      ${renderStars(card.rating)}
+    </div>
+    ${badges.length ? `<ul class="cc-card__badges">${badges.map((b) => `<li>${escapeHtml(b)}</li>`).join('')}</ul>` : ''}
+    ${card.tagline ? `<p class="cc-card__tagline">${escapeHtml(card.tagline)}</p>` : ''}
+    <dl class="cc-card__facts">
+      <div><dt>Anuidade</dt><dd>${escapeHtml(card.annual_fee || 'Consultar')}</dd></div>
+    </dl>
+    ${benefits.length ? `<ul class="cc-card__benefits">${benefits.slice(0, 5).map((b) => `<li>${escapeHtml(b)}</li>`).join('')}</ul>` : ''}
+    <a class="cc-card__cta" href="${escapeHtml(href)}" target="_blank" rel="sponsored nofollow noopener">
+      <span>${escapeHtml(card.cta_label || 'Peça já')}</span>${ARROW_SVG}
+    </a>
+  </article>`;
+}
+
+/**
+ * Bloco promocional INTERNO injetado no meio dos artigos. Leva o leitor das
+ * novelas (tráfego alto, RPM baixo) para as áreas de alto valor (cartões/empregos).
+ * É claramente "do site" — não um anúncio disfarçado (respeita política do AdSense).
+ * O clique passa por /ir/promo/:area para medirmos o CTR.
+ */
+export function renderInternalPromo(area: 'cartoes' | 'empregos'): string {
+  const data = area === 'cartoes'
+    ? {
+        icon: '💳',
+        eyebrow: 'Selecionado pra você',
+        title: 'Cansou de pagar anuidade? Veja os melhores cartões SEM ANUIDADE de 2026',
+        sub: 'Comparamos cashback, limite e facilidade de aprovação. Peça 100% online, em minutos.',
+        cta: 'Ver os melhores cartões',
+      }
+    : {
+        icon: '💼',
+        eyebrow: 'Oportunidades pra você',
+        title: 'Vagas de emprego abertas perto de você',
+        sub: 'CLT, meio período e home office. Veja as oportunidades e candidate-se em 1 clique.',
+        cta: 'Ver vagas abertas',
+      };
+  return `<aside class="promo-inline promo-inline--${area}">
+    <span class="promo-inline__icon" aria-hidden="true">${data.icon}</span>
+    <div class="promo-inline__body">
+      <span class="promo-inline__eyebrow">${escapeHtml(data.eyebrow)}</span>
+      <p class="promo-inline__title">${escapeHtml(data.title)}</p>
+      <p class="promo-inline__sub">${escapeHtml(data.sub)}</p>
+    </div>
+    <a class="promo-inline__cta" href="/ir/promo/${area}">${escapeHtml(data.cta)}${ARROW_SVG}</a>
+  </aside>`;
+}
+
+/** Página pública /cartoes — comparador. */
+export function renderCardsHub(
+  env: Env, request: Request,
+  cards: CreditCard[], categories: string[], activeCat: string | null,
+  ads?: SiteAdSettings, typography?: SiteTypography, gaId?: string,
+): string {
+  const url = new URL(request.url);
+  const siteUrl = siteCanonical(env, url);
+  const pubId = ads?.publisherId;
+  const adsHead = (pubId && ads) ? renderAdSenseScript(pubId, ads.autoAds) : '';
+  const stickyAd = (pubId && ads?.config.stickyFooter.enabled && ads.config.stickyFooter.slotId)
+    ? `<div class="ad-sticky-footer">${renderAdUnit(pubId, ads.config.stickyFooter.slotId, ads.config.stickyFooter.format)}</div>`
+    : '';
+
+  const pills = [
+    `<a href="/cartoes" class="pill ${!activeCat ? 'is-active' : ''}">Todos</a>`,
+    ...categories.map((c) => `<a href="/cartoes?cat=${encodeURIComponent(c)}" class="pill ${activeCat === c ? 'is-active' : ''}">${escapeHtml(c)}</a>`),
+  ].join('');
+
+  const grid = cards.length === 0
+    ? `<div class="empty"><p>Em breve: uma seleção dos melhores cartões pra você. 💳</p></div>`
+    : `<div class="cc-grid">${cards.map(renderCreditCardItem).join('')}</div>`;
+
+  const heading = activeCat ? `Melhores cartões: ${activeCat}` : 'Os melhores cartões de crédito de 2026';
+
+  const body = `
+  <div class="area-hub area-hub--cards">
+    <header class="area-hero area-hero--cards">
+      <span class="area-hero__eyebrow">💳 Cartões de crédito</span>
+      <h1 class="area-hero__title">${escapeHtml(heading)}</h1>
+      <p class="area-hero__sub">Compare anuidade, benefícios e cashback lado a lado — e peça 100% online, em poucos minutos.</p>
+    </header>
+    ${categories.length ? `<nav class="area-filters filter-pills" aria-label="Filtrar por categoria">${pills}</nav>` : ''}
+    ${grid}
+    ${AFFILIATE_DISCLOSURE}
+  </div>`;
+
+  return layout({
+    title: `${heading} — ${env.SITE_TITLE}`,
+    description: 'Compare os melhores cartões de crédito de 2026: sem anuidade, cashback e milhas. Veja benefícios e peça online.',
+    url: `${siteUrl}/cartoes${activeCat ? '?cat=' + encodeURIComponent(activeCat) : ''}`,
+    siteTitle: env.SITE_TITLE,
+    bodyClass: 'page-area',
+    headInject: adsHead, gaId, stickyAd, typography,
+    jsonLd: {
+      '@context': 'https://schema.org',
+      '@type': 'ItemList',
+      name: heading,
+      itemListElement: cards.slice(0, 20).map((c, i) => ({
+        '@type': 'ListItem', position: i + 1, name: c.name,
+      })),
+    },
+  }, body);
+}
+
+// ---- Admin: Cartões ----
+
+export function renderAdminCards(
+  env: Env, request: Request,
+  data: { cards: CreditCard[]; editing?: CreditCard | null; saved?: boolean },
+): string {
+  void request;
+  const { cards, editing = null, saved } = data;
+  const v = (s: string | null | undefined) => escapeHtml(s ?? '');
+  const action = editing ? `/admin/cartoes/${editing.id}` : '/admin/cartoes';
+
+  const form = `
+    <section class="card" id="cc-form">
+      <header class="card__header">
+        <h2 class="card__title">${editing ? `Editar: ${v(editing.name)}` : 'Novo cartão'}</h2>
+        ${editing ? `<a href="/admin/cartoes" class="btn btn--ghost btn--sm">Cancelar edição</a>` : ''}
+      </header>
+      <form method="POST" action="${action}" class="cc-admin-form">
+        <div class="cc-fields">
+          <label class="fld fld--wide"><span>Nome do cartão *</span><input name="name" required value="${v(editing?.name)}" placeholder="Cartão Cashback Mais"></label>
+          <label class="fld"><span>Emissor / banco</span><input name="issuer" value="${v(editing?.issuer)}" placeholder="Banco XYZ"></label>
+          <label class="fld"><span>Categoria</span><input name="category" list="cc-cats" value="${v(editing?.category)}" placeholder="Sem anuidade"><datalist id="cc-cats"><option value="Sem anuidade"><option value="Cashback"><option value="Milhas"><option value="Iniciantes"><option value="Premium"></datalist></label>
+          <label class="fld"><span>Slug (URL)</span><input name="slug" value="${v(editing?.slug)}" placeholder="gerado do nome se vazio"></label>
+          <label class="fld"><span>Anuidade</span><input name="annual_fee" value="${v(editing?.annual_fee)}" placeholder="Sem anuidade"></label>
+          <label class="fld fld--wide"><span>Chamada (tagline)</span><input name="tagline" value="${v(editing?.tagline)}" placeholder="Cashback de até 1% em todas as compras"></label>
+          <label class="fld fld--full"><span>URL de afiliado (CTA) *</span><input name="affiliate_url" required type="url" value="${v(editing?.affiliate_url)}" placeholder="https://parceiro.com/seu-link-afiliado"></label>
+          <label class="fld"><span>Texto do botão</span><input name="cta_label" value="${v(editing?.cta_label) || 'Peça já'}" placeholder="Peça já"></label>
+          <label class="fld"><span>Imagem do cartão (URL)</span><input name="image_url" type="url" value="${v(editing?.image_url)}" placeholder="https://..."></label>
+          <label class="fld fld--narrow"><span>Nota (0–5)</span><input name="rating" type="number" min="0" max="5" step="0.1" value="${editing?.rating ?? ''}"></label>
+          <label class="fld fld--narrow"><span>Ordem</span><input name="sort_order" type="number" step="1" value="${editing?.sort_order ?? 0}"></label>
+          <label class="fld fld--full"><span>Benefícios (um por linha)</span><textarea name="benefits" rows="4" placeholder="Cashback de 1%&#10;Sem anuidade no primeiro ano&#10;App completo">${v(parseStrArray(editing?.benefits).join('\n'))}</textarea></label>
+          <label class="fld fld--full"><span>Selos / badges (um por linha)</span><textarea name="badges" rows="2" placeholder="Sem anuidade&#10;Aprovação rápida">${v(parseStrArray(editing?.badges).join('\n'))}</textarea></label>
+        </div>
+        <div class="cc-toggles">
+          <label class="switch"><input type="checkbox" name="featured" value="1" ${editing?.featured ? 'checked' : ''}><span>Destaque (topo)</span></label>
+          <label class="switch"><input type="checkbox" name="active" value="1" ${editing ? (editing.active ? 'checked' : '') : 'checked'}><span>Ativo</span></label>
+        </div>
+        <div class="cc-form-actions">
+          <button type="submit" class="btn btn--primary">${editing ? 'Salvar alterações' : 'Adicionar cartão'}</button>
+        </div>
+      </form>
+    </section>`;
+
+  const table = `
+    <section class="card">
+      <header class="card__header"><h2 class="card__title">Cartões cadastrados</h2></header>
+      <table class="data-table">
+        <thead><tr><th>Cartão</th><th>Categoria</th><th>Anuidade</th><th>Status</th><th style="width:1px"></th></tr></thead>
+        <tbody>
+          ${cards.length === 0 ? `<tr><td colspan="5" class="empty-state">Nenhum cartão ainda. Cadastre o primeiro acima.</td></tr>` : cards.map((c) => `
+            <tr>
+              <td>
+                <a href="/admin/cartoes?edit=${c.id}" class="post-link">${escapeHtml(c.name)}</a>
+                ${c.featured ? '<span class="badge badge--success" style="margin-left:6px">★</span>' : ''}
+                <div class="muted">/${escapeHtml(c.slug)}</div>
+              </td>
+              <td class="nowrap">${c.category ? escapeHtml(c.category) : '<span class="muted">—</span>'}</td>
+              <td class="nowrap">${escapeHtml(c.annual_fee || '—')}</td>
+              <td>${c.active ? '<span class="badge badge--success">Ativo</span>' : '<span class="badge badge--draft">Inativo</span>'}</td>
+              <td>
+                <div class="row-actions">
+                  <a href="/admin/cartoes?edit=${c.id}" class="btn btn--ghost btn--sm" title="Editar">Editar</a>
+                  <form method="POST" action="/admin/cartoes/${c.id}/remove" onsubmit="return confirm('Remover &quot;${escapeHtml(c.name).replace(/'/g, '&#39;').slice(0, 50)}&quot;?')" style="display:inline">
+                    <button type="submit" class="btn btn--ghost btn--sm btn--danger" title="Remover">
+                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 01-2 2H9a2 2 0 01-2-2L5 6"/></svg>
+                    </button>
+                  </form>
+                </div>
+              </td>
+            </tr>`).join('')}
+        </tbody>
+      </table>
+    </section>`;
+
+  return adminShell(env, {
+    active: 'cartoes',
+    title: 'Cartões de crédito',
+    subtitle: `${cards.length} cartão(ões) • afiliado CPA`,
+    actions: `<a href="/cartoes" target="_blank" rel="noopener" class="btn btn--ghost">Ver página →</a>`,
+  }, `${saved ? '<div class="toast toast--success">Salvo com sucesso.</div>' : ''}${form}${table}`);
+}
+
 export function renderPrivacy(env: Env, request: Request): string {
   const url = new URL(request.url);
   const siteUrl = siteCanonical(env, url);
@@ -2099,7 +2354,7 @@ export function renderAdminPosts(
 }
 
 // ====== Admin: shell with sidebar nav ======
-type AdminSection = 'dashboard' | 'posts' | 'settings' | 'configuracoes' | 'analytics' | 'shopee' | 'api-keys' | 'cache' | 'users';
+type AdminSection = 'dashboard' | 'posts' | 'cartoes' | 'empregos' | 'settings' | 'configuracoes' | 'analytics' | 'shopee' | 'api-keys' | 'cache' | 'users';
 
 interface AdminShellOptions {
   active: AdminSection;
@@ -2121,6 +2376,8 @@ const ICONS: Record<AdminSection, string> = {
   cache:     '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>',
   shopee:    '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>',
   users:     '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>',
+  cartoes:   '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/><line x1="6" y1="15" x2="10" y2="15"/></svg>',
+  empregos:  '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/></svg>',
 };
 
 // Sections restricted to admin role only
@@ -2131,9 +2388,9 @@ function adminShell(env: Env, opts: AdminShellOptions, body: string): string {
   const allNavItems: Array<[AdminSection, string, string]> = [
     ['dashboard', '/admin', 'Início'],
     ['posts',     '/admin/posts', 'Posts'],
+    ['cartoes',   '/admin/cartoes', 'Cartões'],
     ['analytics', '/admin/analytics', 'Analytics'],
     ['settings',  '/admin/settings', 'Monetização'],
-    ['shopee',    '/admin/shopee', 'Shopee'],
     ['configuracoes', '/admin/configuracoes', 'Configurações'],
     ['users',     '/admin/users', 'Usuários'],
     ['api-keys',  '/admin/api-keys', 'API'],
