@@ -1630,7 +1630,7 @@ function renderCreditCardItem(card: CreditCard): string {
     ${card.featured ? `<div class="cc-card__ribbon">★ Recomendado</div>` : ''}
     <div class="cc-card__media">
       ${card.image_url
-        ? `<img src="${escapeHtml(card.image_url)}" alt="Cartão ${escapeHtml(card.name)}" loading="lazy" decoding="async" width="320" height="202">`
+        ? `<img src="${escapeHtml(card.image_url)}" alt="Logo ${escapeHtml(card.issuer || card.name)}" loading="lazy" decoding="async" width="128" height="128">`
         : `<div class="cc-card__media-ph" aria-hidden="true">💳</div>`}
     </div>
     <div class="cc-card__head">
@@ -1706,14 +1706,14 @@ export function renderCardsHub(
     ? `<div class="empty"><p>Em breve: uma seleção dos melhores cartões pra você. 💳</p></div>`
     : `<div class="cc-grid">${cards.map(renderCreditCardItem).join('')}</div>`;
 
-  const heading = activeCat ? `Melhores cartões: ${activeCat}` : 'Os melhores cartões de crédito de 2026';
+  const heading = activeCat ? `Cartões para 60+: ${activeCat}` : 'Melhores cartões de crédito para quem é 60+';
 
   const body = `
   <div class="area-hub area-hub--cards">
     <header class="area-hero area-hero--cards">
       <span class="area-hero__eyebrow">💳 Cartões de crédito</span>
       <h1 class="area-hero__title">${escapeHtml(heading)}</h1>
-      <p class="area-hero__sub">Compare anuidade, benefícios e cashback lado a lado — e peça 100% online, em poucos minutos.</p>
+      <p class="area-hero__sub">Selecionados pensando em quem tem 60 anos ou mais: aprovação descomplicada, sem anuidade e com benefícios fáceis de usar no dia a dia.</p>
     </header>
     ${categories.length ? `<nav class="area-filters filter-pills" aria-label="Filtrar por categoria">${pills}</nav>` : ''}
     ${grid}
@@ -1722,7 +1722,7 @@ export function renderCardsHub(
 
   return layout({
     title: `${heading} — ${env.SITE_TITLE}`,
-    description: 'Compare os melhores cartões de crédito de 2026: sem anuidade, cashback e milhas. Veja benefícios e peça online.',
+    description: 'Os melhores cartões de crédito para quem tem 60 anos ou mais: sem anuidade, fáceis de aprovar e com cashback. Compare benefícios e peça online.',
     url: `${siteUrl}/cartoes${activeCat ? '?cat=' + encodeURIComponent(activeCat) : ''}`,
     siteTitle: env.SITE_TITLE,
     bodyClass: 'page-area',
