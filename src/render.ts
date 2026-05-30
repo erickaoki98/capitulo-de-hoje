@@ -1741,10 +1741,11 @@ export function renderCardsHub(
 
 export function renderAdminCards(
   env: Env, request: Request,
-  data: { cards: CreditCard[]; editing?: CreditCard | null; saved?: boolean },
+  data: { cards: CreditCard[]; editing?: CreditCard | null; saved?: boolean; cardClicks?: Map<string, number>; promoClicks?: number },
 ): string {
   void request;
-  const { cards, editing = null, saved } = data;
+  const { cards, editing = null, saved, cardClicks, promoClicks = 0 } = data;
+  const totalCardClicks = cardClicks ? [...cardClicks.values()].reduce((a, b) => a + b, 0) : 0;
   const v = (s: string | null | undefined) => escapeHtml(s ?? '');
   const action = editing ? `/admin/cartoes/${editing.id}` : '/admin/cartoes';
 
@@ -1784,9 +1785,9 @@ export function renderAdminCards(
     <section class="card">
       <header class="card__header"><h2 class="card__title">Cartões cadastrados</h2></header>
       <table class="data-table">
-        <thead><tr><th>Cartão</th><th>Categoria</th><th>Anuidade</th><th>Status</th><th style="width:1px"></th></tr></thead>
+        <thead><tr><th>Cartão</th><th>Categoria</th><th>Anuidade</th><th>Cliques 30d</th><th>Status</th><th style="width:1px"></th></tr></thead>
         <tbody>
-          ${cards.length === 0 ? `<tr><td colspan="5" class="empty-state">Nenhum cartão ainda. Cadastre o primeiro acima.</td></tr>` : cards.map((c) => `
+          ${cards.length === 0 ? `<tr><td colspan="6" class="empty-state">Nenhum cartão ainda. Cadastre o primeiro acima.</td></tr>` : cards.map((c) => `
             <tr>
               <td>
                 <a href="/admin/cartoes?edit=${c.id}" class="post-link">${escapeHtml(c.name)}</a>
@@ -1795,6 +1796,7 @@ export function renderAdminCards(
               </td>
               <td class="nowrap">${c.category ? escapeHtml(c.category) : '<span class="muted">—</span>'}</td>
               <td class="nowrap">${escapeHtml(c.annual_fee || '—')}</td>
+              <td class="nowrap"><strong>${(cardClicks?.get(String(c.id)) ?? 0).toLocaleString('pt-BR')}</strong></td>
               <td>${c.active ? '<span class="badge badge--success">Ativo</span>' : '<span class="badge badge--draft">Inativo</span>'}</td>
               <td>
                 <div class="row-actions">
@@ -1811,12 +1813,24 @@ export function renderAdminCards(
       </table>
     </section>`;
 
+  const stats = `
+    <section class="cc-stats">
+      <div class="cc-stat">
+        <span class="cc-stat__num">${promoClicks.toLocaleString('pt-BR')}</span>
+        <span class="cc-stat__label">cliques no bloco promo dos artigos <small>(30 dias)</small></span>
+      </div>
+      <div class="cc-stat">
+        <span class="cc-stat__num">${totalCardClicks.toLocaleString('pt-BR')}</span>
+        <span class="cc-stat__label">cliques saindo para afiliado <small>(30 dias)</small></span>
+      </div>
+    </section>`;
+
   return adminShell(env, {
     active: 'cartoes',
     title: 'Cartões de crédito',
     subtitle: `${cards.length} cartão(ões) • afiliado CPA`,
     actions: `<a href="/cartoes" target="_blank" rel="noopener" class="btn btn--ghost">Ver página →</a>`,
-  }, `${saved ? '<div class="toast toast--success">Salvo com sucesso.</div>' : ''}${form}${table}`);
+  }, `${saved ? '<div class="toast toast--success">Salvo com sucesso.</div>' : ''}${stats}${form}${table}`);
 }
 
 export function renderPrivacy(env: Env, request: Request): string {

@@ -13,7 +13,7 @@ import {
   countPublishedPosts, listPostsForSitemap,
   listCreditCards, getCreditCardById, creditCardCategories,
   createCreditCard, updateCreditCard, deleteCreditCard,
-  recordOutboundClick,
+  recordOutboundClick, outboundClicksByTarget, outboundClicksTotal,
 } from './db';
 import {
   renderHome, renderPost, render404, renderPrivacy, renderDocs,
@@ -697,12 +697,15 @@ ${urls.join('\n')}
       if (pathname === '/admin/cartoes' && request.method === 'GET') {
         if (!authed) return redirectToLogin();
         const editId = Number(url.searchParams.get('edit'));
-        const [cards, editing] = await Promise.all([
+        const [cards, editing, cardClickRows, promoClicks] = await Promise.all([
           listCreditCards(env.DB, { activeOnly: false }),
           Number.isFinite(editId) && editId > 0 ? getCreditCardById(env.DB, editId) : Promise.resolve(null),
+          outboundClicksByTarget(env.DB, 'card', 30),
+          outboundClicksTotal(env.DB, 'promo', 30),
         ]);
+        const cardClicks = new Map(cardClickRows.map((r) => [r.target_id, r.clicks]));
         return new Response(renderAdminCards(env, request, {
-          cards, editing, saved: url.searchParams.get('saved') === '1',
+          cards, editing, saved: url.searchParams.get('saved') === '1', cardClicks, promoClicks,
         }), { headers: NO_CACHE_HEADERS });
       }
 

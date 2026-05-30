@@ -2850,3 +2850,10 @@ body.adm-page details summary { cursor: pointer; }
   .promo-inline { flex-direction: column; align-items: flex-start; }
   .promo-inline .promo-inline__cta { width: 100%; justify-content: center; }
 }
+
+/* --- Painel de cliques (admin de cartões) --- */
+.cc-stats { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.25rem; }
+.cc-stat { flex: 1; min-width: 200px; background: var(--bg); border: 1px solid var(--border); border-radius: 12px; padding: 1rem 1.2rem; }
+.cc-stat__num { display: block; font-size: 1.9rem; font-weight: 800; line-height: 1; color: var(--cc-accent); }
+.cc-stat__label { display: block; margin-top: 0.4rem; font-size: 0.85rem; color: var(--text-muted); }
+.cc-stat__label small { color: var(--text-soft); }
