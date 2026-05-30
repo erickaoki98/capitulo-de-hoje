@@ -11,7 +11,7 @@ import {
   pageviewsSummary, pageviewsByDay,
   listApiKeys, insertApiKey, findApiKeyByHash, touchApiKey, deleteApiKey,
   countPublishedPosts, listPostsForSitemap,
-  listCreditCards, getCreditCardById, creditCardCategories,
+  listCreditCards, getCreditCardById, creditCardCategories, countActiveCreditCards,
   createCreditCard, updateCreditCard, deleteCreditCard,
   recordOutboundClick, outboundClicksByTarget, outboundClicksTotal,
 } from './db';
@@ -1062,10 +1062,11 @@ ${urls.join('\n')}
           }
           const post = await getPostBySlug(env.DB, slug);
           if (post && !post.draft) {
-            const [topViews, ads, typo] = await Promise.all([
+            const [topViews, ads, typo, cardCount] = await Promise.all([
               topPostsByViews(env.DB, 48, 12, pathname),
               loadAdSettings(env),
               loadTypography(env),
+              countActiveCreditCards(env.DB),
             ]);
             const slugs = topViews.map((v) => v.path.replace(/^\//, ''));
             let relatedPosts = slugs.length > 0
@@ -1086,7 +1087,7 @@ ${urls.join('\n')}
             }
             ctx.waitUntil(recordPageview(env.DB, pathname).catch(() => {}));
             const resp = new Response(
-              renderPost(env, request, post, relatedPosts.slice(0, 12), ads, typo, relatedPosts.slice(0, 6)),
+              renderPost(env, request, post, relatedPosts.slice(0, 12), ads, typo, relatedPosts.slice(0, 6), undefined, undefined, null, null, cardCount > 0),
               { headers: PUBLIC_CACHE_HEADERS },
             );
             return writeCache(env, ctx, request, resp);

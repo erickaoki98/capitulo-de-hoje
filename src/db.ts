@@ -418,6 +418,12 @@ export async function getCreditCardBySlug(db: D1Database, slug: string): Promise
   return await db.prepare('SELECT * FROM credit_cards WHERE slug = ? LIMIT 1').bind(slug).first<CreditCard>();
 }
 
+/** Conta cartões ativos — usado para só mostrar o bloco promo quando há o que promover. */
+export async function countActiveCreditCards(db: D1Database): Promise<number> {
+  const row = await db.prepare('SELECT COUNT(*) AS n FROM credit_cards WHERE active = 1').first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
 /** Categorias distintas de cartões ativos (para os filtros do comparador). */
 export async function creditCardCategories(db: D1Database): Promise<string[]> {
   const { results } = await db.prepare(

@@ -1109,6 +1109,7 @@ export function renderPost(
   _trending?: unknown, _pollData?: unknown, gaId?: string,
   shopeeConfig?: ShopeeInjectionConfig | null,
   authorProfile?: AuthorProfile | null,
+  hasActiveCards: boolean = true,
 ): string {
   const url = new URL(request.url);
   const siteOrigin = siteCanonical(env, url);
@@ -1146,8 +1147,8 @@ export function renderPost(
     : null;
   const extraSlots = (pubId && ads?.config.inContentExtra) ? ads.config.inContentExtra : [];
   // Bloco promo interno: leva o leitor das novelas para as áreas de alto valor.
-  // Injetado automaticamente em todo artigo (rotação cartões/empregos virá c/ a área de empregos).
-  const promoHtml = renderInternalPromo('cartoes');
+  // Só injeta quando há cartões cadastrados — evita apontar para uma página vazia.
+  const promoHtml = hasActiveCards ? renderInternalPromo('cartoes') : null;
   html = planAndInjectBlocks(html, adPlan, shopeeConfig ?? null, 2, extraSlots, pubId, promoHtml);
 
   // helper que renderiza um ad slot se config + slotId
