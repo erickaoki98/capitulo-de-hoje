@@ -1621,12 +1621,16 @@ const AFFILIATE_DISCLOSURE = `<p class="affiliate-disclosure">⚖️ <strong>Tra
 
 const ARROW_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>';
 
-/** Card de cartão usado no comparador. CTA passa pelo redirect rastreado /ir/cartao/:id. */
-function renderCreditCardItem(card: CreditCard): string {
+/** Card de cartão usado no comparador/ranking. CTA passa pelo redirect rastreado /ir/cartao/:id. */
+function renderCreditCardItem(card: CreditCard, rank?: number): string {
   const benefits = parseStrArray(card.benefits);
   const badges = parseStrArray(card.badges);
   const href = `/ir/cartao/${card.id}`;
-  return `<article class="cc-card${card.featured ? ' cc-card--featured' : ''}">
+  const rankBadge = rank
+    ? `<div class="cc-card__rank${rank <= 3 ? ` cc-card__rank--${rank}` : ''}" aria-label="${rank}º lugar no ranking">${rank}º</div>`
+    : '';
+  return `<article class="cc-card${card.featured ? ' cc-card--featured' : ''}${rank && rank <= 3 ? ' cc-card--podium' : ''}">
+    ${rankBadge}
     ${card.featured ? `<div class="cc-card__ribbon">★ Recomendado</div>` : ''}
     <div class="cc-card__media">
       ${card.image_url
@@ -1660,10 +1664,10 @@ export function renderInternalPromo(area: 'cartoes' | 'empregos'): string {
   const data = area === 'cartoes'
     ? {
         icon: '💳',
-        eyebrow: 'Selecionado pra você',
-        title: 'Cansou de pagar anuidade? Veja os melhores cartões SEM ANUIDADE de 2026',
-        sub: 'Comparamos cashback, limite e facilidade de aprovação. Peça 100% online, em minutos.',
-        cta: 'Ver os melhores cartões',
+        eyebrow: 'Indicado para você',
+        title: 'Melhores cartões de crédito para pessoas +60 com aprovação',
+        sub: 'Sem anuidade, fáceis de aprovar e com benefícios descomplicados. Compare o ranking e peça 100% online.',
+        cta: 'Ver o ranking de cartões',
       }
     : {
         icon: '💼',
@@ -1687,6 +1691,7 @@ export function renderInternalPromo(area: 'cartoes' | 'empregos'): string {
 export function renderCardsHub(
   env: Env, request: Request,
   cards: CreditCard[], categories: string[], activeCat: string | null,
+  seniorActive: boolean = false,
   ads?: SiteAdSettings, typography?: SiteTypography, gaId?: string,
 ): string {
   const url = new URL(request.url);
@@ -1698,24 +1703,30 @@ export function renderCardsHub(
     : '';
 
   const pills = [
-    `<a href="/cartoes" class="pill ${!activeCat ? 'is-active' : ''}">Todos</a>`,
-    ...categories.map((c) => `<a href="/cartoes?cat=${encodeURIComponent(c)}" class="pill ${activeCat === c ? 'is-active' : ''}">${escapeHtml(c)}</a>`),
+    `<a href="/cartoes?senior=1" class="pill pill--senior ${seniorActive ? 'is-active' : ''}">⭐ Para pessoas 60+</a>`,
+    `<a href="/cartoes" class="pill ${!activeCat && !seniorActive ? 'is-active' : ''}">Todos</a>`,
+    ...categories.map((c) => `<a href="/cartoes?cat=${encodeURIComponent(c)}" class="pill ${!seniorActive && activeCat === c ? 'is-active' : ''}">${escapeHtml(c)}</a>`),
   ].join('');
 
   const grid = cards.length === 0
     ? `<div class="empty"><p>Em breve: uma seleção dos melhores cartões pra você. 💳</p></div>`
-    : `<div class="cc-grid">${cards.map(renderCreditCardItem).join('')}</div>`;
+    : `<div class="cc-grid">${cards.map((c, i) => renderCreditCardItem(c, i + 1)).join('')}</div>`;
 
-  const heading = activeCat ? `Cartões para 60+: ${activeCat}` : 'Melhores cartões de crédito para quem é 60+';
+  const heading = seniorActive
+    ? 'Cartões para pessoas 60+ com aprovação facilitada'
+    : activeCat ? `Cartões para 60+: ${activeCat}` : 'Melhores cartões de crédito para quem é 60+';
+  const subtitle = seniorActive
+    ? 'As melhores opções para quem tem 60 anos ou mais: aprovação descomplicada, sem anuidade e fáceis de usar no dia a dia.'
+    : 'Ranking dos melhores cartões pensando em quem tem 60 anos ou mais: aprovação descomplicada, sem anuidade e benefícios fáceis de usar.';
 
   const body = `
   <div class="area-hub area-hub--cards">
     <header class="area-hero area-hero--cards">
-      <span class="area-hero__eyebrow">💳 Cartões de crédito</span>
+      <span class="area-hero__eyebrow">💳 Cartões de crédito · Ranking 2026</span>
       <h1 class="area-hero__title">${escapeHtml(heading)}</h1>
-      <p class="area-hero__sub">Selecionados pensando em quem tem 60 anos ou mais: aprovação descomplicada, sem anuidade e com benefícios fáceis de usar no dia a dia.</p>
+      <p class="area-hero__sub">${escapeHtml(subtitle)}</p>
     </header>
-    ${categories.length ? `<nav class="area-filters filter-pills" aria-label="Filtrar por categoria">${pills}</nav>` : ''}
+    <nav class="area-filters filter-pills" aria-label="Filtrar cartões">${pills}</nav>
     ${grid}
     ${AFFILIATE_DISCLOSURE}
   </div>`;
@@ -1723,7 +1734,7 @@ export function renderCardsHub(
   return layout({
     title: `${heading} — ${env.SITE_TITLE}`,
     description: 'Os melhores cartões de crédito para quem tem 60 anos ou mais: sem anuidade, fáceis de aprovar e com cashback. Compare benefícios e peça online.',
-    url: `${siteUrl}/cartoes${activeCat ? '?cat=' + encodeURIComponent(activeCat) : ''}`,
+    url: `${siteUrl}/cartoes${seniorActive ? '?senior=1' : activeCat ? '?cat=' + encodeURIComponent(activeCat) : ''}`,
     siteTitle: env.SITE_TITLE,
     bodyClass: 'page-area',
     headInject: adsHead, gaId, stickyAd, typography,

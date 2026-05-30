@@ -57,6 +57,13 @@ const NO_CACHE_HEADERS = {
   'Cache-Control': 'private, no-store',
 };
 
+/** Slugs dos cartões recomendados para o público 60+ (filtro "Para pessoas 60+").
+ *  Curado no código: aprovação facilitada, sem anuidade e uso simples. */
+const SENIOR_PICK_SLUGS = [
+  'nubank', 'inter-gold', 'c6-bank', 'picpay', 'pagbank',
+  'will-bank', 'neon', 'digio', 'mercado-pago', 'itau-click-platinum',
+];
+
 function slugify(s: string): string {
   return s
     .toLowerCase()
@@ -197,14 +204,16 @@ export default {
           return cached;
         }
         const cat = url.searchParams.get('cat');
-        const [cards, cats, ads, typo] = await Promise.all([
+        const senior = url.searchParams.get('senior') === '1';
+        const [allCards, cats, ads, typo] = await Promise.all([
           listCreditCards(env.DB, { activeOnly: true, category: cat ?? undefined }),
           creditCardCategories(env.DB),
           loadAdSettings(env),
           loadTypography(env),
         ]);
+        const cards = senior ? allCards.filter((c) => SENIOR_PICK_SLUGS.includes(c.slug)) : allCards;
         ctx.waitUntil(recordPageview(env.DB, '/cartoes').catch(() => {}));
-        const resp = new Response(renderCardsHub(env, request, cards, cats, cat, ads, typo), { headers: PUBLIC_CACHE_HEADERS });
+        const resp = new Response(renderCardsHub(env, request, cards, cats, cat, senior, ads, typo), { headers: PUBLIC_CACHE_HEADERS });
         return writeCache(env, ctx, request, resp);
       }
 
