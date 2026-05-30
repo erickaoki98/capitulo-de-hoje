@@ -2709,6 +2709,13 @@ body.adm-page details summary { cursor: pointer; }
   grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
   gap: 1.25rem; align-items: start;
 }
+/* Anúncio intercalado na grade: ocupa a linha inteira entre as fileiras de
+   cartões. Herda rótulo "Advertisements" + reserva de altura de .ad-slot;
+   o gap da grade já cuida do espaçamento, por isso zeramos a margem. */
+.cc-grid__ad {
+  grid-column: 1 / -1;
+  margin: 0;
+}
 .cc-card {
   position: relative; display: flex; flex-direction: column;
   background: var(--bg); border: 1px solid var(--border);

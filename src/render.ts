@@ -1708,9 +1708,34 @@ export function renderCardsHub(
     ...categories.map((c) => `<a href="/cartoes?cat=${encodeURIComponent(c)}" class="pill ${!seniorActive && activeCat === c ? 'is-active' : ''}">${escapeHtml(c)}</a>`),
   ].join('');
 
+  // Anúncio AdSense intercalado na grade: a cada 4 cartões. Ocupa a linha
+  // inteira da grade via .cc-grid__ad e nunca aparece após o último card.
+  // Intervalo fixo em 4: mantém densidade dentro da política do AdSense
+  // (conteúdo > anúncios) numa lista de ~20 cartões.
+  // Slot: prioriza o slot dedicado "entre cards" (betweenCards); se não houver
+  // um configurado no admin, reusa o slot in-content — o mesmo dos artigos,
+  // comprovadamente preenchendo — para a grade não ficar com espaço vazio.
+  // Formato sempre in-article (fluid): largura total sem quebrar o ritmo visual.
+  const CARDS_AD_EVERY_N = 4;
+  const cardsAdSlot =
+    (ads?.config.betweenCards.enabled && ads.config.betweenCards.slotId) ? ads.config.betweenCards.slotId
+    : (ads?.config.inContent.enabled && ads.config.inContent.slotId) ? ads.config.inContent.slotId
+    : '';
+  const betweenCardAd = (pubId && cardsAdSlot)
+    ? `<div class="ad-slot cc-grid__ad">${renderAdUnit(pubId, cardsAdSlot, 'in-article')}</div>`
+    : '';
+
+  const gridItems: string[] = [];
+  cards.forEach((c, i) => {
+    gridItems.push(renderCreditCardItem(c, i + 1));
+    if (betweenCardAd && (i + 1) % CARDS_AD_EVERY_N === 0 && i < cards.length - 1) {
+      gridItems.push(betweenCardAd);
+    }
+  });
+
   const grid = cards.length === 0
     ? `<div class="empty"><p>Em breve: uma seleção dos melhores cartões pra você. 💳</p></div>`
-    : `<div class="cc-grid">${cards.map((c, i) => renderCreditCardItem(c, i + 1)).join('')}</div>`;
+    : `<div class="cc-grid">${gridItems.join('')}</div>`;
 
   const heading = seniorActive
     ? 'Cartões para pessoas 60+ com aprovação facilitada'
