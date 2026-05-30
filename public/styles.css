@@ -2857,3 +2857,48 @@ body.adm-page details summary { cursor: pointer; }
 .cc-stat__num { display: block; font-size: 1.9rem; font-weight: 800; line-height: 1; color: var(--cc-accent); }
 .cc-stat__label { display: block; margin-top: 0.4rem; font-size: 0.85rem; color: var(--text-muted); }
 .cc-stat__label small { color: var(--text-soft); }
+
+/* ===== Ranking de cartões + filtro 60+ + snippet (re-aplicado) ===== */
+.cc-card { position: relative; }
+.cc-card--podium { border-color: #cbd5e1; }
+.cc-card__rank {
+  position: absolute; top: -11px; left: 14px; z-index: 2;
+  min-width: 34px; height: 28px; padding: 0 9px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--text); color: #fff;
+  font-size: 0.9rem; font-weight: 800; border-radius: 999px;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, 0.18); border: 2px solid var(--bg);
+}
+.cc-card__rank--1 { background: linear-gradient(135deg, #f6c33b, #e0a008); color: #3a2a00; }
+.cc-card__rank--2 { background: linear-gradient(135deg, #d3d9df, #9aa3ad); color: #2a2f36; }
+.cc-card__rank--3 { background: linear-gradient(135deg, #e3ab7d, #bd7c47); color: #3a2410; }
+
+.pill.pill--senior {
+  background: linear-gradient(135deg, var(--cc-accent), var(--cc-accent-2));
+  color: #fff; border-color: transparent; font-weight: 700;
+}
+.pill.pill--senior:hover { filter: brightness(1.08); color: #fff; }
+.pill.pill--senior.is-active { box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.28); }
+
+/* snippet no meio do artigo — redesign */
+.promo-inline {
+  display: flex; align-items: center; gap: 1.1rem;
+  margin: 2rem 0; padding: 1.15rem 1.35rem 1.15rem 1.5rem;
+  border-radius: 16px; border: 1px solid var(--cc-tint-border);
+  background: linear-gradient(135deg, #f5f8ff, #eef2ff);
+  box-shadow: 0 4px 18px rgba(37, 99, 235, 0.08);
+  position: relative; overflow: hidden;
+}
+.promo-inline::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px; background: linear-gradient(180deg, var(--cc-accent), var(--cc-accent-2)); }
+.promo-inline--empregos { background: linear-gradient(135deg, #f0fdf4, #ecfdf5); border-color: #bbf7d0; box-shadow: 0 4px 18px rgba(22, 163, 74, 0.08); }
+.promo-inline--empregos::before { background: linear-gradient(180deg, #16a34a, #15803d); }
+.promo-inline__icon {
+  flex-shrink: 0; width: 52px; height: 52px; border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.7rem; line-height: 1; background: #fff; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+.promo-inline .promo-inline__title { font-size: 1.12rem; font-weight: 800; line-height: 1.25; margin: 0.15rem 0 0.3rem; color: var(--text); letter-spacing: -0.01em; }
+@media (max-width: 600px) {
+  .promo-inline { flex-direction: column; align-items: flex-start; }
+  .promo-inline .promo-inline__cta { width: 100%; justify-content: center; }
+}
