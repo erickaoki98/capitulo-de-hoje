@@ -2427,6 +2427,21 @@ body:has(.post__hero-wrap) .site-header {
   min-height: 250px;  /* reserva espaço CLS para in-article ads */
   contain: layout style;
 }
+/* Mobile: o in-article do AdSense expande para a largura total da tela
+   (full-width responsive — comportamento padrão e recomendado pelo Google,
+   melhor RPM). Sem isto o banner "vaza" só para a direita por causa do padding
+   da coluna de leitura, parecendo desalinhado. Aqui o container vai de borda a
+   borda, centralizado e simétrico (full-bleed), deixando o anúncio alinhado.
+   A coluna do artigo é centralizada (.container margin-inline:auto), então
+   margin-inline: calc(50% - 50vw) encosta o bloco exatamente nas bordas do
+   viewport — sem overflow horizontal. As margens verticais (1.5rem) ficam
+   preservadas pois só sobrescrevemos as horizontais. */
+@media (max-width: 720px) {
+  .ad-inarticle {
+    margin-left: calc(50% - 50vw);
+    margin-right: calc(50% - 50vw);
+  }
+}
 /* Rótulo de publicidade — conforme política Google: "Advertisements" */
 .ad-slot::before {
   content: 'Advertisements';
