@@ -1,4 +1,4 @@
-import type { Env, Post, PostCard, CreditCard, Job } from './types';
+import type { Env, Post, PostCard } from './types';
 import type { ShopeeProduct, AdminUser, ShopeeClickDay, ShopeeProductDayClicks } from './db';
 import type { ShopeeApiProduct } from './shopee';
 import type { UserRole } from './auth';
@@ -65,6 +65,27 @@ function isoDate(ms: number): string {
 
 function parseTags(s: string): string[] {
   return s.split(',').map((t) => t.trim()).filter(Boolean);
+}
+
+/**
+ * Remove o sufixo " | Nome da Novela" do título para exibição (H1, cards).
+ * A novela é mostrada como badge/eyebrow à parte, então repeti-la no título
+ * só polui. Mantém o título completo para <title>/SEO; limpa só o visível.
+ */
+function cleanTitle(title: string, category?: string | null): string {
+  const t = (title || '').trim();
+  const cat = (category || '').trim();
+  // 1) Remove " | <categoria>" exato no fim (tolerante a espaços/maiúsculas)
+  if (cat) {
+    const escaped = cat.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp('\\s*[|–—-]\\s*' + escaped + '\\s*$', 'i');
+    const stripped = t.replace(re, '').trim();
+    if (stripped && stripped !== t) return stripped;
+  }
+  // 2) Genérico: remove um " | cauda curta" no fim (provável tag de novela)
+  const m = t.match(/^(.*\S)\s*\|\s*([^|]{1,40})$/);
+  if (m) return m[1].trim();
+  return t;
 }
 
 /**
@@ -273,7 +294,8 @@ ${!isAdmin ? `<link rel="preconnect" href="https://pagead2.googlesyndication.com
 <link rel="dns-prefetch" href="https://pagead2.googlesyndication.com">
 <link rel="dns-prefetch" href="https://googleads.g.doubleclick.net">
 <link rel="dns-prefetch" href="https://tpc.googlesyndication.com">
-<link rel="dns-prefetch" href="https://www.googletagservices.com">` : ''}
+<link rel="dns-prefetch" href="https://www.googletagservices.com">
+<link rel="dns-prefetch" href="https://www.googletagmanager.com">` : ''}
 ${isAdmin ? `<link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap">` : ''}
@@ -300,18 +322,19 @@ ${author ? `<meta name="author" content="${escapeHtml(author)}">` : ''}
 ${isAdmin || bodyClass.includes('is-404') ? '<meta name="robots" content="noindex, nofollow">' : '<meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">'}
 ${ld}
 ${headInject}
+${/* PROTEÇÃO ANALYTICS — NÃO REMOVER. O GA só é injetado quando `gaId` chega
+     preenchido. Quem preenche é a ROTA: ela carrega loadGaId(env) (src/index.ts)
+     e passa o gaId para renderHome/renderPost → layout(). Se o GA "parar de
+     receber dados", quase sempre a causa é uma rota pública que esqueceu de
+     passar o gaId (não é aqui). Mantenha `!isAdmin` para nunca medir o /admin. */''}
 ${gaId && !isAdmin ? `<script async src="https://www.googletagmanager.com/gtag/js?id=${escapeHtml(gaId)}"></script>
 <script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','${escapeHtml(gaId)}');</script>` : ''}
-${!isAdmin ? '<script src="/personalize.js" defer></script>' : ''}
 </head>
 <body class="${finalBodyClass}">
 <header class="site-header">
   <div class="container">
-    <a href="${isAdmin ? '/admin' : '/'}" class="site-logo">${isAdmin ? `${escapeHtml(siteTitle)} <span class="site-logo__suffix">admin</span>` : `<img src="/img/logo-v2.png" alt="${escapeHtml(siteTitle)}" class="site-logo__img" width="500" height="197">`}</a>
-    ${isAdmin ? '<nav><a href="/" target="_blank" rel="noopener">Ver site →</a></nav>' : `<nav class="site-nav">
-      <a href="/">Novelas</a>
-      <a href="/cartoes" class="site-nav__hot">Cartões</a>
-    </nav>`}
+    <a href="${isAdmin ? '/admin' : '/'}" class="site-logo">${isAdmin ? `${escapeHtml(siteTitle)} <span class="site-logo__suffix">admin</span>` : `<img src="/img/logo-v2.png?v=2" alt="${escapeHtml(siteTitle)}" class="site-logo__img" width="500" height="197">`}</a>
+    ${isAdmin ? '<nav><a href="/" target="_blank" rel="noopener">Ver site →</a></nav>' : ''}
   </div>
 </header>
 <main class="container">
@@ -451,112 +474,16 @@ ${!isAdmin ? `<div id="cookie-consent" style="display:none;position:fixed;bottom
     }
   }
 
-  // === 1. PUSH: above-fold imediato, below-fold lazy via IntersectionObserver ===
-  var ads = document.querySelectorAll('ins.adsbygoogle');
-  var viewH = window.innerHeight || document.documentElement.clientHeight;
-  var pushed = new Set();
-
-  function pushAd(ins) {
-    if (pushed.has(ins)) return;
-    pushed.add(ins);
-    try { (adsbygoogle = window.adsbygoogle || []).push({}); } catch(x){}
-  }
-
-  // Push above-fold ads immediately
-  for (var i = 0; i < ads.length; i++) {
-    var rect = ads[i].getBoundingClientRect();
-    if (rect.top < viewH * 1.5) {
-      pushAd(ads[i]);
-    }
-  }
-
-  // Lazy-push below-fold ads when they approach viewport
-  if ('IntersectionObserver' in window) {
-    var adObserver = new IntersectionObserver(function(entries) {
-      entries.forEach(function(entry) {
-        if (entry.isIntersecting) {
-          pushAd(entry.target);
-          adObserver.unobserve(entry.target);
-        }
-      });
-    }, { rootMargin: '200px 0px' });
-
-    for (var j = 0; j < ads.length; j++) {
-      if (!pushed.has(ads[j])) {
-        adObserver.observe(ads[j]);
-      }
-    }
-  } else {
-    // Fallback: push all
-    for (var k = 0; k < ads.length; k++) {
-      pushAd(ads[k]);
-    }
-  }
-
-  // === 2. COLLAPSE + AUTO-EXPAND ===
-  // Após 5s, colapsa containers sem iframe (evita blocos brancos).
-  // MutationObserver re-expande se um ad preencher depois (scroll lazy-fill).
-  function collapseEmpty() {
-    // 1. Containers manuais (.ad-slot, .ad-inarticle, .post-card--ad)
-    document.querySelectorAll('.ad-slot, .ad-inarticle, .post-card--ad').forEach(function(el) {
-      if (!el.querySelector('iframe')) {
-        el.classList.add('ad-collapsed');
-      }
-    });
-    // 2. Auto Ads bare (ins.adsbygoogle sem container nosso)
-    document.querySelectorAll('ins.adsbygoogle').forEach(function(ins) {
-      if (!ins.closest('.ad-slot, .ad-inarticle, .post-card--ad') && !ins.querySelector('iframe')) {
-        ins.style.cssText = 'max-height:0!important;height:0!important;margin:0!important;padding:0!important;overflow:hidden!important;display:block!important;';
-        // Colapsa parent .google-auto-placed se existir
-        var p = ins.closest('.google-auto-placed');
-        if (p) p.style.cssText = 'max-height:0!important;height:0!important;margin:0!important;padding:0!important;overflow:hidden!important;';
-      }
-    });
-  }
-
-  function expandFilled() {
-    // 1. Containers manuais
-    document.querySelectorAll('.ad-slot, .ad-inarticle, .post-card--ad').forEach(function(el) {
-      if (el.querySelector('iframe')) {
-        el.classList.remove('ad-collapsed');
-        el.classList.add('ad-filled');
-      }
-    });
-    // 2. Auto Ads bare que receberam iframe → restaura
-    document.querySelectorAll('ins.adsbygoogle').forEach(function(ins) {
-      if (!ins.closest('.ad-slot, .ad-inarticle, .post-card--ad') && ins.querySelector('iframe')) {
-        ins.style.cssText = '';
-        var p = ins.closest('.google-auto-placed');
-        if (p) p.style.cssText = '';
-      }
-    });
-  }
-
-  // Colapsa vazios após 7s (AdSense pode levar 5-7s para preencher)
-  setTimeout(collapseEmpty, 7000);
-
-  // Re-verifica a cada 5s (ads podem preencher com scroll — AdSense lazy-fill)
-  var checks = 0;
-  var recheckInterval = setInterval(function() {
-    expandFilled();
-    collapseEmpty();
-    checks++;
-    if (checks > 30) clearInterval(recheckInterval); // para após ~2.5min
-  }, 5000);
-
-  // MutationObserver: detecta iframe inserido em ad colapsado → re-expande
-  if ('MutationObserver' in window) {
-    var mo = new MutationObserver(function() { expandFilled(); });
-    document.querySelectorAll('.ad-slot, .ad-inarticle, .post-card--ad').forEach(function(el) {
-      mo.observe(el, { childList: true, subtree: true });
-    });
-    // Observa também Auto Ads bare
-    document.querySelectorAll('ins.adsbygoogle').forEach(function(ins) {
-      if (!ins.closest('.ad-slot, .ad-inarticle, .post-card--ad')) {
-        mo.observe(ins, { childList: true, subtree: true });
-      }
-    });
-  }
+  // === Anúncios: padrão nativo do AdSense, SEM push/collapse custom ===
+  // O push é feito inline (1 por <ins>, em renderAdUnit). NÃO há lógica custom
+  // aqui DE PROPÓSITO. O adsbygoogle.js já faz tudo melhor do que qualquer
+  // engenharia nossa:
+  //   • lazy-load nativo — só busca ads below-fold quando o leitor se aproxima;
+  //   • preenchimento por viewability;
+  //   • colapso automático de slots fluid/responsive sem fill (altura 0).
+  // O collapse custom anterior escondia ads ANTES do AdSense preencher: altura 0
+  // = slot não-viewable = AdSense nunca preenche → ad sumia para sempre. Isso
+  // derrubava o fill rate, principalmente em artigos longos. Removido.
 })();
 </script>
 </body>
@@ -580,10 +507,13 @@ export function renderHome(
   const items: string[] = [];
   posts.forEach((p, i) => {
     const eager = i < 3;
+    const cat = 'category' in p && p.category && p.category !== 'Sem categoria' ? p.category : '';
+    const displayTitle = cleanTitle(p.title, cat || null);
     items.push(`<article class="post-card">
-        ${p.hero_image ? `<a href="/${escapeHtml(p.slug)}" class="post-card__image" aria-hidden="true" tabindex="-1"><img src="${escapeHtml(p.hero_image)}" alt="" loading="${eager ? 'eager' : 'lazy'}" ${eager ? 'fetchpriority="high"' : ''} decoding="async"></a>` : ''}
+        ${p.hero_image ? `<a href="/${escapeHtml(p.slug)}" class="post-card__image" aria-hidden="true" tabindex="-1"><img src="${escapeHtml(p.hero_image)}" alt="" loading="${eager ? 'eager' : 'lazy'}" ${eager ? 'fetchpriority="high"' : ''} decoding="async"><span class="post-card__image-shade"></span></a>` : ''}
         <div class="post-card__body">
-          <h2 class="post-card__title"><a href="/${escapeHtml(p.slug)}">${escapeHtml(p.title)}</a></h2>
+          ${cat ? `<span class="post-card__cat">${escapeHtml(cat)}</span>` : ''}
+          <h2 class="post-card__title"><a href="/${escapeHtml(p.slug)}">${escapeHtml(displayTitle)}</a></h2>
           <p class="post-card__desc">${escapeHtml(p.description)}</p>
           <time class="post-card__date" datetime="${isoDate(p.pub_date)}">${formatDate(p.pub_date)}</time>
         </div>
@@ -596,7 +526,11 @@ export function renderHome(
 
   const body = posts.length === 0
     ? `<div class="empty"><p>Ainda não há posts. <a href="/admin">Criar o primeiro</a>.</p></div>`
-    : `<section class="posts-grid">${cards}</section>`;
+    : `<div class="home-head">
+        <h1 class="home-head__title">Últimos capítulos das novelas</h1>
+        <p class="home-head__sub">Resumos, spoilers e o que rolou no ar — atualizados todo dia.</p>
+      </div>
+      <section class="posts-grid">${cards}</section>`;
 
   const adsHead = (pubId && ads) ? renderAdSenseScript(pubId, ads.autoAds) : '';
   const stickyAd = (pubId && ads?.config.stickyFooter.enabled && ads.config.stickyFooter.slotId)
@@ -841,18 +775,25 @@ function planAndInjectBlocks(
     }
   }
 
-  // --- 1b. Promo interno (1 bloco, ~1/3 do artigo, evita H2 e Shopee) ---
+  // --- 1b. Promo interno (cartões): após o 1º parágrafo e a cada 4 depois.
+  //     Posições: 1, 5, 9, 13... (evita parágrafos de H2 e colisão com Shopee). ---
   const promoBlocks: ContentBlock[] = [];
   const promoOccupied = new Set<number>();
   if (promoHtml) {
-    let pos = Math.min(Math.max(2, Math.round(totalP / 3)), totalP - 2);
-    if (forbidden.has(pos)) {
-      if (!forbidden.has(pos + 1) && pos + 1 < totalP - 1) pos += 1;
-      else if (!forbidden.has(pos - 1) && pos - 1 > 1) pos -= 1;
-    }
-    if (pos > 0 && pos < totalP && !shopeeOccupied.has(pos)) {
-      promoBlocks.push({ html: promoHtml, afterParagraph: pos });
-      promoOccupied.add(pos);
+    const PROMO_EVERY = 4;
+    const PROMO_MAX = 12; // teto de segurança para artigos muito longos
+    for (let base = 1; base < totalP - 1 && promoBlocks.length < PROMO_MAX; base += PROMO_EVERY) {
+      let pos = base;
+      // Não cola em H2: tenta o vizinho
+      if (forbidden.has(pos)) {
+        if (!forbidden.has(pos + 1) && pos + 1 < totalP - 1) pos += 1;
+        else if (pos - 1 > 0 && !forbidden.has(pos - 1)) pos -= 1;
+        else continue;
+      }
+      if (pos > 0 && pos < totalP && !shopeeOccupied.has(pos) && !promoOccupied.has(pos)) {
+        promoBlocks.push({ html: promoHtml, afterParagraph: pos });
+        promoOccupied.add(pos);
+      }
     }
   }
 
@@ -1106,10 +1047,9 @@ function renderAuthorBox(author: AuthorProfile): string {
 export function renderPost(
   env: Env, request: Request, post: Post,
   related: (Post | PostCard)[] = [], ads?: SiteAdSettings, typography?: SiteTypography,
-  _trending?: unknown, _pollData?: unknown, gaId?: string,
+  trendingPosts?: (Post | PostCard)[], _pollData?: unknown, gaId?: string,
   shopeeConfig?: ShopeeInjectionConfig | null,
   authorProfile?: AuthorProfile | null,
-  hasActiveCards: boolean = true,
 ): string {
   const url = new URL(request.url);
   const siteOrigin = siteCanonical(env, url);
@@ -1146,10 +1086,18 @@ export function renderPost(
     ? { publisherId: pubId, slotId: ads.config.inContent.slotId, format: ads.config.inContent.format, everyN: ads.config.inContent.everyNParagraphs ?? 4 }
     : null;
   const extraSlots = (pubId && ads?.config.inContentExtra) ? ads.config.inContentExtra : [];
-  // Bloco promo interno: leva o leitor das novelas para as áreas de alto valor.
-  // Só injeta quando há cartões cadastrados — evita apontar para uma página vazia.
-  const promoHtml = hasActiveCards ? renderInternalPromo('cartoes') : null;
-  html = planAndInjectBlocks(html, adPlan, shopeeConfig ?? null, 2, extraSlots, pubId, promoHtml);
+  html = planAndInjectBlocks(html, adPlan, shopeeConfig ?? null, 2, extraSlots, pubId, null);
+
+  // "Em Alta" (top 24h): aparece ao FIM de cada seção — ou seja, logo antes de
+  // cada H2 (exceto o primeiro). Repete o bloco em cada transição de subtítulo.
+  if (trendingPosts && trendingPosts.length >= 2) {
+    const trendingHtml = renderTrendingCarousel(trendingPosts);
+    let firstH2 = true;
+    html = html.replace(/<h2(\b[^>]*)>/g, (full) => {
+      if (firstH2) { firstH2 = false; return full; } // 1º subtítulo: nada antes dele
+      return trendingHtml + '\n' + full;
+    });
+  }
 
   // helper que renderiza um ad slot se config + slotId
   type SinglePlacementKey = Exclude<keyof AdConfig, 'inContentExtra'>;
@@ -1175,7 +1123,10 @@ export function renderPost(
 <article class="post">
   ${adIf('beforePost', 'ad-slot--before-post')}
   <header class="post__header">
-    <h1 class="post__title">${escapeHtml(post.title)}</h1>
+    ${post.category && post.category.trim() && post.category !== 'Sem categoria'
+      ? `<a class="post__kicker" href="/?cat=${encodeURIComponent(post.category)}">${escapeHtml(post.category)}</a>`
+      : ''}
+    <h1 class="post__title">${escapeHtml(cleanTitle(post.title, post.category))}</h1>
     <div class="post__meta">
       <div class="post__meta-inline">
         ${(() => {
@@ -1188,8 +1139,6 @@ export function renderPost(
         <time datetime="${isoDate(post.pub_date)}">${formatDate(post.pub_date)}</time>
         <span class="post__meta-dot" aria-hidden="true">·</span>
         <span class="post__reading-time">${readingTime(post.content || '')}</span>
-        ${post.category && post.category.trim() && post.category !== 'Sem categoria' ? `<span class="post__meta-dot" aria-hidden="true">·</span>
-          <a class="post__category-tag" href="/?cat=${encodeURIComponent(post.category)}">${escapeHtml(post.category)}</a>` : ''}
       </div>
     </div>
   </header>
@@ -1231,25 +1180,9 @@ ${adIf('bottomOfPage', 'ad-slot--bottom')}
 <script>
 (function(){
   var article = document.querySelector('.post');
-  if (!article || !('IntersectionObserver' in window)) return;
-  var prefersReduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if (!article) return;
 
-  // --- 1. Header progress bar (fixed top) ---
-  var hpBar = document.createElement('div');
-  hpBar.className = 'header-progress';
-  document.body.appendChild(hpBar);
-
-  // --- 1b. Back-to-top floating button ---
-  var btnTop = document.createElement('button');
-  btnTop.className = 'back-to-top';
-  btnTop.setAttribute('aria-label', 'Voltar ao topo');
-  btnTop.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"/></svg>';
-  btnTop.addEventListener('click', function() {
-    window.scrollTo({ top: 0, behavior: prefersReduced ? 'auto' : 'smooth' });
-  });
-  document.body.appendChild(btnTop);
-
-  // --- 0. Imagens quebradas (404, R2 externo expirado etc.) ---
+  // --- Imagens quebradas (404, R2 externo expirado etc.) ---
   // Custo zero no caminho feliz: handlers só disparam no evento de erro.
   // Conteúdo: oculta a imagem/figure quebrada (não atrapalha a leitura).
   // Hero: promove a 1ª imagem do conteúdo que carregar; se nenhuma, oculta.
@@ -1280,78 +1213,7 @@ ${adIf('bottomOfPage', 'ad-slot--bottom')}
     }
   })();
 
-  var prose = document.querySelector('.prose');
-  var ticking = false;
-  function updateProgress() {
-    if (!prose) return;
-    var r = prose.getBoundingClientRect();
-    var vh = window.innerHeight;
-    var start = r.top + window.scrollY;
-    var end = start + r.height - vh;
-    var pct = Math.min(100, Math.max(0, ((window.scrollY - start) / (end - start)) * 100));
-    hpBar.style.width = pct + '%';
-    return pct;
-  }
-
-  // --- 2. Hero color-shift ---
-  var hero = document.querySelector('.post__hero');
-  function updateHero() {
-    if (!hero) return;
-    var r = hero.getBoundingClientRect();
-    if (r.bottom < 0) {
-      hero.classList.add('hero-faded');
-    } else {
-      var pct = 1 - (r.bottom / (window.innerHeight + r.height));
-      if (pct > 0.4) hero.classList.add('hero-faded');
-      else hero.classList.remove('hero-faded');
-    }
-  }
-
-  // --- 3. Image parallax on scroll ---
-  // Wrap figure imgs in overflow container so caption stays outside
-  document.querySelectorAll('.prose figure > img').forEach(function(img) {
-    if (img.parentElement.classList.contains('img-parallax-wrap')) return;
-    var wrap = document.createElement('div');
-    wrap.className = 'img-parallax-wrap';
-    img.parentElement.insertBefore(wrap, img);
-    wrap.appendChild(img);
-  });
-  // Parallax desativado em mobile (largura ≤ 768px) e quando reduced-motion ativo
-  // — CSS já zera o transform, evitamos custo de JS/layout no scroll também.
-  var parallaxDisabled = prefersReduced || window.innerWidth <= 768;
-  var proseImgs = parallaxDisabled
-    ? [] // não trackeia nada
-    : document.querySelectorAll('.prose .img-parallax-wrap img, .prose > img');
-  // Só atualiza imagens VISÍVEIS no viewport (via IntersectionObserver),
-  // não itera todas a cada scroll (causava jank em posts com várias imagens).
-  var visibleImgs = new Set();
-  if (!parallaxDisabled && 'IntersectionObserver' in window) {
-    var imgIO = new IntersectionObserver(function(entries) {
-      entries.forEach(function(e) {
-        if (e.isIntersecting) visibleImgs.add(e.target);
-        else visibleImgs.delete(e.target);
-      });
-    }, { rootMargin: '100px 0px' });
-    proseImgs.forEach(function(img) { imgIO.observe(img); });
-  }
-  function updateImageParallax() {
-    if (parallaxDisabled || visibleImgs.size === 0) return;
-    var vh = window.innerHeight;
-    visibleImgs.forEach(function(img) {
-      var r = img.getBoundingClientRect();
-      var center = r.top + r.height / 2;
-      var ratio = (center / vh - 0.5) * 2;
-      var shift = ratio * -15;
-      img.style.setProperty('--img-y', shift + 'px');
-    });
-  }
-
-  function updateBackToTop() {
-    if (window.scrollY > 800) btnTop.classList.add('is-visible');
-    else btnTop.classList.remove('is-visible');
-  }
-
-  // --- Share bar copy button ---
+  // --- Compartilhar: copiar link ---
   var shareBar = document.querySelector('.share-bar');
   if (shareBar) {
     var copyBtn = shareBar.querySelector('[data-copy]');
@@ -1363,9 +1225,11 @@ ${adIf('bottomOfPage', 'ad-slot--bottom')}
         function showCheck() {
           if (ic1) ic1.style.display = 'none';
           if (ic2) ic2.style.display = '';
+          copyBtn.classList.add('is-copied');
           setTimeout(function() {
             if (ic1) ic1.style.display = '';
             if (ic2) ic2.style.display = 'none';
+            copyBtn.classList.remove('is-copied');
           }, 1800);
         }
         if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -1380,62 +1244,6 @@ ${adIf('bottomOfPage', 'ad-slot--bottom')}
     }
   }
 
-  // --- Scroll handler (throttled via rAF) ---
-  window.addEventListener('scroll', function() {
-    if (!ticking) {
-      requestAnimationFrame(function() {
-        updateProgress();
-        updateHero();
-        updateImageParallax();
-        updateBackToTop();
-        ticking = false;
-      });
-      ticking = true;
-    }
-  }, { passive: true });
-  updateProgress();
-  updateBackToTop();
-  updateHero();
-  updateImageParallax();
-
-  // --- 4. Fade-in + highlight via IntersectionObserver ---
-  // Pré-marca elementos no viewport inicial como visíveis ANTES de ativar ed-ready,
-  // evitando flash de texto invisível (FOIT do conteúdo).
-  var blockSel = '.prose > p, .prose > h2, .prose > h3, .prose > h4,' +
-    '.prose > blockquote, .prose > ul, .prose > ol,' +
-    '.prose > pre, .prose > table, .prose > figure,' +
-    '.prose > img';
-  var blocks = document.querySelectorAll(blockSel);
-  var vh = window.innerHeight;
-  blocks.forEach(function(el) {
-    var rect = el.getBoundingClientRect();
-    if (rect.top < vh) el.classList.add('is-visible');
-  });
-  article.classList.add('ed-ready');
-
-  var blockIO = new IntersectionObserver(function(entries) {
-    entries.forEach(function(e) {
-      if (e.isIntersecting) {
-        e.target.classList.add('is-visible');
-        blockIO.unobserve(e.target);
-      }
-    });
-  }, { threshold: 0.12, rootMargin: '0px 0px -40px 0px' });
-  blocks.forEach(function(el) {
-    if (!el.classList.contains('is-visible')) blockIO.observe(el);
-  });
-
-  // Highlight: strong/em marker effect
-  var highlights = document.querySelectorAll('.prose strong, .prose em');
-  var hlIO = new IntersectionObserver(function(entries) {
-    entries.forEach(function(e) {
-      if (e.isIntersecting) {
-        e.target.classList.add('hl-visible');
-        hlIO.unobserve(e.target);
-      }
-    });
-  }, { threshold: 0.5, rootMargin: '0px 0px -20px 0px' });
-  highlights.forEach(function(el) { hlIO.observe(el); });
 })();
 </script>`;
 
@@ -1490,6 +1298,35 @@ ${adIf('bottomOfPage', 'ad-slot--bottom')}
 }
 
 // ====== Related Posts — Banner Carousel ======
+/** Carrossel horizontal "Em Alta" — top posts das últimas 24h (in-article, após H2). */
+function renderTrendingCarousel(posts: (Post | PostCard)[]): string {
+  if (posts.length < 2) return '';
+  const cards = posts.slice(0, 4).map((p, i) => {
+    const bg = p.hero_image ? escapeHtml(p.hero_image) : '';
+    const cat = 'category' in p && p.category && p.category !== 'Sem categoria' ? p.category : '';
+    return `<a class="trend__card" href="/${escapeHtml(p.slug)}" data-trend-idx="${i}">
+      <span class="trend__img-wrap">
+        ${bg ? `<img class="trend__img" src="${bg}" alt="" loading="lazy" decoding="async">` : '<span class="trend__img trend__img--ph"></span>'}
+        <span class="trend__rank">${i + 1}</span>
+      </span>
+      <span class="trend__body">
+        ${cat ? `<span class="trend__cat">${escapeHtml(cat)}</span>` : ''}
+        <span class="trend__title">${escapeHtml(p.title)}</span>
+      </span>
+    </a>`;
+  }).join('');
+
+  return `<aside class="trend" aria-label="Em alta">
+  <div class="trend__header">
+    <svg class="trend__icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
+    <h3 class="trend__heading">Em Alta</h3>
+  </div>
+  <div class="trend__scroll" data-trend-scroll>
+    ${cards}
+  </div>
+</aside>`;
+}
+
 function renderRelatedSection(posts: (Post | PostCard)[]): string {
   if (posts.length === 0) return '';
   const slides = posts.map((p, i) => {
@@ -1586,264 +1423,6 @@ function renderRelatedSection(posts: (Post | PostCard)[]): string {
 </script>`;
 }
 
-// ====== Privacy Policy ======
-// ===================================================================
-// ÁREA: CARTÕES DE CRÉDITO  (comparador público + afiliado + admin)
-// ===================================================================
-
-/** Parse seguro de um campo TEXT que guarda um JSON array de strings. */
-function parseStrArray(raw: string | null | undefined): string[] {
-  if (!raw) return [];
-  try {
-    const a = JSON.parse(raw);
-    return Array.isArray(a) ? a.filter((x): x is string => typeof x === 'string' && x.trim() !== '') : [];
-  } catch {
-    return [];
-  }
-}
-
-/** Estrelas de avaliação (0–5, com fração). Decorativo + aria-label. */
-function renderStars(rating: number | null): string {
-  if (rating == null || rating <= 0) return '';
-  const r = Math.max(0, Math.min(5, rating));
-  const pct = (r / 5) * 100;
-  return `<span class="cc-stars" role="img" aria-label="Nota ${r.toFixed(1).replace('.', ',')} de 5">
-    <span class="cc-stars__rate">
-      <span class="cc-stars__track">★★★★★</span>
-      <span class="cc-stars__fill" style="width:${pct.toFixed(1)}%">★★★★★</span>
-    </span>
-    <span class="cc-stars__num">${r.toFixed(1).replace('.', ',')}</span>
-  </span>`;
-}
-
-/** Disclosure de afiliado — transparência (confiança do leitor + política de anúncios). */
-const AFFILIATE_DISCLOSURE = `<p class="affiliate-disclosure">⚖️ <strong>Transparência:</strong> podemos receber comissão das instituições parceiras quando você é aprovado — sem custo extra pra você, e isso não influencia nossa seleção. Anuidade e benefícios podem mudar; confirme sempre as condições no site oficial do emissor.</p>`;
-
-const ARROW_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>';
-
-/** Card de cartão usado no comparador/ranking. CTA passa pelo redirect rastreado /ir/cartao/:id. */
-function renderCreditCardItem(card: CreditCard, rank?: number): string {
-  const benefits = parseStrArray(card.benefits);
-  const badges = parseStrArray(card.badges);
-  const href = `/ir/cartao/${card.id}`;
-  const rankBadge = rank
-    ? `<div class="cc-card__rank${rank <= 3 ? ` cc-card__rank--${rank}` : ''}" aria-label="${rank}º lugar no ranking">${rank}º</div>`
-    : '';
-  return `<article class="cc-card${card.featured ? ' cc-card--featured' : ''}${rank && rank <= 3 ? ' cc-card--podium' : ''}">
-    ${rankBadge}
-    ${card.featured ? `<div class="cc-card__ribbon">★ Recomendado</div>` : ''}
-    <div class="cc-card__media">
-      ${card.image_url
-        ? `<img src="${escapeHtml(card.image_url)}" alt="Logo ${escapeHtml(card.issuer || card.name)}" loading="lazy" decoding="async" width="128" height="128">`
-        : `<div class="cc-card__media-ph" aria-hidden="true">💳</div>`}
-    </div>
-    <div class="cc-card__head">
-      <h3 class="cc-card__name">${escapeHtml(card.name)}</h3>
-      ${card.issuer ? `<p class="cc-card__issuer">${escapeHtml(card.issuer)}</p>` : ''}
-      ${renderStars(card.rating)}
-    </div>
-    ${badges.length ? `<ul class="cc-card__badges">${badges.map((b) => `<li>${escapeHtml(b)}</li>`).join('')}</ul>` : ''}
-    ${card.tagline ? `<p class="cc-card__tagline">${escapeHtml(card.tagline)}</p>` : ''}
-    <dl class="cc-card__facts">
-      <div><dt>Anuidade</dt><dd>${escapeHtml(card.annual_fee || 'Consultar')}</dd></div>
-    </dl>
-    ${benefits.length ? `<ul class="cc-card__benefits">${benefits.slice(0, 5).map((b) => `<li>${escapeHtml(b)}</li>`).join('')}</ul>` : ''}
-    <a class="cc-card__cta" href="${escapeHtml(href)}" target="_blank" rel="sponsored nofollow noopener">
-      <span>${escapeHtml(card.cta_label || 'Peça já')}</span>${ARROW_SVG}
-    </a>
-  </article>`;
-}
-
-/**
- * Bloco promocional INTERNO injetado no meio dos artigos. Leva o leitor das
- * novelas (tráfego alto, RPM baixo) para as áreas de alto valor (cartões/empregos).
- * É claramente "do site" — não um anúncio disfarçado (respeita política do AdSense).
- * O clique passa por /ir/promo/:area para medirmos o CTR.
- */
-export function renderInternalPromo(area: 'cartoes' | 'empregos'): string {
-  const data = area === 'cartoes'
-    ? {
-        icon: '💳',
-        eyebrow: 'Indicado para você',
-        title: 'Melhores cartões de crédito para pessoas +60 com aprovação',
-        sub: 'Sem anuidade, fáceis de aprovar e com benefícios descomplicados. Compare o ranking e peça 100% online.',
-        cta: 'Ver o ranking de cartões',
-      }
-    : {
-        icon: '💼',
-        eyebrow: 'Oportunidades pra você',
-        title: 'Vagas de emprego abertas perto de você',
-        sub: 'CLT, meio período e home office. Veja as oportunidades e candidate-se em 1 clique.',
-        cta: 'Ver vagas abertas',
-      };
-  return `<aside class="promo-inline promo-inline--${area}">
-    <span class="promo-inline__icon" aria-hidden="true">${data.icon}</span>
-    <div class="promo-inline__body">
-      <span class="promo-inline__eyebrow">${escapeHtml(data.eyebrow)}</span>
-      <p class="promo-inline__title">${escapeHtml(data.title)}</p>
-      <p class="promo-inline__sub">${escapeHtml(data.sub)}</p>
-    </div>
-    <a class="promo-inline__cta" href="/ir/promo/${area}">${escapeHtml(data.cta)}${ARROW_SVG}</a>
-  </aside>`;
-}
-
-/** Página pública /cartoes — comparador. */
-export function renderCardsHub(
-  env: Env, request: Request,
-  cards: CreditCard[], categories: string[], activeCat: string | null,
-  seniorActive: boolean = false,
-  ads?: SiteAdSettings, typography?: SiteTypography, gaId?: string,
-): string {
-  const url = new URL(request.url);
-  const siteUrl = siteCanonical(env, url);
-  const pubId = ads?.publisherId;
-  const adsHead = (pubId && ads) ? renderAdSenseScript(pubId, ads.autoAds) : '';
-  const stickyAd = (pubId && ads?.config.stickyFooter.enabled && ads.config.stickyFooter.slotId)
-    ? `<div class="ad-sticky-footer">${renderAdUnit(pubId, ads.config.stickyFooter.slotId, ads.config.stickyFooter.format)}</div>`
-    : '';
-
-  const pills = [
-    `<a href="/cartoes?senior=1" class="pill pill--senior ${seniorActive ? 'is-active' : ''}">⭐ Para pessoas 60+</a>`,
-    `<a href="/cartoes" class="pill ${!activeCat && !seniorActive ? 'is-active' : ''}">Todos</a>`,
-    ...categories.map((c) => `<a href="/cartoes?cat=${encodeURIComponent(c)}" class="pill ${!seniorActive && activeCat === c ? 'is-active' : ''}">${escapeHtml(c)}</a>`),
-  ].join('');
-
-  const grid = cards.length === 0
-    ? `<div class="empty"><p>Em breve: uma seleção dos melhores cartões pra você. 💳</p></div>`
-    : `<div class="cc-grid">${cards.map((c, i) => renderCreditCardItem(c, i + 1)).join('')}</div>`;
-
-  const heading = seniorActive
-    ? 'Cartões para pessoas 60+ com aprovação facilitada'
-    : activeCat ? `Cartões para 60+: ${activeCat}` : 'Melhores cartões de crédito para quem é 60+';
-  const subtitle = seniorActive
-    ? 'As melhores opções para quem tem 60 anos ou mais: aprovação descomplicada, sem anuidade e fáceis de usar no dia a dia.'
-    : 'Ranking dos melhores cartões pensando em quem tem 60 anos ou mais: aprovação descomplicada, sem anuidade e benefícios fáceis de usar.';
-
-  const body = `
-  <div class="area-hub area-hub--cards">
-    <header class="area-hero area-hero--cards">
-      <span class="area-hero__eyebrow">💳 Cartões de crédito · Ranking 2026</span>
-      <h1 class="area-hero__title">${escapeHtml(heading)}</h1>
-      <p class="area-hero__sub">${escapeHtml(subtitle)}</p>
-    </header>
-    <nav class="area-filters filter-pills" aria-label="Filtrar cartões">${pills}</nav>
-    ${grid}
-    ${AFFILIATE_DISCLOSURE}
-  </div>`;
-
-  return layout({
-    title: `${heading} — ${env.SITE_TITLE}`,
-    description: 'Os melhores cartões de crédito para quem tem 60 anos ou mais: sem anuidade, fáceis de aprovar e com cashback. Compare benefícios e peça online.',
-    url: `${siteUrl}/cartoes${seniorActive ? '?senior=1' : activeCat ? '?cat=' + encodeURIComponent(activeCat) : ''}`,
-    siteTitle: env.SITE_TITLE,
-    bodyClass: 'page-area',
-    headInject: adsHead, gaId, stickyAd, typography,
-    jsonLd: {
-      '@context': 'https://schema.org',
-      '@type': 'ItemList',
-      name: heading,
-      itemListElement: cards.slice(0, 20).map((c, i) => ({
-        '@type': 'ListItem', position: i + 1, name: c.name,
-      })),
-    },
-  }, body);
-}
-
-// ---- Admin: Cartões ----
-
-export function renderAdminCards(
-  env: Env, request: Request,
-  data: { cards: CreditCard[]; editing?: CreditCard | null; saved?: boolean; cardClicks?: Map<string, number>; promoClicks?: number },
-): string {
-  void request;
-  const { cards, editing = null, saved, cardClicks, promoClicks = 0 } = data;
-  const totalCardClicks = cardClicks ? [...cardClicks.values()].reduce((a, b) => a + b, 0) : 0;
-  const v = (s: string | null | undefined) => escapeHtml(s ?? '');
-  const action = editing ? `/admin/cartoes/${editing.id}` : '/admin/cartoes';
-
-  const form = `
-    <section class="card" id="cc-form">
-      <header class="card__header">
-        <h2 class="card__title">${editing ? `Editar: ${v(editing.name)}` : 'Novo cartão'}</h2>
-        ${editing ? `<a href="/admin/cartoes" class="btn btn--ghost btn--sm">Cancelar edição</a>` : ''}
-      </header>
-      <form method="POST" action="${action}" class="cc-admin-form">
-        <div class="cc-fields">
-          <label class="fld fld--wide"><span>Nome do cartão *</span><input name="name" required value="${v(editing?.name)}" placeholder="Cartão Cashback Mais"></label>
-          <label class="fld"><span>Emissor / banco</span><input name="issuer" value="${v(editing?.issuer)}" placeholder="Banco XYZ"></label>
-          <label class="fld"><span>Categoria</span><input name="category" list="cc-cats" value="${v(editing?.category)}" placeholder="Sem anuidade"><datalist id="cc-cats"><option value="Sem anuidade"><option value="Cashback"><option value="Milhas"><option value="Iniciantes"><option value="Premium"></datalist></label>
-          <label class="fld"><span>Slug (URL)</span><input name="slug" value="${v(editing?.slug)}" placeholder="gerado do nome se vazio"></label>
-          <label class="fld"><span>Anuidade</span><input name="annual_fee" value="${v(editing?.annual_fee)}" placeholder="Sem anuidade"></label>
-          <label class="fld fld--wide"><span>Chamada (tagline)</span><input name="tagline" value="${v(editing?.tagline)}" placeholder="Cashback de até 1% em todas as compras"></label>
-          <label class="fld fld--full"><span>URL de afiliado (CTA) *</span><input name="affiliate_url" required type="url" value="${v(editing?.affiliate_url)}" placeholder="https://parceiro.com/seu-link-afiliado"></label>
-          <label class="fld"><span>Texto do botão</span><input name="cta_label" value="${v(editing?.cta_label) || 'Peça já'}" placeholder="Peça já"></label>
-          <label class="fld"><span>Imagem do cartão (URL)</span><input name="image_url" type="url" value="${v(editing?.image_url)}" placeholder="https://..."></label>
-          <label class="fld fld--narrow"><span>Nota (0–5)</span><input name="rating" type="number" min="0" max="5" step="0.1" value="${editing?.rating ?? ''}"></label>
-          <label class="fld fld--narrow"><span>Ordem</span><input name="sort_order" type="number" step="1" value="${editing?.sort_order ?? 0}"></label>
-          <label class="fld fld--full"><span>Benefícios (um por linha)</span><textarea name="benefits" rows="4" placeholder="Cashback de 1%&#10;Sem anuidade no primeiro ano&#10;App completo">${v(parseStrArray(editing?.benefits).join('\n'))}</textarea></label>
-          <label class="fld fld--full"><span>Selos / badges (um por linha)</span><textarea name="badges" rows="2" placeholder="Sem anuidade&#10;Aprovação rápida">${v(parseStrArray(editing?.badges).join('\n'))}</textarea></label>
-        </div>
-        <div class="cc-toggles">
-          <label class="switch"><input type="checkbox" name="featured" value="1" ${editing?.featured ? 'checked' : ''}><span>Destaque (topo)</span></label>
-          <label class="switch"><input type="checkbox" name="active" value="1" ${editing ? (editing.active ? 'checked' : '') : 'checked'}><span>Ativo</span></label>
-        </div>
-        <div class="cc-form-actions">
-          <button type="submit" class="btn btn--primary">${editing ? 'Salvar alterações' : 'Adicionar cartão'}</button>
-        </div>
-      </form>
-    </section>`;
-
-  const table = `
-    <section class="card">
-      <header class="card__header"><h2 class="card__title">Cartões cadastrados</h2></header>
-      <table class="data-table">
-        <thead><tr><th>Cartão</th><th>Categoria</th><th>Anuidade</th><th>Cliques 30d</th><th>Status</th><th style="width:1px"></th></tr></thead>
-        <tbody>
-          ${cards.length === 0 ? `<tr><td colspan="6" class="empty-state">Nenhum cartão ainda. Cadastre o primeiro acima.</td></tr>` : cards.map((c) => `
-            <tr>
-              <td>
-                <a href="/admin/cartoes?edit=${c.id}" class="post-link">${escapeHtml(c.name)}</a>
-                ${c.featured ? '<span class="badge badge--success" style="margin-left:6px">★</span>' : ''}
-                <div class="muted">/${escapeHtml(c.slug)}</div>
-              </td>
-              <td class="nowrap">${c.category ? escapeHtml(c.category) : '<span class="muted">—</span>'}</td>
-              <td class="nowrap">${escapeHtml(c.annual_fee || '—')}</td>
-              <td class="nowrap"><strong>${(cardClicks?.get(String(c.id)) ?? 0).toLocaleString('pt-BR')}</strong></td>
-              <td>${c.active ? '<span class="badge badge--success">Ativo</span>' : '<span class="badge badge--draft">Inativo</span>'}</td>
-              <td>
-                <div class="row-actions">
-                  <a href="/admin/cartoes?edit=${c.id}" class="btn btn--ghost btn--sm" title="Editar">Editar</a>
-                  <form method="POST" action="/admin/cartoes/${c.id}/remove" onsubmit="return confirm('Remover &quot;${escapeHtml(c.name).replace(/'/g, '&#39;').slice(0, 50)}&quot;?')" style="display:inline">
-                    <button type="submit" class="btn btn--ghost btn--sm btn--danger" title="Remover">
-                      <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-2 14a2 2 0 01-2 2H9a2 2 0 01-2-2L5 6"/></svg>
-                    </button>
-                  </form>
-                </div>
-              </td>
-            </tr>`).join('')}
-        </tbody>
-      </table>
-    </section>`;
-
-  const stats = `
-    <section class="cc-stats">
-      <div class="cc-stat">
-        <span class="cc-stat__num">${promoClicks.toLocaleString('pt-BR')}</span>
-        <span class="cc-stat__label">cliques no bloco promo dos artigos <small>(30 dias)</small></span>
-      </div>
-      <div class="cc-stat">
-        <span class="cc-stat__num">${totalCardClicks.toLocaleString('pt-BR')}</span>
-        <span class="cc-stat__label">cliques saindo para afiliado <small>(30 dias)</small></span>
-      </div>
-    </section>`;
-
-  return adminShell(env, {
-    active: 'cartoes',
-    title: 'Cartões de crédito',
-    subtitle: `${cards.length} cartão(ões) • afiliado CPA`,
-    actions: `<a href="/cartoes" target="_blank" rel="noopener" class="btn btn--ghost">Ver página →</a>`,
-  }, `${saved ? '<div class="toast toast--success">Salvo com sucesso.</div>' : ''}${stats}${form}${table}`);
-}
 
 export function renderPrivacy(env: Env, request: Request): string {
   const url = new URL(request.url);
@@ -2380,7 +1959,7 @@ export function renderAdminPosts(
 }
 
 // ====== Admin: shell with sidebar nav ======
-type AdminSection = 'dashboard' | 'posts' | 'cartoes' | 'empregos' | 'settings' | 'configuracoes' | 'analytics' | 'shopee' | 'api-keys' | 'cache' | 'users';
+type AdminSection = 'dashboard' | 'posts' | 'settings' | 'configuracoes' | 'analytics' | 'shopee' | 'api-keys' | 'cache' | 'users';
 
 interface AdminShellOptions {
   active: AdminSection;
@@ -2402,8 +1981,6 @@ const ICONS: Record<AdminSection, string> = {
   cache:     '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>',
   shopee:    '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>',
   users:     '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>',
-  cartoes:   '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/><line x1="6" y1="15" x2="10" y2="15"/></svg>',
-  empregos:  '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 00-2-2h-4a2 2 0 00-2 2v2"/></svg>',
 };
 
 // Sections restricted to admin role only
@@ -2414,7 +1991,6 @@ function adminShell(env: Env, opts: AdminShellOptions, body: string): string {
   const allNavItems: Array<[AdminSection, string, string]> = [
     ['dashboard', '/admin', 'Início'],
     ['posts',     '/admin/posts', 'Posts'],
-    ['cartoes',   '/admin/cartoes', 'Cartões'],
     ['analytics', '/admin/analytics', 'Analytics'],
     ['settings',  '/admin/settings', 'Monetização'],
     ['configuracoes', '/admin/configuracoes', 'Configurações'],

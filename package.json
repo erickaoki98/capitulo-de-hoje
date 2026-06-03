@@ -12,6 +12,7 @@
     "db:console:remote": "wrangler d1 execute capitulo-de-hoje --remote --command"
   },
   "dependencies": {
+    "@cf-wasm/photon": "^0.3.6",
     "marked": "^14.1.3"
   },
   "devDependencies": {

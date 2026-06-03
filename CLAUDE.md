@@ -8,6 +8,7 @@ Blog em Cloudflare Workers + D1 + R2. Server-rendered HTML via TypeScript templa
 - **Sempre usar o skill `ui-ux-pro-max`** para qualquer trabalho de design, UX, UI, CSS ou estilização.
 - Comunicar em português brasileiro.
 - **Anúncios (AdSense) — NUNCA alterar o consent para `denied`.** Este é um site brasileiro: a LGPD não exige opt-in prévio de cookies como a UE/GDPR. O Consent Mode em `src/adsense.ts` deve permanecer SEMPRE `granted` por padrão. Usar `denied` derruba o RPM (anúncios não-personalizados). Só faria sentido um CMP/consent restritivo se houvesse tráfego relevante da União Europeia.
+- **Google Analytics — proteger a injeção do gaId.** O Measurement ID fica em `settings.google_analytics_id` e é carregado por `loadGaId(env)` (`src/index.ts`). INVARIANTE: toda página pública (home, post e qualquer rota pública nova) DEVE carregar o `gaId` e repassá-lo ao render (`renderHome`/`renderPost` → `layout`). Esquecer = GA para de medir SEM erro. Já quebrou uma vez (rotas não passavam o gaId). Ao criar página pública nova, inclua `loadGaId(env)` e passe o resultado. Teste: `curl -s https://capitulodehoje.com.br/ | grep googletagmanager` deve achar o script.
 
 ## Stack
 

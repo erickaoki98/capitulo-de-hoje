@@ -1,4 +1,4 @@
-import type { Env, Post, PostInput, CreditCardInput } from './types';
+import type { Env, Post, PostInput } from './types';
 import {
   listPosts, getPostBySlug, getPostById,
   createPost, updatePost, deletePost,
@@ -10,17 +10,14 @@ import {
   recordPageview, topPostsByViews, getPostsBySlugList, viewsForPath,
   pageviewsSummary, pageviewsByDay,
   listApiKeys, insertApiKey, findApiKeyByHash, touchApiKey, deleteApiKey,
-  countPublishedPosts, listPostsForSitemap,
-  listCreditCards, getCreditCardById, creditCardCategories, countActiveCreditCards,
-  createCreditCard, updateCreditCard, deleteCreditCard,
-  recordOutboundClick, outboundClicksByTarget, outboundClicksTotal,
+  countPublishedPosts, countPostsSummary, listPostsForSitemap,
+  ensureActiveVisitorsTable, recordHeartbeat, countActiveVisitors, cleanupStaleVisitors,
 } from './db';
 import {
   renderHome, renderPost, render404, renderPrivacy, renderDocs,
   renderLogin, renderAdminDashboard, renderAdminPosts, renderAdminEditor,
   renderAdminSettings, renderAdminConfiguracoes, renderAdminAnalytics, renderAdminApiKeys,
   renderAdminCache,
-  renderCardsHub, renderAdminCards,
   type SiteAdSettings, type SiteTypography,
 } from './render';
 import {
@@ -32,6 +29,7 @@ import {
   extractImageUrls, rewriteHtmlUrls, migrateImagesWithBudget,
 } from './images';
 import type { ImageMigrationStats } from './images';
+import { optimizeImage, shouldOptimize } from './imageopt';
 import { parseAdConfig, renderAdsTxt, type AdConfig, DEFAULT_AD_CONFIG } from './adsense';
 import { generateApiKey, sha256 } from './apikey';
 import {
@@ -56,13 +54,6 @@ const NO_CACHE_HEADERS = {
   ...HTML_HEADERS,
   'Cache-Control': 'private, no-store',
 };
-
-/** Slugs dos cartões recomendados para o público 60+ (filtro "Para pessoas 60+").
- *  Curado no código: aprovação facilitada, sem anuidade e uso simples. */
-const SENIOR_PICK_SLUGS = [
-  'nubank', 'inter-gold', 'c6-bank', 'picpay', 'pagbank',
-  'will-bank', 'neon', 'digio', 'mercado-pago', 'itau-click-platinum',
-];
 
 function slugify(s: string): string {
   return s
@@ -118,24 +109,34 @@ export default {
       if (pathname.startsWith('/styles.css') || pathname.startsWith('/favicon')) {
         const res = await env.ASSETS.fetch(request);
         const headers = new Headers(res.headers);
-        // Admin pages use ?v=timestamp for cache-busting; short cache for versioned URLs
+        // URLs versionadas (?v=cssVersion()) podem ser immutable: o ?v muda a cada
+        // deploy, então nunca servem CSS velho. Sem ?v (acesso direto/raro): cache curto.
         const hasVersion = url.searchParams.has('v');
         headers.set(
           'Cache-Control',
           hasVersion
-            ? 'no-cache, no-store, must-revalidate'
+            ? 'public, max-age=31536000, immutable'
             : 'public, max-age=3600, s-maxage=86400, stale-while-revalidate=604800'
         );
         return new Response(res.body, { status: res.status, headers });
       }
 
-      // ===== R2 images: /img/<filename> =====
+      // ===== R2 images: /img/<filename> (com otimização WebP on-the-fly) =====
       if (pathname.startsWith('/img/') && (request.method === 'GET' || request.method === 'HEAD')) {
         const key = pathname.slice(5);
         if (!key || key.includes('/') || key.includes('..')) {
           return new Response('Not found', { status: 404 });
         }
         const ifNoneMatch = request.headers.get('If-None-Match');
+        const acceptsWebp = (request.headers.get('Accept') || '').includes('image/webp');
+        const noOpt = url.searchParams.get('orig') === '1';
+        const isPng = /\.png$/i.test(key);
+        // Chave do derivado otimizado no R2. Versão 3 (_opt3) força regeneração dos
+        // derivados: a v2 gerava WebP lossless (~1MB em fotos); a v3 também tenta
+        // JPEG q80 para PNGs opacos, escolhendo o menor (heroes ~1MB → ~150KB).
+        // Bump de versão = não-destrutivo; os _opt2 antigos viram órfãos inofensivos.
+        const optKey = `_opt3/${key}.webp`;
+
         if (request.method === 'HEAD') {
           const meta = await env.IMAGES.head(key);
           if (!meta) return new Response(null, { status: 404 });
@@ -147,12 +148,63 @@ export default {
           if (ifNoneMatch === meta.httpEtag) return new Response(null, { status: 304, headers: h });
           return new Response(null, { status: 200, headers: h });
         }
+
+        // 1) Browser moderno (WebP) e não pediu original explicitamente:
+        //    tenta servir o derivado otimizado já cacheado no R2.
+        if (acceptsWebp && !noOpt) {
+          const cachedOpt = await env.IMAGES.get(optKey);
+          if (cachedOpt) {
+            const h = new Headers();
+            cachedOpt.writeHttpMetadata(h);
+            h.set('etag', cachedOpt.httpEtag);
+            h.set('Cache-Control', 'public, max-age=31536000, immutable');
+            h.set('Vary', 'Accept');
+            h.set('X-Image-Opt', 'hit');
+            if (ifNoneMatch === cachedOpt.httpEtag) return new Response(null, { status: 304, headers: h });
+            return new Response(cachedOpt.body, { headers: h });
+          }
+        }
+
+        // 2) Carrega a original.
         const obj = await env.IMAGES.get(key);
         if (!obj) return new Response('Not found', { status: 404 });
+
+        // 3) Se elegível, otimiza on-the-fly, guarda o derivado no R2 e serve.
+        //    IMPORTANTE: ler obj.arrayBuffer() consome obj.body — por isso, se a
+        //    otimização não compensar, servimos `buf` (bytes já lidos), NUNCA obj.body.
+        if (acceptsWebp && !noOpt && shouldOptimize(key, obj.size, acceptsWebp)) {
+          const buf = await obj.arrayBuffer();
+          let opt: ReturnType<typeof optimizeImage> = null;
+          try { opt = optimizeImage(buf, isPng); } catch { opt = null; }
+          if (opt) {
+            ctx.waitUntil(
+              env.IMAGES.put(optKey, opt.bytes, {
+                httpMetadata: { contentType: opt.contentType, cacheControl: 'public, max-age=31536000, immutable' },
+              }).catch(() => {}),
+            );
+            const h = new Headers();
+            h.set('Content-Type', opt.contentType);
+            h.set('Cache-Control', 'public, max-age=31536000, immutable');
+            h.set('Vary', 'Accept');
+            h.set('X-Image-Opt', 'miss');
+            return new Response(opt.bytes, { headers: h });
+          }
+          // Otimização não compensou/falhou → serve os bytes originais já lidos.
+          const h = new Headers();
+          obj.writeHttpMetadata(h);
+          h.set('etag', obj.httpEtag);
+          h.set('Cache-Control', 'public, max-age=31536000, immutable');
+          h.set('Vary', 'Accept');
+          h.set('X-Image-Opt', 'skip');
+          return new Response(buf, { headers: h });
+        }
+
+        // 4) Não elegível (SVG/GIF/pequena/sem webp): serve a original (stream intacto).
         const headers = new Headers();
         obj.writeHttpMetadata(headers);
         headers.set('etag', obj.httpEtag);
         headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+        headers.set('Vary', 'Accept');
         if (ifNoneMatch === obj.httpEtag) {
           return new Response(null, { status: 304, headers });
         }
@@ -166,13 +218,14 @@ export default {
           ctx.waitUntil(recordPageview(env.DB, '/').catch(() => {}));
           return cached;
         }
-        const [posts, ads, typo] = await Promise.all([
+        const [posts, ads, typo, gaId] = await Promise.all([
           listPosts(env.DB, { includeDrafts: false, limit: 60 }),
           loadAdSettings(env),
           loadTypography(env),
+          loadGaId(env), // PROTEÇÃO ANALYTICS: gaId precisa chegar no render (ver loadGaId)
         ]);
         ctx.waitUntil(recordPageview(env.DB, '/').catch(() => {}));
-        const resp = new Response(renderHome(env, request, posts, ads, typo), { headers: PUBLIC_CACHE_HEADERS });
+        const resp = new Response(renderHome(env, request, posts, ads, typo, gaId), { headers: PUBLIC_CACHE_HEADERS });
         return writeCache(env, ctx, request, resp);
       }
 
@@ -196,48 +249,11 @@ export default {
         return writeCache(env, ctx, request, resp);
       }
 
-      // ===== Public: Cartões de crédito (comparador) =====
-      if (pathname === '/cartoes' && request.method === 'GET') {
-        const cached = await readCache(env, request);
-        if (cached) {
-          ctx.waitUntil(recordPageview(env.DB, '/cartoes').catch(() => {}));
-          return cached;
-        }
-        const cat = url.searchParams.get('cat');
-        const senior = url.searchParams.get('senior') === '1';
-        const [allCards, cats, ads, typo] = await Promise.all([
-          listCreditCards(env.DB, { activeOnly: true, category: cat ?? undefined }),
-          creditCardCategories(env.DB),
-          loadAdSettings(env),
-          loadTypography(env),
-        ]);
-        const cards = senior ? allCards.filter((c) => SENIOR_PICK_SLUGS.includes(c.slug)) : allCards;
-        ctx.waitUntil(recordPageview(env.DB, '/cartoes').catch(() => {}));
-        const resp = new Response(renderCardsHub(env, request, cards, cats, cat, senior, ads, typo), { headers: PUBLIC_CACHE_HEADERS });
-        return writeCache(env, ctx, request, resp);
-      }
-
-      // ===== Redirect rastreado de afiliado: /ir/cartao/:id =====
-      // Mantém o link de afiliado fora do HTML público e conta o clique.
-      if (pathname.startsWith('/ir/cartao/') && (request.method === 'GET' || request.method === 'HEAD')) {
-        const id = Number(pathname.slice('/ir/cartao/'.length).replace(/\/$/, ''));
-        if (Number.isFinite(id) && id > 0) {
-          const card = await getCreditCardById(env.DB, id);
-          if (card && card.affiliate_url) {
-            ctx.waitUntil(recordOutboundClick(env.DB, 'card', String(id)).catch(() => {}));
-            return Response.redirect(card.affiliate_url, 302);
-          }
-        }
-        return Response.redirect(`${url.protocol}//${url.host}/cartoes`, 302);
-      }
-
-      // ===== Redirect rastreado do bloco promo interno: /ir/promo/:area =====
-      if (pathname.startsWith('/ir/promo/') && (request.method === 'GET' || request.method === 'HEAD')) {
-        const area = pathname.slice('/ir/promo/'.length).replace(/\/$/, '');
-        const dest = area === 'empregos' ? '/empregos' : '/cartoes';
-        const targetId = area === 'empregos' ? 'empregos' : 'cartoes';
-        ctx.waitUntil(recordOutboundClick(env.DB, 'promo', targetId).catch(() => {}));
-        return Response.redirect(`${url.protocol}//${url.host}${dest}`, 302);
+      // ===== Cartões descontinuado: /cartoes e redirects de afiliado → home (301) =====
+      if (pathname === '/cartoes'
+          || pathname.startsWith('/ir/cartao/')
+          || pathname.startsWith('/ir/promo/')) {
+        return Response.redirect(`${url.protocol}//${url.host}/`, 301);
       }
 
       // ===== Legacy WP: /?p=123 (shortlinks por ID) =====
@@ -443,14 +459,16 @@ ${urls.join('\n')}
           return new Response(renderLogin(env, request), { headers: NO_CACHE_HEADERS });
         }
         // Carrega dados pro dashboard em paralelo
-        const [allPosts, summary24h, top24h] = await Promise.all([
-          listPosts(env.DB, { includeDrafts: true, limit: 500 }),
+        await ensureActiveVisitorsTable(env.DB);
+        const [recent, postCounts, summary24h, top24h, activeNow] = await Promise.all([
+          listPosts(env.DB, { includeDrafts: true, limit: 6 }),
+          // Contagem via SQL (não derivar de uma lista limitada — travava em 500).
+          countPostsSummary(env.DB),
           pageviewsSummary(env.DB, 24),
           topPostsByViews(env.DB, 24, 5),
+          countActiveVisitors(env.DB),
         ]);
-        const published = allPosts.filter((p) => !p.draft).length;
-        const drafts = allPosts.length - published;
-        const recent = allPosts.slice(0, 6);
+        const { total, published, drafts } = postCounts;
         // enrich top with titles
         const topSlugs = top24h.map((t) => t.path.replace(/^\//, ''));
         const topPostsData = topSlugs.length ? await getPostsBySlugList(env.DB, topSlugs) : [];
@@ -462,10 +480,11 @@ ${urls.join('\n')}
         }));
         return new Response(renderAdminDashboard(env, request, {
           stats: {
-            total: allPosts.length,
+            total,
             published,
             drafts,
             views24h: summary24h.total ?? 0,
+            activeVisitors: activeNow,
           },
           recent,
           topToday,
@@ -702,46 +721,6 @@ ${urls.join('\n')}
       }
 
       // ============= Admin: Settings (Monetização) =============
-      // ============= Admin: Cartões de crédito =============
-      if (pathname === '/admin/cartoes' && request.method === 'GET') {
-        if (!authed) return redirectToLogin();
-        const editId = Number(url.searchParams.get('edit'));
-        const [cards, editing, cardClickRows, promoClicks] = await Promise.all([
-          listCreditCards(env.DB, { activeOnly: false }),
-          Number.isFinite(editId) && editId > 0 ? getCreditCardById(env.DB, editId) : Promise.resolve(null),
-          outboundClicksByTarget(env.DB, 'card', 30),
-          outboundClicksTotal(env.DB, 'promo', 30),
-        ]);
-        const cardClicks = new Map(cardClickRows.map((r) => [r.target_id, r.clicks]));
-        return new Response(renderAdminCards(env, request, {
-          cards, editing, saved: url.searchParams.get('saved') === '1', cardClicks, promoClicks,
-        }), { headers: NO_CACHE_HEADERS });
-      }
-
-      if (pathname === '/admin/cartoes' && request.method === 'POST') {
-        if (!authed) return redirectToLogin();
-        const form = await parseFormData(request);
-        await createCreditCard(env.DB, formToCardInput(form));
-        await bumpCacheVersion(env);
-        return new Response(null, { status: 303, headers: { Location: '/admin/cartoes?saved=1' } });
-      }
-
-      const cardEditMatch = pathname.match(/^\/admin\/cartoes\/(\d+)$/);
-      if (cardEditMatch && request.method === 'POST') {
-        if (!authed) return redirectToLogin();
-        await updateCreditCard(env.DB, Number(cardEditMatch[1]), formToCardInput(await parseFormData(request)));
-        await bumpCacheVersion(env);
-        return new Response(null, { status: 303, headers: { Location: '/admin/cartoes?saved=1' } });
-      }
-
-      const cardRemoveMatch = pathname.match(/^\/admin\/cartoes\/(\d+)\/remove$/);
-      if (cardRemoveMatch && request.method === 'POST') {
-        if (!authed) return redirectToLogin();
-        await deleteCreditCard(env.DB, Number(cardRemoveMatch[1]));
-        await bumpCacheVersion(env);
-        return new Response(null, { status: 303, headers: { Location: '/admin/cartoes' } });
-      }
-
       if (pathname === '/admin/settings' && request.method === 'GET') {
         if (!authed) return redirectToLogin();
         const settings = await getAllSettings(env.DB);
@@ -812,11 +791,13 @@ ${urls.join('\n')}
       // ============= Admin: Analytics =============
       if (pathname === '/admin/analytics' && request.method === 'GET') {
         if (!authed) return redirectToLogin();
-        const [s24, s7d, s30d, daily] = await Promise.all([
+        await ensureActiveVisitorsTable(env.DB);
+        const [s24, s7d, s30d, daily, activeNow] = await Promise.all([
           pageviewsSummary(env.DB, 24),
           pageviewsSummary(env.DB, 24 * 7),
           pageviewsSummary(env.DB, 24 * 30),
           pageviewsByDay(env.DB, 30),
+          countActiveVisitors(env.DB),
         ]);
         const top48hRaw = await topPostsByViews(env.DB, 48, 15);
         // enriquece com títulos
@@ -839,6 +820,7 @@ ${urls.join('\n')}
             path: r.path, views: r.views, title: titleMap.get(r.path.replace(/^\//, '')),
           })),
           daily,
+          activeVisitors: activeNow,
         }), { headers: NO_CACHE_HEADERS });
       }
 
@@ -887,6 +869,33 @@ ${urls.join('\n')}
         if (!authed) return redirectToLogin();
         await bumpCacheVersion(env);
         return new Response(null, { status: 303, headers: { Location: '/admin/cache?purged=1' } });
+      }
+
+      // ===== Heartbeat do contador ao vivo (público, sem auth) =====
+      if (pathname === '/api/heartbeat' && request.method === 'POST') {
+        try {
+          const body = await request.json() as { vid?: string; path?: string };
+          const vid = typeof body.vid === 'string' ? body.vid.slice(0, 64) : '';
+          const p = typeof body.path === 'string' ? body.path.slice(0, 256) : '/';
+          if (vid) {
+            ctx.waitUntil(ensureActiveVisitorsTable(env.DB).then(() =>
+              recordHeartbeat(env.DB, vid, p),
+            ).catch(() => {}));
+          }
+        } catch { /* ignora corpo malformado */ }
+        return new Response('ok', { headers: { 'Access-Control-Allow-Origin': '*' } });
+      }
+
+      // ===== Contagem de visitantes ao vivo (admin, session auth) =====
+      if (pathname === '/api/active-visitors' && request.method === 'GET') {
+        const authedApi = await requireAuth(request, env.SESSION_SECRET);
+        if (!authedApi) return json({ error: 'Unauthorized' }, 401);
+        await ensureActiveVisitorsTable(env.DB);
+        const count = await countActiveVisitors(env.DB);
+        ctx.waitUntil(cleanupStaleVisitors(env.DB).catch(() => {}));
+        return new Response(JSON.stringify({ active: count }), {
+          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+        });
       }
 
       // ============= External API =============
@@ -1011,11 +1020,14 @@ ${urls.join('\n')}
               status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders },
             });
           }
-          // dedupe
+          // Idempotência (a fila de postagem reenvia/retenta links): se o slug já
+          // existe, NÃO é erro — devolve o post existente como sucesso. Antes isso
+          // retornava 409 e, em corrida (2 requests do mesmo slug quase juntos), o
+          // 2º INSERT estourava a constraint UNIQUE → 500, mesmo com o post já criado.
           const existing = await getPostBySlug(env.DB, slug);
-          if (existing) return new Response(JSON.stringify({ error: 'slug already exists', slug }), {
-            status: 409, headers: { 'Content-Type': 'application/json', ...corsHeaders },
-          });
+          if (existing) return new Response(JSON.stringify({
+            id: existing.id, slug, url: `${siteOrigin}/${slug}`, duplicate: true,
+          }), { status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
 
           const description = String(payload.description ?? '').trim() || excerpt(content);
           const tags = Array.isArray(payload.tags) ? (payload.tags as unknown[]).map(String).join(', ') : '';
@@ -1031,11 +1043,23 @@ ${urls.join('\n')}
             });
           }
 
-          const id = await createPost(env.DB, {
-            slug, title, description, content, category, tags, author,
-            hero_image: hero, draft, pub_date,
-            source_url: typeof payload.source_url === 'string' ? payload.source_url : null,
-          });
+          let id: number;
+          try {
+            id = await createPost(env.DB, {
+              slug, title, description, content, category, tags, author,
+              hero_image: hero, draft, pub_date,
+              source_url: typeof payload.source_url === 'string' ? payload.source_url : null,
+            });
+          } catch (e) {
+            // Corrida: o slug foi inserido entre o getPostBySlug e este INSERT
+            // (UNIQUE constraint failed). Trata como idempotente em vez de 500 —
+            // o post já existe, então devolvemos ele como sucesso.
+            const dupe = await getPostBySlug(env.DB, slug);
+            if (dupe) return new Response(JSON.stringify({
+              id: dupe.id, slug, url: `${siteOrigin}/${slug}`, duplicate: true,
+            }), { status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+            throw e; // erro real (não-duplicado) → deixa o catch global responder 500
+          }
           return new Response(JSON.stringify({
             id, slug, url: `${siteOrigin}/${slug}`,
           }), { status: 201, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
@@ -1071,11 +1095,12 @@ ${urls.join('\n')}
           }
           const post = await getPostBySlug(env.DB, slug);
           if (post && !post.draft) {
-            const [topViews, ads, typo, cardCount] = await Promise.all([
+            const [topViews, top24h, ads, typo, gaId] = await Promise.all([
               topPostsByViews(env.DB, 48, 12, pathname),
+              topPostsByViews(env.DB, 24, 4, pathname),
               loadAdSettings(env),
               loadTypography(env),
-              countActiveCreditCards(env.DB),
+              loadGaId(env), // PROTEÇÃO ANALYTICS: gaId precisa chegar no render (ver loadGaId)
             ]);
             const slugs = topViews.map((v) => v.path.replace(/^\//, ''));
             let relatedPosts = slugs.length > 0
@@ -1085,6 +1110,15 @@ ${urls.join('\n')}
             relatedPosts = relatedPosts.sort((a, b) =>
               (slugOrder.get(a.slug) ?? 999) - (slugOrder.get(b.slug) ?? 999),
             );
+            // "Em Alta": posts mais vistos nas últimas 24h (excluindo o atual).
+            const trendSlugs = top24h.map((v) => v.path.replace(/^\//, ''));
+            let trendingPosts = trendSlugs.length > 0
+              ? await getPostsBySlugList(env.DB, trendSlugs)
+              : [];
+            const trendOrder = new Map(trendSlugs.map((s, i) => [s, i]));
+            trendingPosts = trendingPosts
+              .sort((a, b) => (trendOrder.get(a.slug) ?? 999) - (trendOrder.get(b.slug) ?? 999))
+              .slice(0, 4);
             if (relatedPosts.length < 6) {
               const recent = await listPosts(env.DB, { includeDrafts: false, limit: 20 });
               for (const r of recent) {
@@ -1096,7 +1130,7 @@ ${urls.join('\n')}
             }
             ctx.waitUntil(recordPageview(env.DB, pathname).catch(() => {}));
             const resp = new Response(
-              renderPost(env, request, post, relatedPosts.slice(0, 12), ads, typo, relatedPosts.slice(0, 6), undefined, undefined, null, null, cardCount > 0),
+              renderPost(env, request, post, relatedPosts.slice(0, 12), ads, typo, trendingPosts, undefined, gaId, null, null),
               { headers: PUBLIC_CACHE_HEADERS },
             );
             return writeCache(env, ctx, request, resp);
@@ -1216,32 +1250,6 @@ function redirectToLogin(): Response {
   return new Response(null, { status: 303, headers: { Location: '/admin' } });
 }
 
-/** Converte o formulário do admin num CreditCardInput (parse de listas e flags). */
-function formToCardInput(form: FormData): CreditCardInput {
-  const s = (k: string) => String(form.get(k) ?? '').trim();
-  const lines = (k: string) => s(k).split('\n').map((x) => x.trim()).filter(Boolean);
-  const name = s('name');
-  const ratingRaw = s('rating');
-  const rating = ratingRaw === '' ? null : Math.max(0, Math.min(5, Number(ratingRaw) || 0));
-  return {
-    slug: s('slug') || slugify(name),
-    name,
-    issuer: s('issuer'),
-    image_url: s('image_url') || null,
-    tagline: s('tagline'),
-    annual_fee: s('annual_fee'),
-    benefits: JSON.stringify(lines('benefits')),
-    badges: JSON.stringify(lines('badges')),
-    rating,
-    affiliate_url: s('affiliate_url'),
-    cta_label: s('cta_label') || 'Peça já',
-    category: s('category'),
-    featured: form.get('featured') === '1' ? 1 : 0,
-    sort_order: Number(s('sort_order')) || 0,
-    active: form.get('active') === '1' ? 1 : 0,
-  };
-}
-
 /**
  * URL canônica do site. Usa CANONICAL_URL se definida, senão o host da request.
  * Sempre sem trailing slash. Permite que canonical/og:url/sitemap apontem
@@ -1266,6 +1274,34 @@ async function loadAdSettings(env: Env): Promise<SiteAdSettings | undefined> {
     autoAds: autoAds === '1',
     config: parseAdConfig(placements),
   };
+}
+
+/**
+ * ⚠️ PROTEÇÃO ANALYTICS — NÃO REMOVER ESTA FUNÇÃO NEM PARAR DE PASSAR O gaId.
+ *
+ * Carrega o Measurement ID do Google Analytics (settings key: 'google_analytics_id',
+ * salvo pelo admin em /admin/settings). Retorna '' quando não configurado.
+ *
+ * INVARIANTE (já quebrou uma vez → GA parou de receber dados silenciosamente):
+ *   Toda página pública que renderiza HTML para visitantes (home, post e QUALQUER
+ *   rota pública nova) DEVE chamar loadGaId(env) e repassar o resultado para a
+ *   função de render (renderHome/renderPost/...). O script do GA só é injetado em
+ *   layout() (src/render.ts) quando `gaId` chega preenchido. Se esquecer de passar
+ *   o gaId, NÃO há erro — o GA simplesmente some do HTML e o tráfego deixa de ser
+ *   medido. Ao criar uma página pública nova: inclua loadGaId(env) no Promise.all
+ *   e passe o valor ao render. Teste rápido:
+ *     curl -s https://capitulodehoje.com.br/ | grep googletagmanager   (deve achar)
+ */
+async function loadGaId(env: Env): Promise<string> {
+  const raw = (await getSetting(env.DB, 'google_analytics_id'))?.trim() ?? '';
+  if (!raw) return '';
+  // Aceita só o formato GA4 (G-XXXXXXXXXX). ID malformado não é injetado (não quebra
+  // a página) e fica registrado no log pra facilitar o diagnóstico.
+  if (!/^G-[A-Z0-9]{6,}$/i.test(raw)) {
+    console.warn(`[analytics] google_analytics_id inválido em settings: "${raw}" — esperado G-XXXXXXXXXX. GA não será injetado.`);
+    return '';
+  }
+  return raw;
 }
 
 /** Carrega typography (defaults se não configurado). */

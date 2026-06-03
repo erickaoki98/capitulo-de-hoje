@@ -24,6 +24,22 @@ export async function countPublishedPosts(db: D1Database): Promise<number> {
   return row?.n ?? 0;
 }
 
+/**
+ * Resumo de contagem de posts em UMA query (total / publicados / rascunhos).
+ * Usado no dashboard — NÃO carregar a lista de posts e contar no JS (isso travava
+ * o número no limite da lista, ex.: 500, quando há milhares de posts).
+ */
+export async function countPostsSummary(
+  db: D1Database,
+): Promise<{ total: number; published: number; drafts: number }> {
+  const row = await db.prepare(
+    'SELECT COUNT(*) AS total, SUM(CASE WHEN draft = 0 THEN 1 ELSE 0 END) AS published FROM posts',
+  ).first<{ total: number; published: number | null }>();
+  const total = row?.total ?? 0;
+  const published = row?.published ?? 0;
+  return { total, published, drafts: total - published };
+}
+
 /** Lista posts paginados com offset (para sitemap paginado) — retorna só slug + datas */
 export async function listPostsForSitemap(
   db: D1Database, limit: number, offset: number,
@@ -579,4 +595,79 @@ export async function outboundClicksTotal(
     `SELECT SUM(count) AS n FROM outbound_clicks WHERE kind = ? AND bucket >= ?`,
   ).bind(kind, since).first<{ n: number }>();
   return row?.n ?? 0;
+}
+
+// ============== A/B TESTS ==============
+
+export type AbVariant = '50' | '60';
+export type AbEventType = 'impression' | 'click';
+
+/** Incrementa o contador de um evento A/B (impressão ou clique) no dia atual. */
+export async function recordAbEvent(
+  db: D1Database, test: string, variant: string, event: AbEventType,
+): Promise<void> {
+  await db.prepare(
+    `INSERT INTO ab_events (bucket, test, variant, event, count) VALUES (?, ?, ?, ?, 1)
+     ON CONFLICT(bucket, test, variant, event) DO UPDATE SET count = count + 1`,
+  ).bind(currentDayBucket(), test, variant, event).run();
+}
+
+export interface AbVariantStats {
+  variant: string;
+  impressions: number;
+  clicks: number;
+}
+
+/** Resultado agregado de um teste A/B nos últimos N dias, por variante. */
+export async function abTestResults(
+  db: D1Database, test: string, days: number,
+): Promise<AbVariantStats[]> {
+  const since = new Date(Date.now() - days * 86400_000).toISOString().slice(0, 10);
+  const { results } = await db.prepare(
+    `SELECT variant,
+            SUM(CASE WHEN event = 'impression' THEN count ELSE 0 END) AS impressions,
+            SUM(CASE WHEN event = 'click' THEN count ELSE 0 END) AS clicks
+     FROM ab_events
+     WHERE test = ? AND bucket >= ?
+     GROUP BY variant
+     ORDER BY variant`,
+  ).bind(test, since).all<{ variant: string; impressions: number; clicks: number }>();
+  return (results ?? []).map((r) => ({
+    variant: r.variant,
+    impressions: r.impressions ?? 0,
+    clicks: r.clicks ?? 0,
+  }));
+}
+
+// ============== ACTIVE VISITORS (contador ao vivo) ==============
+
+export async function ensureActiveVisitorsTable(db: D1Database): Promise<void> {
+  await db.prepare(
+    `CREATE TABLE IF NOT EXISTS active_visitors (
+       visitor_id TEXT PRIMARY KEY,
+       path TEXT NOT NULL DEFAULT '/',
+       last_seen INTEGER NOT NULL
+     )`,
+  ).run();
+}
+
+export async function recordHeartbeat(db: D1Database, visitorId: string, path: string): Promise<void> {
+  const now = Date.now();
+  await db.prepare(
+    `INSERT INTO active_visitors (visitor_id, path, last_seen) VALUES (?, ?, ?)
+     ON CONFLICT(visitor_id) DO UPDATE SET path = excluded.path, last_seen = excluded.last_seen`,
+  ).bind(visitorId, path, now).run();
+}
+
+export async function countActiveVisitors(db: D1Database, windowMs = 300_000): Promise<number> {
+  const since = Date.now() - windowMs;
+  const row = await db.prepare(
+    'SELECT COUNT(*) AS n FROM active_visitors WHERE last_seen >= ?',
+  ).bind(since).first<{ n: number }>();
+  return row?.n ?? 0;
+}
+
+export async function cleanupStaleVisitors(db: D1Database, windowMs = 300_000): Promise<void> {
+  const since = Date.now() - windowMs;
+  await db.prepare('DELETE FROM active_visitors WHERE last_seen < ?').bind(since).run();
 }

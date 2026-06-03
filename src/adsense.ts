@@ -103,13 +103,18 @@ export function renderAdUnit(
 ): string {
   const id = publisherId.startsWith('ca-pub-') ? publisherId : `ca-pub-${publisherId}`;
   const isInArticle = format === 'in-article';
+  // Padrão oficial do AdSense: cada <ins> seguido de UM push({}) inline.
+  // É exatamente o código que o Google gera. O adsbygoogle.js cuida de
+  // lazy-load (não busca below-fold até o leitor chegar perto), viewability e
+  // colapso de slots sem fill. NÃO ter push centralizado/custom no layout()
+  // garante 1 push por slot (sem double-push / TagError) e máximo fill rate.
   return `<ins class="adsbygoogle"
   style="display:block${isInArticle ? '; text-align:center' : ''}"
   data-ad-client="${escapeAttr(id)}"
   data-ad-slot="${escapeAttr(slotId)}"
   ${isInArticle ? 'data-ad-layout="in-article" data-ad-format="fluid"' : `data-ad-format="${escapeAttr(format ?? 'auto')}"`}
   ${layout ? `data-ad-layout="${escapeAttr(layout)}"` : ''}
-  data-full-width-responsive="true"${lazy ? '\n  loading="lazy"' : ''}></ins>
+  data-full-width-responsive="true"></ins>
 <script>(adsbygoogle = window.adsbygoogle || []).push({});</script>`;
 }
 
