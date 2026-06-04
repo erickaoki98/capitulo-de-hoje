@@ -2469,22 +2469,13 @@ body:has(.post__hero-wrap) .site-header {
   text-align: center;
   contain: layout style;
 }
-/* Rótulo "Advertisements" — só aparece quando o ad REALMENTE preencheu
-   (tem iframe). Pura reação em CSS (:has), sem JS. Slot sem fill = sem rótulo
-   e sem espaço (não fica caixa vazia, e nunca escondemos um ad que vai vir). */
+/* Rótulo "Advertisements" OCULTO a pedido (na página de artigo).
+   Nota: o AdSense permite, mas NÃO exige, rotular anúncios — então ocultar é
+   válido pela política (desde que o anúncio não seja disfarçado de conteúdo,
+   o que não é o caso aqui: são iframes de ad claros). Para reativar, basta
+   restaurar o `content: 'Advertisements'` no ::before. */
 .ad-slot::before,
-.ad-inarticle::before {
-  content: 'Advertisements';
-  display: block;
-  font-size: 0.625rem;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--text-soft);
-  margin-bottom: 0.25rem;
-  opacity: 0.6;
-}
-.ad-slot:not(:has(iframe))::before,
-.ad-inarticle:not(:has(iframe))::before { display: none; }
+.ad-inarticle::before { content: none; display: none; }
 /* ===== Centralização robusta do criativo dentro do slot =====
    O AdSense às vezes preenche o slot com um iframe MAIS ESTREITO que o container
    e encostado num lado — aí fica "desalinhado", com faixa em branco do outro lado.
