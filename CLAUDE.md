@@ -25,3 +25,19 @@ Blog em Cloudflare Workers + D1 + R2. Server-rendered HTML via TypeScript templa
 - `src/render.ts` — Todas as funções de renderização HTML
 - `src/types.ts` — Interfaces TypeScript
 - `public/styles.css` — CSS completo (público + admin)
+
+## Uso na nuvem (claude.ai/code) e verificação
+
+Este projeto também é usado pelo Claude na web. Pontos de atenção:
+
+- **Segredos:** este projeto usa o padrão Cloudflare `.dev.vars` (NÃO `.env`), que é
+  ignorado pelo Git. Os nomes das variáveis estão em `.dev.vars.example`. Na nuvem, configure
+  esses valores no ambiente antes de esperar que o admin/login funcione. Em produção, os
+  segredos ficam em **Wrangler secrets** (`wrangler secret put NOME`), não no código.
+- **Rodar:** `npm run dev` (= `wrangler dev`, porta 8787).
+- **Verificar (sem o "Claude no Chrome"):** use as ferramentas de **Preview** do ambiente —
+  `preview_start` (sobe o `wrangler dev`), `preview_snapshot` (conteúdo), `preview_console_logs`
+  / `preview_network` (erros) e `preview_screenshot` (prova visual). Sempre verifique de fato e
+  mostre a prova; não peça ao usuário para checar à mão.
+- **D1 local:** ver `package.json` (`db:migrate:local`, `db:console:local`). A tabela `posts`
+  local pode estar vazia; conteúdo real vem de `wrangler d1 export ... --remote`.

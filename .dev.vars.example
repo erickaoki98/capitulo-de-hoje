@@ -1,0 +1,25 @@
+# =====================================================================
+#  Capítulo de Hoje (blog) — segredos de desenvolvimento (EXEMPLO)
+# =====================================================================
+# Cloudflare Workers usa o arquivo `.dev.vars` para segredos em DEV local
+# (lido pelo `wrangler dev`). Este `.dev.vars.example` é versionado de
+# propósito e contém só os NOMES — nunca valores reais.
+#
+# Como usar (local):
+#   1. cp .dev.vars.example .dev.vars
+#   2. Preencha os valores reais no `.dev.vars` (ele é ignorado pelo Git).
+#
+# Em PRODUÇÃO os segredos NÃO ficam aqui — use Wrangler secrets:
+#   wrangler secret put ADMIN_USERNAME
+#   wrangler secret put ADMIN_PASSWORD
+#   wrangler secret put SESSION_SECRET
+#
+# Bindings (D1 "DB", R2 "IMAGES", ASSETS) ficam em wrangler.jsonc, não aqui.
+# ---------------------------------------------------------------------
+
+# Login do painel admin
+ADMIN_USERNAME=
+ADMIN_PASSWORD=
+
+# Segredo para assinar a sessão (use um valor longo e aleatório)
+SESSION_SECRET=
