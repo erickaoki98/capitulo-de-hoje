@@ -298,6 +298,17 @@ export async function viewsForPath(db: D1Database, path: string, hours: number):
   return row?.views ?? 0;
 }
 
+/** Total de views (todas as horas) por path. Uma única query → Map path → views.
+ *  Usado na lista do admin pra mostrar as views de cada artigo sem N queries. */
+export async function totalViewsByPath(db: D1Database): Promise<Map<string, number>> {
+  const { results } = await db.prepare(
+    'SELECT path, SUM(count) AS views FROM pageviews_hourly GROUP BY path',
+  ).all<{ path: string; views: number }>();
+  const map = new Map<string, number>();
+  for (const r of results ?? []) map.set(r.path, r.views ?? 0);
+  return map;
+}
+
 /** Pageviews agregados nas últimas N horas — total e por path */
 export async function pageviewsSummary(db: D1Database, hours: number): Promise<{
   total: number;

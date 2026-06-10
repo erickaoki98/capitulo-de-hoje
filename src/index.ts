@@ -7,7 +7,7 @@ import {
   nextPostsToMigrate, updatePostContent, markPostsMigrated,
   createPostsBatch, upsertRedirectsBatch, existingSlugs,
   getSetting, setSetting, getAllSettings,
-  recordPageview, topPostsByViews, getPostsBySlugList, viewsForPath,
+  recordPageview, topPostsByViews, getPostsBySlugList, viewsForPath, totalViewsByPath,
   pageviewsSummary, pageviewsByDay,
   listApiKeys, insertApiKey, findApiKeyByHash, touchApiKey, deleteApiKey,
   countPublishedPosts, countPostsSummary, listPostsForSitemap,
@@ -496,10 +496,13 @@ ${urls.join('\n')}
         const authed = await requireAuth(request, env.SESSION_SECRET);
         if (!authed) return redirectToLogin();
         const posts = await listPosts(env.DB, { includeDrafts: true, limit: 500 });
+        const viewsByPath = await totalViewsByPath(env.DB);
+        const views = new Map<string, number>();
+        for (const p of posts) views.set(p.slug, viewsByPath.get('/' + p.slug) ?? 0);
         const q = url.searchParams.get('q') ?? '';
         const statusParam = url.searchParams.get('status');
         const status = (statusParam === 'published' || statusParam === 'draft') ? statusParam : 'all';
-        return new Response(renderAdminPosts(env, request, posts, { q, status }), {
+        return new Response(renderAdminPosts(env, request, posts, { q, status }, views), {
           headers: NO_CACHE_HEADERS,
         });
       }

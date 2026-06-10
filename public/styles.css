@@ -1115,6 +1115,15 @@ body.adm-page .adm-main {
   font-weight: 600;
 }
 .data-table td.nowrap { white-space: nowrap; }
+.data-table td.views-cell { white-space: nowrap; }
+.data-table td.views-cell .views-ico {
+  vertical-align: -2px;
+  margin-right: 5px;
+  color: var(--adm-text-muted);
+  opacity: 0.85;
+}
+.data-table td.views-cell.is-zero { color: var(--adm-text-muted); font-weight: 400; }
+.data-table td.views-cell.is-zero .views-ico { opacity: 0.5; }
 .data-table tr:last-child td { border-bottom: none; }
 .data-table tr:hover td { background: var(--adm-muted-bg); }
 .data-table .post-link {

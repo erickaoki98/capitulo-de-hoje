@@ -1877,6 +1877,7 @@ export function renderAdminPosts(
   env: Env, request: Request,
   posts: (Post | PostCard | (PostCard & { content_length?: number }))[],
   filters: { q?: string; status?: 'all' | 'published' | 'draft' } = {},
+  views?: Map<string, number>,
 ): string {
   void request;
   const status = filters.status ?? 'all';
@@ -1902,6 +1903,14 @@ export function renderAdminPosts(
     return `<span class="len-pill ${cls}" title="${title}">${escapeHtml(k)} chars</span>`;
   }
 
+  // Célula de visualizações: ícone de olho + número (pt-BR, tabular). 0 fica esmaecido.
+  function viewsCell(v: number | undefined): string {
+    if (v == null) return '<td class="num"><span class="muted">—</span></td>';
+    const n = v.toLocaleString('pt-BR');
+    const eye = '<svg class="views-ico" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+    return `<td class="num views-cell${v === 0 ? ' is-zero' : ''}" title="${n} ${v === 1 ? 'visualização' : 'visualizações'} no total">${eye}${escapeHtml(n)}</td>`;
+  }
+
   return adminShell(env, {
     active: 'posts',
     title: 'Posts',
@@ -1922,10 +1931,10 @@ export function renderAdminPosts(
       </header>
       <table class="data-table">
         <thead>
-          <tr><th>Título</th><th>Tamanho</th><th>Data</th><th>Status</th><th style="width:1px"></th></tr>
+          <tr><th>Título</th><th>Tamanho</th><th class="num">Views</th><th>Data</th><th>Status</th><th style="width:1px"></th></tr>
         </thead>
         <tbody>
-          ${filtered.length === 0 ? `<tr><td colspan="5" class="empty-state">Nenhum post encontrado${q ? ' para "' + escapeHtml(q) + '"' : ''}.</td></tr>` : filtered.slice(0, 100).map((p) => {
+          ${filtered.length === 0 ? `<tr><td colspan="6" class="empty-state">Nenhum post encontrado${q ? ' para "' + escapeHtml(q) + '"' : ''}.</td></tr>` : filtered.slice(0, 100).map((p) => {
             const len = (p as { content_length?: number }).content_length
               ?? ((p as Post).content ? (p as Post).content.length : undefined);
             return `
@@ -1935,6 +1944,7 @@ export function renderAdminPosts(
                 <div class="muted">/${escapeHtml(p.slug)}</div>
               </td>
               <td class="nowrap">${lengthBadge(len)}</td>
+              ${viewsCell(views?.get(p.slug))}
               <td class="nowrap"><time class="muted">${formatDate(p.pub_date)}</time></td>
               <td>${p.draft ? '<span class="badge badge--draft">Rascunho</span>' : '<span class="badge badge--success">Publicado</span>'}</td>
               <td>
