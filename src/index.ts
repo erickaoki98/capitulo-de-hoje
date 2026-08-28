@@ -23,8 +23,9 @@ import {
   type SiteAdSettings, type SiteTypography,
 } from './render';
 import {
-  readCache, writeCache, bumpCacheVersion, cacheStatus,
+  readCache, writeCache, bumpCacheVersion, cacheStatus, getCacheVersion,
 } from './cache';
+import { getCachedPublicRankings, rankingsForArticle } from './publicRankingCache.ts';
 import { parseWxr, streamWxrCollect } from './wxr';
 import type { WxrPost } from './wxr';
 import {
@@ -1132,13 +1133,24 @@ ${urls.join('\n')}
           }
           const post = await getPublicPostBySlug(env.DB, slug);
           if (post && !post.draft) {
-            const [topViews, top24h, ads, typo, gaId] = await Promise.all([
-              topPublicPostsByViews(env.DB, 48, 12, pathname),
-              topPublicPostsByViews(env.DB, 24, 4, pathname),
+            const [sharedRankings, ads, typo, gaId] = await Promise.all([
+              getCachedPublicRankings({
+                cache: caches.default,
+                origin: env.CANONICAL_URL || url.origin,
+                version: await getCacheVersion(env),
+                load: async () => {
+                  // Sequencial de propósito: evita duas agregações grandes concorrendo por CPU no D1.
+                  const top48h = await topPublicPostsByViews(env.DB, 48, 13);
+                  const top24h = await topPublicPostsByViews(env.DB, 24, 5);
+                  return { top48h, top24h };
+                },
+                onError: (error) => console.error('[rankings] modo degradado:', error),
+              }),
               loadAdSettings(env),
               loadTypography(env),
               loadGaId(env), // PROTEÇÃO ANALYTICS: gaId precisa chegar no render (ver loadGaId)
             ]);
+            const { topViews, top24h } = rankingsForArticle(sharedRankings, pathname);
             const slugs = topViews.map((v) => v.path.replace(/^\//, ''));
             let relatedPosts = slugs.length > 0
               ? await getPublicPostsBySlugList(env.DB, slugs)
