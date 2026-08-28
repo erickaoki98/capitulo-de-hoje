@@ -1,16 +1,18 @@
 import type { Env, Post, PostInput } from './types';
 import {
-  listPosts, getPostBySlug, getPostById,
+  listPosts, getPostBySlug, getPublicPostBySlug, getPostById,
   createPost, updatePost, deletePost,
   upsertRedirect, findRedirect,
   countPostsWithExternalImages, countPostsWithAnyImages,
   nextPostsToMigrate, updatePostContent, markPostsMigrated,
   createPostsBatch, upsertRedirectsBatch, existingSlugs,
   getSetting, setSetting, getAllSettings,
-  recordPageview, topPostsByViews, getPostsBySlugList, viewsForPath, totalViewsByPath,
+  recordPageview, topPostsByViews, topPublicPostsByViews,
+  getPostsBySlugList, getPublicPostsBySlugList, viewsForPath, totalViewsByPath,
   pageviewsSummary, pageviewsByDay,
   listApiKeys, insertApiKey, findApiKeyByHash, touchApiKey, deleteApiKey,
   countPublishedPosts, countPostsSummary, listPostsForSitemap,
+  isCategoryArchived, listArchivedCategoryKeys,
   ensureActiveVisitorsTable, recordHeartbeat, countActiveVisitors, cleanupStaleVisitors,
 } from './db';
 import {
@@ -36,6 +38,8 @@ import {
   createSession, sessionCookie, clearSessionCookie, requireAuth,
 } from './auth';
 import { excerpt, sanitizeDescription } from './markdown';
+import { isArchivedCategoryError, normalizeCategoryKey } from './archive.ts';
+import { maybeCollectMigrationProgress } from './migrationProgress.ts';
 
 const HTML_HEADERS = {
   'Content-Type': 'text/html; charset=utf-8',
@@ -554,6 +558,14 @@ ${urls.join('\n')}
             headers: NO_CACHE_HEADERS,
           });
         }
+        if (await isCategoryArchived(env.DB, input.category)) {
+          return new Response(renderAdminEditor(
+            env,
+            request,
+            { ...input } as any,
+            'Esta categoria está arquivada e não aceita novos posts.',
+          ), { status: 400, headers: NO_CACHE_HEADERS });
+        }
         // checa slug duplicado
         const existing = await getPostBySlug(env.DB, input.slug);
         if (existing) {
@@ -561,7 +573,19 @@ ${urls.join('\n')}
             status: 400, headers: NO_CACHE_HEADERS,
           });
         }
-        await createPost(env.DB, input);
+        try {
+          await createPost(env.DB, input);
+        } catch (e) {
+          if (isArchivedCategoryError(e)) {
+            return new Response(renderAdminEditor(
+              env,
+              request,
+              { ...input } as any,
+              'Esta categoria está arquivada e não aceita novos posts.',
+            ), { status: 400, headers: NO_CACHE_HEADERS });
+          }
+          throw e;
+        }
         return new Response(null, { status: 303, headers: { Location: '/admin' } });
       }
 
@@ -942,9 +966,9 @@ ${urls.join('\n')}
         if (pathname === '/api/posts/top' && request.method === 'GET') {
           const hours = Math.min(720, Math.max(1, Number(url.searchParams.get('hours') ?? 24)));
           const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? 10)));
-          const top = await topPostsByViews(env.DB, hours, limit);
+          const top = await topPublicPostsByViews(env.DB, hours, limit);
           const slugs = top.map((t) => t.path.replace(/^\//, ''));
-          const posts = slugs.length > 0 ? await getPostsBySlugList(env.DB, slugs) : [];
+          const posts = slugs.length > 0 ? await getPublicPostsBySlugList(env.DB, slugs) : [];
           const byMap = new Map(posts.map((p) => [p.slug, p]));
           const result = top
             .map((t) => {
@@ -964,7 +988,7 @@ ${urls.join('\n')}
         const singleMatch = pathname.match(/^\/api\/posts\/([a-z0-9-]+)$/);
         if (singleMatch && request.method === 'GET') {
           const slug = singleMatch[1];
-          const post = await getPostBySlug(env.DB, slug);
+          const post = await getPublicPostBySlug(env.DB, slug);
           if (!post) return new Response(JSON.stringify({ error: 'Post not found' }), {
             status: 404, headers: { 'Content-Type': 'application/json', ...corsHeaders },
           });
@@ -1035,6 +1059,11 @@ ${urls.join('\n')}
           const description = String(payload.description ?? '').trim() || excerpt(content);
           const tags = Array.isArray(payload.tags) ? (payload.tags as unknown[]).map(String).join(', ') : '';
           const category = (payload.category != null && String(payload.category).trim()) || null;
+          if (await isCategoryArchived(env.DB, category)) {
+            return new Response(JSON.stringify({ error: 'category is archived' }), {
+              status: 409, headers: { 'Content-Type': 'application/json', ...corsHeaders },
+            });
+          }
           const author = String(payload.author ?? 'Erick Aoki').trim();
           const hero = (payload.hero_image != null && String(payload.hero_image).trim()) || null;
           const draft = payload.draft === true || payload.draft === 1 ? 1 : 0;
@@ -1054,6 +1083,11 @@ ${urls.join('\n')}
               source_url: typeof payload.source_url === 'string' ? payload.source_url : null,
             });
           } catch (e) {
+            if (isArchivedCategoryError(e)) {
+              return new Response(JSON.stringify({ error: 'category is archived' }), {
+                status: 409, headers: { 'Content-Type': 'application/json', ...corsHeaders },
+              });
+            }
             // Corrida: o slug foi inserido entre o getPostBySlug e este INSERT
             // (UNIQUE constraint failed). Trata como idempotente em vez de 500 —
             // o post já existe, então devolvemos ele como sucesso.
@@ -1096,18 +1130,18 @@ ${urls.join('\n')}
             ctx.waitUntil(recordPageview(env.DB, pathname).catch(() => {}));
             return cached;
           }
-          const post = await getPostBySlug(env.DB, slug);
+          const post = await getPublicPostBySlug(env.DB, slug);
           if (post && !post.draft) {
             const [topViews, top24h, ads, typo, gaId] = await Promise.all([
-              topPostsByViews(env.DB, 48, 12, pathname),
-              topPostsByViews(env.DB, 24, 4, pathname),
+              topPublicPostsByViews(env.DB, 48, 12, pathname),
+              topPublicPostsByViews(env.DB, 24, 4, pathname),
               loadAdSettings(env),
               loadTypography(env),
               loadGaId(env), // PROTEÇÃO ANALYTICS: gaId precisa chegar no render (ver loadGaId)
             ]);
             const slugs = topViews.map((v) => v.path.replace(/^\//, ''));
             let relatedPosts = slugs.length > 0
-              ? await getPostsBySlugList(env.DB, slugs)
+              ? await getPublicPostsBySlugList(env.DB, slugs)
               : [];
             const slugOrder = new Map(slugs.map((s, i) => [s, i]));
             relatedPosts = relatedPosts.sort((a, b) =>
@@ -1116,7 +1150,7 @@ ${urls.join('\n')}
             // "Em Alta": posts mais vistos nas últimas 24h (excluindo o atual).
             const trendSlugs = top24h.map((v) => v.path.replace(/^\//, ''));
             let trendingPosts = trendSlugs.length > 0
-              ? await getPostsBySlugList(env.DB, trendSlugs)
+              ? await getPublicPostsBySlugList(env.DB, trendSlugs)
               : [];
             const trendOrder = new Map(trendSlugs.map((s, i) => [s, i]));
             trendingPosts = trendingPosts
@@ -1166,8 +1200,8 @@ ${urls.join('\n')}
     ctx.waitUntil((async () => {
       try {
         // batch maior pra aproveitar a janela do worker no cron (sem cap de IP)
-        const result = await runImageMigrationBatch(env, 50);
-        console.log(`[cron] migrated batch: ${result.batchSize} posts, ${result.pending} pending, ${result.elapsedMs}ms`);
+        const result = await runImageMigrationBatch(env, 50, { collectProgress: false });
+        console.log(`[cron] migrated batch: ${result.batchSize} posts, ${result.elapsedMs}ms`);
       } catch (e) {
         console.error('[cron] migration error:', e);
       }
@@ -1176,26 +1210,37 @@ ${urls.join('\n')}
 };
 
 /** Lógica de migração de imagens reutilizada por endpoint POST e por cron */
-async function runImageMigrationBatch(env: Env, batchSize: number): Promise<{
+async function runImageMigrationBatch(
+  env: Env,
+  batchSize: number,
+  options: { collectProgress?: boolean } = {},
+): Promise<{
   batchSize: number;
   perPost: Array<{ slug: string; title: string; migrated: number; failed: number; skipped: number; partial: boolean }>;
   failed: Array<{ url: string; error: string }>;
   elapsedMs: number;
-  pending: number;
-  totalWithImages: number;
-  migrated: number;
+  pending: number | null;
+  totalWithImages: number | null;
+  migrated: number | null;
 }> {
   const startedAt = Date.now();
-  const batch = await nextPostsToMigrate(env.DB, batchSize);
-
-  if (batch.length === 0) {
-    const [remaining, totalWithImages] = await Promise.all([
+  const collectProgress = options.collectProgress !== false;
+  const loadProgress = async () => {
+    const [pending, totalWithImages] = await Promise.all([
       countPostsWithExternalImages(env.DB),
       countPostsWithAnyImages(env.DB),
     ]);
+    return { pending, totalWithImages, migrated: totalWithImages - pending };
+  };
+  const batch = await nextPostsToMigrate(env.DB, batchSize);
+
+  if (batch.length === 0) {
+    const progress = await maybeCollectMigrationProgress(collectProgress, loadProgress);
     return {
       batchSize: 0, perPost: [], failed: [], elapsedMs: Date.now() - startedAt,
-      pending: remaining, totalWithImages, migrated: totalWithImages - remaining,
+      pending: progress?.pending ?? null,
+      totalWithImages: progress?.totalWithImages ?? null,
+      migrated: progress?.migrated ?? null,
     };
   }
 
@@ -1234,18 +1279,15 @@ async function runImageMigrationBatch(env: Env, batchSize: number): Promise<{
 
   await markPostsMigrated(env.DB, batch.map((p) => p.id));
 
-  const [remaining, totalWithImages] = await Promise.all([
-    countPostsWithExternalImages(env.DB),
-    countPostsWithAnyImages(env.DB),
-  ]);
+  const progress = await maybeCollectMigrationProgress(collectProgress, loadProgress);
 
   return {
     batchSize: batch.length, perPost,
     failed: stats.failed,
     elapsedMs: Date.now() - startedAt,
-    pending: remaining,
-    totalWithImages,
-    migrated: totalWithImages - remaining,
+    pending: progress?.pending ?? null,
+    totalWithImages: progress?.totalWithImages ?? null,
+    migrated: progress?.migrated ?? null,
   };
 }
 
@@ -1405,9 +1447,28 @@ async function importPostsBatch(
     total: posts.length,
   };
 
-  // 1. Filtra rascunhos
+  let archivedCategoryKeys: Set<string>;
+  try {
+    archivedCategoryKeys = await listArchivedCategoryKeys(env.DB);
+  } catch {
+    for (const p of posts) {
+      result.errors.push({ title: p.title, error: 'check archived categories failed' });
+    }
+    return result;
+  }
+
+  // 1. Filtra categorias arquivadas e rascunhos antes de montar qualquer batch.
   const candidates: WxrPost[] = [];
   for (const p of posts) {
+    const categoryKey = normalizeCategoryKey(p.category);
+    if (categoryKey && archivedCategoryKeys.has(categoryKey)) {
+      result.skipped.push({
+        slug: p.slug,
+        title: p.title,
+        reason: `categoria arquivada: ${p.category ?? categoryKey}`,
+      });
+      continue;
+    }
     const isDraft = p.status !== 'publish';
     if (isDraft && !importDrafts) {
       result.skipped.push({ slug: p.slug, title: p.title, reason: `status: ${p.status}` });

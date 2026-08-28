@@ -4,23 +4,30 @@ import type {
   Job, JobInput,
   OutboundClickKind,
 } from './types';
+import { normalizeCategoryKey, publicPostVisibilitySql } from './archive.ts';
+
+const PUBLIC_POST_VISIBILITY_SQL = publicPostVisibilitySql('p');
 
 export async function listPosts(
   db: D1Database,
   opts: { includeDrafts?: boolean; limit?: number } = {},
 ): Promise<Post[]> {
   const { includeDrafts = false, limit = 100 } = opts;
-  const where = includeDrafts ? '1=1' : 'draft = 0';
-  const stmt = db.prepare(
-    `SELECT * FROM posts WHERE ${where} ORDER BY pub_date DESC LIMIT ?`,
-  ).bind(limit);
+  const sql = includeDrafts
+    ? 'SELECT * FROM posts ORDER BY pub_date DESC LIMIT ?'
+    : `SELECT p.* FROM posts AS p
+       WHERE ${PUBLIC_POST_VISIBILITY_SQL}
+       ORDER BY p.pub_date DESC LIMIT ?`;
+  const stmt = db.prepare(sql).bind(limit);
   const { results } = await stmt.all<Post>();
   return results ?? [];
 }
 
 /** Conta posts publicados (para sitemap index) */
 export async function countPublishedPosts(db: D1Database): Promise<number> {
-  const row = await db.prepare('SELECT COUNT(*) AS n FROM posts WHERE draft = 0').first<{ n: number }>();
+  const row = await db.prepare(
+    `SELECT COUNT(*) AS n FROM posts AS p WHERE ${PUBLIC_POST_VISIBILITY_SQL}`,
+  ).first<{ n: number }>();
   return row?.n ?? 0;
 }
 
@@ -45,7 +52,9 @@ export async function listPostsForSitemap(
   db: D1Database, limit: number, offset: number,
 ): Promise<Array<{ slug: string; updated_date: number; pub_date: number }>> {
   const { results } = await db.prepare(
-    'SELECT slug, updated_date, pub_date FROM posts WHERE draft = 0 ORDER BY pub_date DESC LIMIT ? OFFSET ?',
+    `SELECT p.slug, p.updated_date, p.pub_date FROM posts AS p
+     WHERE ${PUBLIC_POST_VISIBILITY_SQL}
+     ORDER BY p.pub_date DESC LIMIT ? OFFSET ?`,
   ).bind(limit, offset).all<{ slug: string; updated_date: number; pub_date: number }>();
   return results ?? [];
 }
@@ -53,6 +62,34 @@ export async function listPostsForSitemap(
 export async function getPostBySlug(db: D1Database, slug: string): Promise<Post | null> {
   const stmt = db.prepare('SELECT * FROM posts WHERE slug = ? LIMIT 1').bind(slug);
   return await stmt.first<Post>();
+}
+
+export async function getPublicPostBySlug(db: D1Database, slug: string): Promise<Post | null> {
+  const stmt = db.prepare(
+    `SELECT p.* FROM posts AS p
+     WHERE p.slug = ? AND ${PUBLIC_POST_VISIBILITY_SQL}
+     LIMIT 1`,
+  ).bind(slug);
+  return await stmt.first<Post>();
+}
+
+export async function isCategoryArchived(
+  db: D1Database,
+  category: string | null | undefined,
+): Promise<boolean> {
+  const categoryKey = normalizeCategoryKey(category);
+  if (!categoryKey) return false;
+  const row = await db.prepare(
+    'SELECT 1 AS archived FROM archived_categories WHERE category_key = ? LIMIT 1',
+  ).bind(categoryKey).first<{ archived: number }>();
+  return row?.archived === 1;
+}
+
+export async function listArchivedCategoryKeys(db: D1Database): Promise<Set<string>> {
+  const { results } = await db.prepare(
+    'SELECT category_key FROM archived_categories',
+  ).all<{ category_key: string }>();
+  return new Set((results ?? []).map((row) => row.category_key));
 }
 
 export async function getPostById(db: D1Database, id: number): Promise<Post | null> {
@@ -279,12 +316,44 @@ export async function topPostsByViews(
   return results ?? [];
 }
 
+/** Ranking público: remove categorias arquivadas antes de aplicar o LIMIT. */
+export async function topPublicPostsByViews(
+  db: D1Database, hours: number, limit: number, excludePath?: string,
+): Promise<Array<{ path: string; views: number }>> {
+  const since = new Date(Date.now() - hours * 3600_000).toISOString().slice(0, 13);
+  const exclude = excludePath ?? '__none__';
+  const { results } = await db.prepare(
+    `SELECT pv.path AS path, SUM(pv.count) AS views
+     FROM pageviews_hourly AS pv
+     INNER JOIN posts AS p ON pv.path = ('/' || p.slug)
+     WHERE pv.bucket >= ? AND pv.path != ?
+       AND pv.path LIKE '/%' AND pv.path NOT LIKE '/admin%'
+       AND pv.path NOT LIKE '/api%' AND pv.path NOT LIKE '/img%'
+       AND pv.path NOT IN ('/', '/sitemap.xml', '/robots.txt', '/rss.xml', '/privacidade', '/favicon.svg', '/styles.css', '/doc')
+       AND ${PUBLIC_POST_VISIBILITY_SQL}
+     GROUP BY pv.path
+     ORDER BY views DESC LIMIT ?`,
+  ).bind(since, exclude, limit).all<{ path: string; views: number }>();
+  return results ?? [];
+}
+
 /** Busca posts por slug (sem todo o content — só metadados pro card) */
 export async function getPostsBySlugList(db: D1Database, slugs: string[]): Promise<Post[]> {
   if (slugs.length === 0) return [];
   const placeholders = slugs.map(() => '?').join(',');
   const { results } = await db.prepare(
     `SELECT * FROM posts WHERE slug IN (${placeholders}) AND draft = 0`,
+  ).bind(...slugs).all<Post>();
+  return results ?? [];
+}
+
+/** Busca cards públicos por slug, omitindo rascunhos e categorias arquivadas. */
+export async function getPublicPostsBySlugList(db: D1Database, slugs: string[]): Promise<Post[]> {
+  if (slugs.length === 0) return [];
+  const placeholders = slugs.map(() => '?').join(',');
+  const { results } = await db.prepare(
+    `SELECT p.* FROM posts AS p
+     WHERE p.slug IN (${placeholders}) AND ${PUBLIC_POST_VISIBILITY_SQL}`,
   ).bind(...slugs).all<Post>();
   return results ?? [];
 }

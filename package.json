@@ -4,6 +4,9 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
+    "test": "node --test src/*.test.mjs",
+    "test:archive": "node --test src/archive.test.mjs",
+    "publish:archive": "node scripts/publish-archive.mjs",
     "deploy": "wrangler deploy",
     "db:create": "wrangler d1 create capitulo-de-hoje",
     "db:migrate:local": "wrangler d1 execute capitulo-de-hoje --local --file=./schema.sql",
