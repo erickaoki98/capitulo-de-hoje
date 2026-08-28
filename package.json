@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
-    "test": "npm run test:archive",
+    "test": "node --test src/*.test.mjs",
     "test:archive": "node --test src/archive.test.mjs",
     "publish:archive": "node scripts/publish-archive.mjs",
     "deploy": "wrangler deploy",

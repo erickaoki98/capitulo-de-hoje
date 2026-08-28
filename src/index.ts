@@ -39,6 +39,7 @@ import {
 } from './auth';
 import { excerpt, sanitizeDescription } from './markdown';
 import { isArchivedCategoryError, normalizeCategoryKey } from './archive.ts';
+import { maybeCollectMigrationProgress } from './migrationProgress.ts';
 
 const HTML_HEADERS = {
   'Content-Type': 'text/html; charset=utf-8',
@@ -1199,8 +1200,8 @@ ${urls.join('\n')}
     ctx.waitUntil((async () => {
       try {
         // batch maior pra aproveitar a janela do worker no cron (sem cap de IP)
-        const result = await runImageMigrationBatch(env, 50);
-        console.log(`[cron] migrated batch: ${result.batchSize} posts, ${result.pending} pending, ${result.elapsedMs}ms`);
+        const result = await runImageMigrationBatch(env, 50, { collectProgress: false });
+        console.log(`[cron] migrated batch: ${result.batchSize} posts, ${result.elapsedMs}ms`);
       } catch (e) {
         console.error('[cron] migration error:', e);
       }
@@ -1209,26 +1210,37 @@ ${urls.join('\n')}
 };
 
 /** Lógica de migração de imagens reutilizada por endpoint POST e por cron */
-async function runImageMigrationBatch(env: Env, batchSize: number): Promise<{
+async function runImageMigrationBatch(
+  env: Env,
+  batchSize: number,
+  options: { collectProgress?: boolean } = {},
+): Promise<{
   batchSize: number;
   perPost: Array<{ slug: string; title: string; migrated: number; failed: number; skipped: number; partial: boolean }>;
   failed: Array<{ url: string; error: string }>;
   elapsedMs: number;
-  pending: number;
-  totalWithImages: number;
-  migrated: number;
+  pending: number | null;
+  totalWithImages: number | null;
+  migrated: number | null;
 }> {
   const startedAt = Date.now();
-  const batch = await nextPostsToMigrate(env.DB, batchSize);
-
-  if (batch.length === 0) {
-    const [remaining, totalWithImages] = await Promise.all([
+  const collectProgress = options.collectProgress !== false;
+  const loadProgress = async () => {
+    const [pending, totalWithImages] = await Promise.all([
       countPostsWithExternalImages(env.DB),
       countPostsWithAnyImages(env.DB),
     ]);
+    return { pending, totalWithImages, migrated: totalWithImages - pending };
+  };
+  const batch = await nextPostsToMigrate(env.DB, batchSize);
+
+  if (batch.length === 0) {
+    const progress = await maybeCollectMigrationProgress(collectProgress, loadProgress);
     return {
       batchSize: 0, perPost: [], failed: [], elapsedMs: Date.now() - startedAt,
-      pending: remaining, totalWithImages, migrated: totalWithImages - remaining,
+      pending: progress?.pending ?? null,
+      totalWithImages: progress?.totalWithImages ?? null,
+      migrated: progress?.migrated ?? null,
     };
   }
 
@@ -1267,18 +1279,15 @@ async function runImageMigrationBatch(env: Env, batchSize: number): Promise<{
 
   await markPostsMigrated(env.DB, batch.map((p) => p.id));
 
-  const [remaining, totalWithImages] = await Promise.all([
-    countPostsWithExternalImages(env.DB),
-    countPostsWithAnyImages(env.DB),
-  ]);
+  const progress = await maybeCollectMigrationProgress(collectProgress, loadProgress);
 
   return {
     batchSize: batch.length, perPost,
     failed: stats.failed,
     elapsedMs: Date.now() - startedAt,
-    pending: remaining,
-    totalWithImages,
-    migrated: totalWithImages - remaining,
+    pending: progress?.pending ?? null,
+    totalWithImages: progress?.totalWithImages ?? null,
+    migrated: progress?.migrated ?? null,
   };
 }
 
