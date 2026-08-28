@@ -12,6 +12,7 @@
 
 import type { Env } from './types';
 import { getSetting, setSetting } from './db';
+import { publicCacheKeyUrl } from './publicCacheKey.ts';
 
 const VERSION_CACHE_TTL_MS = 30_000; // bypass DB nessa janela (per-isolate)
 let cachedVersion: { value: string; expiresAt: number } | null = null;
@@ -42,9 +43,10 @@ export async function bumpCacheVersion(env: Env): Promise<string> {
  * trate como request distinta sem mudar a URL real do cliente.
  */
 function cacheKeyFor(request: Request, version: string): Request {
-  const url = new URL(request.url);
-  url.searchParams.set('__cv', version);
-  return new Request(url.toString(), { method: 'GET', headers: request.headers });
+  return new Request(publicCacheKeyUrl(request.url, version), {
+    method: 'GET',
+    headers: request.headers,
+  });
 }
 
 /**
