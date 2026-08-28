@@ -364,7 +364,6 @@ ${body}
         <h4 class="site-footer__title">Em alta</h4>
         <ul class="site-footer__list">
           <li><a href="/?cat=A%20Nobreza%20do%20Amor">A Nobreza do Amor</a></li>
-          <li><a href="/?cat=Cora%C3%A7%C3%A3o%20Acelerado">Coração Acelerado</a></li>
           <li><a href="/">Todas as novelas</a></li>
         </ul>
       </div>
