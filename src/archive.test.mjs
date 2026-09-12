@@ -293,7 +293,8 @@ test('rotas públicas usam getters e rankings públicos, enquanto admin mantém 
 
   const publicPage = section(source, '// ===== Public: post at bare /<slug>', '// ===== Default 404');
   assert.match(publicPage, /getPublicPostBySlug\(env\.DB,\s*slug\)/);
-  assert.equal((publicPage.match(/topPublicPostsByViews\(env\.DB/g) ?? []).length, 2);
+  assert.doesNotMatch(publicPage, /topPublicPostsByViews\(env\.DB/);
+  assert.match(publicPage, /readRankingSnapshot\(env\.IMAGES/);
   assert.equal((publicPage.match(/getPublicPostsBySlugList\(env\.DB/g) ?? []).length, 2);
   assert.doesNotMatch(publicPage, /\btopPostsByViews\(env\.DB/);
 

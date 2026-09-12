@@ -4,6 +4,7 @@
   "main": "src/index.ts",
   "compatibility_date": "2025-05-12",
   "compatibility_flags": ["nodejs_compat"],
+  "build": { "command": "npm run check:deploy", "watch_dir": "src" },
   "observability": { "enabled": true },
   "triggers": {
     // Cron interno: roda a migração de imagens automaticamente a cada minuto.

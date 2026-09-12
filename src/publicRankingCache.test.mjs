@@ -82,7 +82,7 @@ test('rota pública usa o cache de ranking em vez de consultar duas vezes por ar
   const here = dirname(fileURLToPath(import.meta.url));
   const source = readFileSync(join(here, 'index.ts'), 'utf8');
 
-  assert.match(source, /getCachedPublicRankings/);
+  assert.match(source, /readRankingSnapshot/);
   assert.match(source, /rankingsForArticle/);
   assert.doesNotMatch(source, /topPublicPostsByViews\(env\.DB, 48, 12, pathname\)/);
   assert.doesNotMatch(source, /topPublicPostsByViews\(env\.DB, 24, 4, pathname\)/);

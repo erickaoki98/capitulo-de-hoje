@@ -57,7 +57,8 @@ export async function readCache(env: Env, request: Request): Promise<Response | 
   const version = await getCacheVersion(env);
   const key = cacheKeyFor(request, version);
   const cache = caches.default;
-  const hit = await cache.match(key);
+  // Cache fora do ar é MISS; rankings nunca são recalculados pelo leitor.
+  const hit = await cache.match(key).catch(() => undefined);
   if (!hit) return null;
   // Clone + adiciona header indicando cache hit (útil pra debug)
   const headers = new Headers(hit.headers);
