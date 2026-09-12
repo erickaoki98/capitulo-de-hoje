@@ -12,7 +12,9 @@
     "db:migrate:local": "wrangler d1 execute capitulo-de-hoje --local --file=./schema.sql",
     "db:migrate:remote": "wrangler d1 execute capitulo-de-hoje --remote --file=./schema.sql",
     "db:console:local": "wrangler d1 execute capitulo-de-hoje --local --command",
-    "db:console:remote": "wrangler d1 execute capitulo-de-hoje --remote --command"
+    "db:console:remote": "wrangler d1 execute capitulo-de-hoje --remote --command",
+    "test:d1-protection": "node --test src/rankingSnapshot.test.mjs src/workerSafety.test.mjs",
+    "check:deploy": "npm test && tsc -p tsconfig.cost-guard.json"
   },
   "dependencies": {
     "@cf-wasm/photon": "^0.3.6",

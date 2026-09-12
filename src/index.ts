@@ -23,9 +23,9 @@ import {
   type SiteAdSettings, type SiteTypography,
 } from './render';
 import {
-  readCache, writeCache, bumpCacheVersion, cacheStatus, getCacheVersion,
+  readCache, writeCache, bumpCacheVersion, cacheStatus,
 } from './cache';
-import { getCachedPublicRankings, rankingsForArticle } from './publicRankingCache.ts';
+import { readRankingSnapshot, rankingsForArticle, refreshRankingSnapshot } from './rankingSnapshot.ts';
 import { parseWxr, streamWxrCollect } from './wxr';
 import type { WxrPost } from './wxr';
 import {
@@ -1134,18 +1134,7 @@ ${urls.join('\n')}
           const post = await getPublicPostBySlug(env.DB, slug);
           if (post && !post.draft) {
             const [sharedRankings, ads, typo, gaId] = await Promise.all([
-              getCachedPublicRankings({
-                cache: caches.default,
-                origin: env.CANONICAL_URL || url.origin,
-                version: await getCacheVersion(env),
-                load: async () => {
-                  // Sequencial de propósito: evita duas agregações grandes concorrendo por CPU no D1.
-                  const top48h = await topPublicPostsByViews(env.DB, 48, 13);
-                  const top24h = await topPublicPostsByViews(env.DB, 24, 5);
-                  return { top48h, top24h };
-                },
-                onError: (error) => console.error('[rankings] modo degradado:', error),
-              }),
+              readRankingSnapshot(env.IMAGES, caches.default, env.CANONICAL_URL || url.origin),
               loadAdSettings(env),
               loadTypography(env),
               loadGaId(env), // PROTEÇÃO ANALYTICS: gaId precisa chegar no render (ver loadGaId)
@@ -1209,6 +1198,8 @@ ${urls.join('\n')}
    * Cada tick processa um batch grande de posts pendentes.
    */
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    // Reserva global de 30 min no R2; independente do cron de imagens e do tráfego.
+    ctx.waitUntil(refreshRankingSnapshot(env.IMAGES, env.DB));
     ctx.waitUntil((async () => {
       try {
         // batch maior pra aproveitar a janela do worker no cron (sem cap de IP)
