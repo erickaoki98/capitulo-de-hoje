@@ -2527,6 +2527,7 @@ export function renderAdminSettings(
 const fmtInt = (n: number) => Math.round(n).toLocaleString('pt-BR');
 const fmtPct = (p: number, digits = 2) => `${(p * 100).toLocaleString('pt-BR', { minimumFractionDigits: digits, maximumFractionDigits: digits })}%`;
 const fmtBrl = (n: number) => `R$ ${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtIndex = (x: number) => x >= 1 ? `${((x - 1) * 100).toFixed(0)}% acima da média` : `${((1 - x) * 100).toFixed(0)}% abaixo da média`;
 const fmtChance = (p: number) => p >= 0.995 ? '>99%' : p > 0 && p < 0.01 ? '<1%' : `${Math.round(p * 100)}%`;
 
 function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): string {
@@ -2589,7 +2590,8 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
     }
     const leader = r.creatives[0];
     if (r.winner) {
-      verdict.push(`<strong>${escapeHtml(r.winner.label)}</strong> é o melhor banner: ${fmtChance(r.winner.pBest)} de chance de ter o maior CTR (${fmtPct(r.winner.ctr)}).${r.winner.pageRpm !== null && e.adsensePageRpm > 0 ? ` Rodando só ele, o grupo nativo renderia ${fmtBrl(r.winner.pageRpm)} por mil páginas (${r.winner.pageRpm >= e.adsensePageRpm ? '+' : '−'}${Math.abs((r.winner.pageRpm / e.adsensePageRpm - 1) * 100).toFixed(0)}% vs AdSense).` : ''}`);
+      const idx = r.winner.index !== null ? `, ${fmtIndex(r.winner.index)} nas mesmas posições` : '';
+      verdict.push(`<strong>${escapeHtml(r.winner.label)}</strong> é o melhor banner: ${fmtChance(r.winner.pBest)} de chance de ter o maior CTR ajustado à posição (${fmtPct(r.winner.adjCtr)})${idx}.${e.bestPageRpm !== null && e.adsensePageRpm > 0 ? ` Se só ele rodasse, o grupo nativo renderia ~${fmtBrl(e.bestPageRpm)} por mil páginas (${e.bestPageRpm >= e.adsensePageRpm ? '+' : '−'}${Math.abs((e.bestPageRpm / e.adsensePageRpm - 1) * 100).toFixed(0)}% vs AdSense).` : ''}`);
     } else if (leader && leader.pBest > 0) {
       verdict.push(`Líder até agora: <strong>${escapeHtml(leader.label)}</strong>, com ${fmtChance(leader.pBest)} de chance de ser o melhor. Ainda sem vencedor: o sistema declara um quando todos os banners têm ${fmtInt(MIN_IMPS_PER_CREATIVE)}+ impressões e um deles passa de ${Math.round(WIN_PROBABILITY * 100)}% de chance.`);
     }
@@ -2667,19 +2669,19 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
           <td style="min-width:130px">
             <div class="views-bar"><span class="views-bar__fill" style="width:${(c.pBest / maxP * 100).toFixed(1)}%"></span><strong>${c.imps >= 100 ? fmtChance(c.pBest) : '—'}</strong></div>
           </td>
-          <td class="num nowrap">${c.pageRpm !== null && c.pv > 0 ? fmtBrl(c.pageRpm) : '—'}</td>
+          <td class="num nowrap">${c.imps > 0 ? `${fmtPct(c.adjCtr)}<div class="muted">${c.index !== null ? fmtIndex(c.index) : '—'}</div>` : '—'}</td>
           <td>${statusBadge(c)}</td>
         </tr>`).join('');
   const rankingCard = `<section class="card">
       <header class="card__header">
         <div>
           <h2 class="card__title">Qual banner ganha</h2>
-          <p class="card__desc">No grupo nativo, cada leitor vê sempre o mesmo banner, sorteado entre os ativos. “Chance de ser o melhor” compara o CTR real provável de cada um (entra no ranking a partir de 100 impressões).</p>
+          <p class="card__desc">No grupo nativo os banners variam ao longo da página (sem repetir) e a ordem é sorteada a cada página, então cada banner aparece em posições diferentes. Como a âncora e o topo recebem mais clique por natureza, o ranking usa o <strong>CTR ajustado à posição</strong>: cliques reais ÷ cliques que a média teria nas mesmas posições. “Chance de ser o melhor” vem desse CTR ajustado (entra no ranking a partir de 100 impressões).</p>
         </div>
       </header>
       <div class="nv-table-wrap">
         <table class="data-table">
-          <thead><tr><th>Banner</th><th class="num">Impressões</th><th class="num">Cliques</th><th class="num">CTR</th><th>Chance de ser o melhor</th><th class="num">Receita / mil páginas</th><th>Status</th></tr></thead>
+          <thead><tr><th>Banner</th><th class="num">Impressões</th><th class="num">Cliques</th><th class="num">CTR bruto</th><th>Chance de ser o melhor</th><th class="num">CTR ajustado à posição</th><th>Status</th></tr></thead>
           <tbody>${rankingRows}</tbody>
         </table>
       </div>
