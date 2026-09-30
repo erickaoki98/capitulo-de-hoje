@@ -2796,6 +2796,21 @@ ins.adsbygoogle[data-ad-status="unfill-optimized"]:not(:has(iframe, .google-aiuf
 :is(.ad-slot, .ad-inarticle, .post-card--ad):has(> ins.adsbygoogle[data-ad-status="unfill-optimized"]):not(:has(iframe, .google-aiuf > *)) {
   display: none;
 }
+/* Quando o AdSense PREENCHE o slot otimizado (ex.: botão "Descobrir mais" /
+   .goog-rtopics, ~28px), ele continua travando a caixa em 375px acima da dobra
+   — um botão perdido no meio de um bloco vazio. Abaixo da dobra o próprio
+   AdSense já usa height:auto; aqui fazemos o mesmo no slot da tela inicial.
+   O .google-aiuf traz `height:375px !important` inline (inalcançável por CSS),
+   então limitamos com max-height:max-content: a caixa fica do tamanho do
+   conteúdo, que continua visível (só some o vazio). Com iframe dentro,
+   max-content = altura do iframe → nada é cortado. */
+ins.adsbygoogle[data-ad-status="unfill-optimized"],
+ins.adsbygoogle[data-ad-status="unfill-optimized"] > div {
+  height: auto !important;
+}
+ins.adsbygoogle[data-ad-status="unfill-optimized"] .google-aiuf {
+  max-height: max-content !important;
+}
 /* Sticky footer: z-index abaixo do cookie-consent (9999) */
 .ad-sticky-footer {
   position: fixed; bottom: 0; left: 0; right: 0;
