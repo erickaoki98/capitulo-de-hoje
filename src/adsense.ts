@@ -18,6 +18,15 @@ export interface AdPlacementConfig {
   format?: 'auto' | 'fluid' | 'banner' | 'rectangle' | 'in-article';
 }
 
+/** Slot fixo extra no meio do texto: um anúncio logo após o parágrafo N. */
+export interface InContentExtraSlot {
+  enabled: boolean;
+  slotId?: string;
+  /** Parágrafo (1-based) após o qual o anúncio entra */
+  afterParagraph: number;
+  format?: AdPlacementConfig['format'];
+}
+
 export interface AdConfig {
   /** Antes do título do post */
   beforePost: AdPlacementConfig;
@@ -33,6 +42,8 @@ export interface AdConfig {
   betweenCards: AdPlacementConfig & { everyNCards?: number };
   /** Sticky no rodapé mobile */
   stickyFooter: AdPlacementConfig;
+  /** Slots fixos extras no meio do texto (após o parágrafo N) */
+  inContentExtra?: InContentExtraSlot[];
 }
 
 export const DEFAULT_AD_CONFIG: AdConfig = {
@@ -44,6 +55,44 @@ export const DEFAULT_AD_CONFIG: AdConfig = {
   betweenCards:  { enabled: true,  format: 'auto', everyNCards: 6 },
   stickyFooter:  { enabled: false, format: 'fluid' },
 };
+
+const AD_FORMATS: ReadonlyArray<NonNullable<AdPlacementConfig['format']>> =
+  ['auto', 'fluid', 'banner', 'rectangle', 'in-article'];
+
+/**
+ * Lê os slots extras do form de /admin/settings (`extra.slot.<i>`,
+ * `extra.enabled.<i>`, `extra.after.<i>`, `extra.format.<i>`). Os índices podem
+ * ter buracos (linhas removidas no admin), então percorre todos os `extra.slot.<i>`
+ * presentes, em ordem numérica. Linhas sem Slot ID são descartadas;
+ * afterParagraph fica entre 1 e 100 (vazio/inválido → 3, o padrão do form).
+ */
+export function parseInContentExtraForm(form: FormData): InContentExtraSlot[] {
+  const indices: number[] = [];
+  for (const name of form.keys()) {
+    const m = /^extra\.slot\.(\d+)$/.exec(name);
+    if (m) indices.push(Number(m[1]));
+  }
+  indices.sort((a, b) => a - b);
+
+  const slots: InContentExtraSlot[] = [];
+  for (const i of indices) {
+    const slotId = String(form.get(`extra.slot.${i}`) ?? '').trim();
+    if (!slotId) continue;
+    const afterRaw = String(form.get(`extra.after.${i}`) ?? '').trim();
+    const after = afterRaw === '' ? NaN : Math.round(Number(afterRaw));
+    const formatRaw = String(form.get(`extra.format.${i}`) ?? '');
+    const format = (AD_FORMATS as readonly string[]).includes(formatRaw)
+      ? formatRaw as AdPlacementConfig['format']
+      : 'in-article';
+    slots.push({
+      enabled: form.get(`extra.enabled.${i}`) === '1',
+      slotId,
+      afterParagraph: Number.isFinite(after) ? Math.min(100, Math.max(1, after)) : 3,
+      format,
+    });
+  }
+  return slots;
+}
 
 export function parseAdConfig(raw: string | null): AdConfig {
   if (!raw) return DEFAULT_AD_CONFIG;

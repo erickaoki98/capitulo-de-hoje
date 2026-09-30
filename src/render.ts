@@ -872,7 +872,7 @@ function planAndInjectBlocks(
     if (shopeeOccupied.has(pos) || extraOccupied.has(pos)) continue;
 
     // Extras também são in-content → força in-article (ver guard acima).
-    const xHtml = inArticle(pubForExtras, x.slotId);
+    const xHtml = inArticle(pubForExtras, x.slotId!); // validExtras já exige slotId
     extraBlocks.push({ html: xHtml, afterParagraph: pos });
     extraOccupied.add(pos);
   }

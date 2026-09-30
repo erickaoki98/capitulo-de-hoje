@@ -34,7 +34,7 @@ import {
 } from './images';
 import type { ImageMigrationStats } from './images';
 import { optimizeImage, shouldOptimize } from './imageopt';
-import { parseAdConfig, renderAdsTxt, type AdConfig, DEFAULT_AD_CONFIG } from './adsense';
+import { parseAdConfig, parseInContentExtraForm, renderAdsTxt, type AdConfig, DEFAULT_AD_CONFIG } from './adsense';
 import { generateApiKey, sha256 } from './apikey';
 import {
   createSession, sessionCookie, clearSessionCookie, requireAuth,
@@ -897,6 +897,8 @@ ${urls.join('\n')}
             ...(key === 'betweenCards' ? { everyNCards: Number.isFinite(n) && n > 0 ? n : 6 } : {}),
           };
         }
+        // Slots fixos "após o parágrafo N" (não estão no DEFAULT_AD_CONFIG, então o loop acima não os vê)
+        cfg.inContentExtra = parseInContentExtraForm(form);
         await Promise.all([
           setSetting(env.DB, 'adsense.publisher_id', pubId),
           setSetting(env.DB, 'adsense.auto_ads', autoAds),
