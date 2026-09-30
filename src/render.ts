@@ -6,6 +6,7 @@ import { renderMarkdown, readingTime, stripBrokenImageFigures } from './markdown
 import {
   type AdConfig, renderAdSenseScript, renderAdUnit, injectInContentAds,
 } from './adsense';
+import { isValidGaMeasurementId } from './configuracoes.ts';
 
 export interface SiteAdSettings {
   publisherId: string;       // ca-pub-XXX
@@ -2456,6 +2457,7 @@ export function renderAdminConfiguracoes(
     cookieBanner: boolean;
     tab?: string;
     saved?: boolean;
+    error?: string;
   },
 ): string {
   void request;
@@ -2463,6 +2465,11 @@ export function renderAdminConfiguracoes(
   const activeTab = validTabs.includes(data.tab as any) ? data.tab as string : 'tipografia';
   const author = data.defaultAuthor ?? { name: '', bio: '', avatar: '' };
   const cookieIcon = (size: number) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="${size > 16 ? 1.75 : 2}" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10 4 4 0 0 1-5-5 4 4 0 0 1-5-5"/><path d="M8.5 8.5v.01"/><path d="M16 15.5v.01"/><path d="M12 12v.01"/><path d="M11 17v.01"/><path d="M7 14v.01"/></svg>`;
+  // Atributos ARIA/estado de cada aba e painel (padrão WAI-ARIA Tabs, tabindex "roving").
+  const tabAttrs = (id: string) => `id="cfg-tab-${id}" data-tab="${id}" aria-controls="cfg-panel-${id}" aria-selected="${activeTab === id}" tabindex="${activeTab === id ? 0 : -1}"`;
+  const panelAttrs = (id: string) => `id="cfg-panel-${id}" data-panel="${id}" role="tabpanel" aria-labelledby="cfg-tab-${id}"`;
+  const gaId = (data.googleAnalyticsId ?? '').trim();
+  const gaValid = isValidGaMeasurementId(gaId);
 
   return adminShell(env, {
     active: 'configuracoes',
@@ -2470,21 +2477,22 @@ export function renderAdminConfiguracoes(
     subtitle: 'Aparência do site, tracking e cookies',
   }, `
     ${data.saved ? `<div class="alert alert--success"><span class="alert__icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></span><div><strong>Configurações salvas.</strong> O cache do site foi limpo automaticamente.</div></div>` : ''}
+    ${data.error ? `<div class="alert alert--error" role="alert"><span class="alert__icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg></span><div><strong>Não foi possível salvar.</strong> ${escapeHtml(data.error)}</div></div>` : ''}
 
-    <nav class="cfg-tabs" role="tablist">
-      <button type="button" role="tab" class="cfg-tabs__tab ${activeTab === 'tipografia' ? 'is-active' : ''}" data-tab="tipografia" aria-selected="${activeTab === 'tipografia'}">
+    <nav class="cfg-tabs" role="tablist" aria-label="Seções de configurações">
+      <button type="button" role="tab" class="cfg-tabs__tab ${activeTab === 'tipografia' ? 'is-active' : ''}" ${tabAttrs('tipografia')}>
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 7 4 4 20 4 20 7"/><line x1="9" y1="20" x2="15" y2="20"/><line x1="12" y1="4" x2="12" y2="20"/></svg>
         Tipografia
       </button>
-      <button type="button" role="tab" class="cfg-tabs__tab ${activeTab === 'autor' ? 'is-active' : ''}" data-tab="autor" aria-selected="${activeTab === 'autor'}">
+      <button type="button" role="tab" class="cfg-tabs__tab ${activeTab === 'autor' ? 'is-active' : ''}" ${tabAttrs('autor')}>
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
         Autor
       </button>
-      <button type="button" role="tab" class="cfg-tabs__tab ${activeTab === 'tracking' ? 'is-active' : ''}" data-tab="tracking" aria-selected="${activeTab === 'tracking'}">
+      <button type="button" role="tab" class="cfg-tabs__tab ${activeTab === 'tracking' ? 'is-active' : ''}" ${tabAttrs('tracking')}>
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="3" y1="20" x2="21" y2="20"/></svg>
         Tracking
       </button>
-      <button type="button" role="tab" class="cfg-tabs__tab ${activeTab === 'cookies' ? 'is-active' : ''}" data-tab="cookies" aria-selected="${activeTab === 'cookies'}">
+      <button type="button" role="tab" class="cfg-tabs__tab ${activeTab === 'cookies' ? 'is-active' : ''}" ${tabAttrs('cookies')}>
         ${cookieIcon(16)}
         Cookies
       </button>
@@ -2494,7 +2502,7 @@ export function renderAdminConfiguracoes(
       <input type="hidden" name="_tab" id="cfg-tab-input" value="${activeTab}">
 
       <!-- Tab: Tipografia -->
-      <div class="cfg-panel ${activeTab === 'tipografia' ? 'is-active' : ''}" data-panel="tipografia">
+      <div class="cfg-panel ${activeTab === 'tipografia' ? 'is-active' : ''}" ${panelAttrs('tipografia')}>
         <section class="card">
           <header class="card__header card__header--icon">
             <span class="card__header-icon">
@@ -2530,7 +2538,7 @@ export function renderAdminConfiguracoes(
                 <small class="field__help">Tamanho do corpo dos parágrafos.</small>
               </div>
             </div>
-            <div class="type-preview" id="type-preview">
+            <div class="type-preview" id="type-preview" data-title-scale="${data.typography.titleScale}" data-body-scale="${data.typography.bodyScale}">
               <div class="type-preview__label">Pré-visualização</div>
               <h1 class="type-preview__h1">Título de exemplo</h1>
               <p class="type-preview__p">Este é um parágrafo de exemplo do corpo do texto. Use essas configurações para encontrar o tamanho mais confortável para os leitores do seu blog.</p>
@@ -2540,7 +2548,7 @@ export function renderAdminConfiguracoes(
       </div>
 
       <!-- Tab: Autor padrão -->
-      <div class="cfg-panel ${activeTab === 'autor' ? 'is-active' : ''}" data-panel="autor">
+      <div class="cfg-panel ${activeTab === 'autor' ? 'is-active' : ''}" ${panelAttrs('autor')}>
         <section class="card">
           <header class="card__header card__header--icon">
             <span class="card__header-icon">
@@ -2573,7 +2581,7 @@ export function renderAdminConfiguracoes(
       </div>
 
       <!-- Tab: Tracking -->
-      <div class="cfg-panel ${activeTab === 'tracking' ? 'is-active' : ''}" data-panel="tracking">
+      <div class="cfg-panel ${activeTab === 'tracking' ? 'is-active' : ''}" ${panelAttrs('tracking')}>
         <section class="card">
           <header class="card__header card__header--icon">
             <span class="card__header-icon">
@@ -2585,20 +2593,33 @@ export function renderAdminConfiguracoes(
             </div>
           </header>
           <div class="card__body">
+            ${data.error ? '' : `<p class="cfg-status ${gaId ? (gaValid ? 'is-on' : 'is-warn') : 'is-off'}">
+              <span class="cfg-status__dot" aria-hidden="true"></span>
+              <span>${gaId
+                ? (gaValid
+                  ? `Google Analytics <strong>ativo</strong> no blog.`
+                  : `O ID salvo não está no formato <code>G-XXXXXXXXXX</code>: o GA <strong>não</strong> está sendo carregado. Corrija abaixo.`)
+                : 'Google Analytics <strong>desativado</strong>: nenhum ID salvo.'}</span>
+            </p>`}
             <div class="field">
               <label for="google_analytics_id">Measurement ID</label>
               <input type="text" id="google_analytics_id" name="google_analytics_id"
-                value="${escapeHtml(data.googleAnalyticsId ?? '')}"
+                value="${escapeHtml(gaId)}"
                 placeholder="G-XXXXXXXXXX"
-                class="input" autocomplete="off">
-              <small class="field__help">Encontre seu ID em <a href="https://analytics.google.com/" target="_blank" rel="noopener">Google Analytics</a> &gt; Admin &gt; Data Streams. Formato: <code>G-XXXXXXXXXX</code></small>
+                pattern="[Gg]-[A-Za-z0-9]{6,}" title="Formato: G-XXXXXXXXXX"
+                class="input" autocomplete="off" spellcheck="false" autocapitalize="characters">
+              <small class="field__help">Encontre seu ID em <a href="https://analytics.google.com/" target="_blank" rel="noopener">Google Analytics</a> &gt; Admin &gt; Data Streams. Formato: <code>G-XXXXXXXXXX</code>. Deixar o campo vazio <strong>não</strong> remove o ID salvo.</small>
             </div>
+            ${gaId && !data.error ? `<label class="check cfg-clear-check">
+              <input type="checkbox" name="google_analytics_id.clear" value="1" id="ga-clear">
+              <span>Desativar o Google Analytics (remove o ID ao salvar)</span>
+            </label>` : ''}
           </div>
         </section>
       </div>
 
       <!-- Tab: Cookies -->
-      <div class="cfg-panel ${activeTab === 'cookies' ? 'is-active' : ''}" data-panel="cookies">
+      <div class="cfg-panel ${activeTab === 'cookies' ? 'is-active' : ''}" ${panelAttrs('cookies')}>
         <section class="card">
           <header class="card__header card__header--icon">
             <span class="card__header-icon">${cookieIcon(20)}</span>
@@ -2640,17 +2661,34 @@ export function renderAdminConfiguracoes(
 
     <script>
     (() => {
-      const tabs = document.querySelectorAll('.cfg-tabs__tab');
+      const tabs = Array.from(document.querySelectorAll('.cfg-tabs__tab'));
       const panels = document.querySelectorAll('.cfg-panel');
       const tabInput = document.getElementById('cfg-tab-input');
 
-      tabs.forEach(tab => {
-        tab.addEventListener('click', () => {
-          const target = tab.getAttribute('data-tab');
-          tabs.forEach(t => { t.classList.toggle('is-active', t === tab); t.setAttribute('aria-selected', String(t === tab)); });
-          panels.forEach(p => p.classList.toggle('is-active', p.getAttribute('data-panel') === target));
-          if (tabInput) tabInput.value = target;
-          history.replaceState(null, '', '?tab=' + target);
+      function activateTab(target, focus) {
+        tabs.forEach(t => {
+          const on = t.getAttribute('data-tab') === target;
+          t.classList.toggle('is-active', on);
+          t.setAttribute('aria-selected', String(on));
+          t.tabIndex = on ? 0 : -1;
+          if (on && focus) t.focus();
+        });
+        panels.forEach(p => p.classList.toggle('is-active', p.getAttribute('data-panel') === target));
+        if (tabInput) tabInput.value = target;
+        history.replaceState(null, '', '?tab=' + target);
+      }
+
+      tabs.forEach((tab, i) => {
+        tab.addEventListener('click', () => activateTab(tab.getAttribute('data-tab'), false));
+        // Teclado (WAI-ARIA Tabs): ←/→ alternam, Home/End vão às pontas.
+        tab.addEventListener('keydown', (e) => {
+          const last = tabs.length - 1;
+          const next = e.key === 'ArrowRight' ? (i === last ? 0 : i + 1)
+            : e.key === 'ArrowLeft' ? (i === 0 ? last : i - 1)
+            : e.key === 'Home' ? 0 : e.key === 'End' ? last : -1;
+          if (next < 0) return;
+          e.preventDefault();
+          activateTab(tabs[next].getAttribute('data-tab'), true);
         });
       });
 
@@ -2658,6 +2696,19 @@ export function renderAdminConfiguracoes(
       cookieCard?.querySelector('input[type="checkbox"]')?.addEventListener('change', (e) => {
         cookieCard.classList.toggle('is-on', e.target.checked);
       });
+
+      // Campo inválido numa aba escondida: o navegador bloqueia o envio sem mostrar
+      // nada. Abre a aba do campo para a mensagem de validação aparecer.
+      const cfgForm = tabInput && tabInput.form;
+      if (cfgForm) cfgForm.addEventListener('invalid', (e) => {
+        const panel = e.target.closest && e.target.closest('.cfg-panel');
+        if (panel && !panel.classList.contains('is-active')) activateTab(panel.getAttribute('data-panel'), false);
+      }, true);
+
+      // "Desativar o GA": trava o campo para ficar claro que o ID será removido.
+      const gaClear = document.getElementById('ga-clear');
+      const gaInput = document.getElementById('google_analytics_id');
+      if (gaClear && gaInput) gaClear.addEventListener('change', () => { gaInput.disabled = gaClear.checked; });
 
       const TITLE_SIZES = { sm: '22px', md: '28px', lg: '34px', xl: '42px' };
       const BODY_SIZES  = { sm: '14px', md: '16px', lg: '18px' };

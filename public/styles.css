@@ -1475,6 +1475,10 @@ code.mono { font-family: var(--adm-mono); font-size: 12px; color: var(--adm-text
   margin-top: 16px;
   z-index: 5;
 }
+/* Mobile: gruda ACIMA da bottom nav fixa (8+44+8px + borda + safe-area), senão o botão fica coberto. */
+@media (max-width: 768px) {
+  .sticky-actions { bottom: calc(61px + env(safe-area-inset-bottom, 0px)); }
+}
 
 /* ==========================================================
    20. Editor
@@ -1699,6 +1703,235 @@ code.mono { font-family: var(--adm-mono); font-size: 12px; color: var(--adm-text
 .type-preview[data-body-scale="sm"] .type-preview__p { font-size: 14px; }
 .type-preview[data-body-scale="md"] .type-preview__p { font-size: 16px; }
 .type-preview[data-body-scale="lg"] .type-preview__p { font-size: 18px; }
+
+/* ==========================================================
+   26b. Config tabs (/admin/configuracoes)
+   Trilho branco como os cards; aba ativa no acento (mesma
+   linguagem do .placement-card.is-on e da bottom nav).
+   Só o painel .is-active aparece — os campos escondidos
+   continuam no <form> e são enviados juntos.
+   ========================================================== */
+.cfg-tabs {
+  display: flex;
+  gap: 4px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px;
+  background: var(--adm-card);
+  border: 1px solid var(--adm-border);
+  border-radius: var(--adm-radius);
+  box-shadow: var(--adm-shadow);
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.cfg-tabs::-webkit-scrollbar { display: none; }
+
+body.adm-page .cfg-tabs__tab {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 8px 16px;
+  border: 0;
+  border-radius: var(--adm-radius-sm);
+  background: transparent;
+  color: var(--adm-text-muted);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 150ms ease-out, color 150ms ease-out;
+}
+.cfg-tabs__tab svg { flex-shrink: 0; stroke-width: 1.75; }
+body.adm-page .cfg-tabs__tab:hover { background: var(--adm-muted-bg); color: var(--adm-text); }
+body.adm-page .cfg-tabs__tab.is-active {
+  background: var(--adm-accent-bg);
+  color: var(--adm-accent);
+  font-weight: 600;
+}
+
+.cfg-panel { display: none; }
+.cfg-panel.is-active { display: block; }
+
+@media (max-width: 768px) {
+  .cfg-tabs { width: 100%; }
+  body.adm-page .cfg-tabs__tab { flex: 1 0 auto; min-height: 44px; padding: 8px 12px; }
+}
+/* Telas estreitas: ícone em cima do rótulo (como a bottom nav), cabem 4+ abas. */
+@media (max-width: 480px) {
+  body.adm-page .cfg-tabs__tab {
+    flex-direction: column;
+    gap: 4px;
+    padding: 6px 8px;
+    font-size: 12px;
+  }
+}
+
+/* Status do Google Analytics (aba Tracking) */
+.cfg-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--adm-border);
+  border-radius: var(--adm-radius-sm);
+  background: var(--adm-muted-bg);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--adm-text);
+}
+.cfg-status__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--adm-text-faint);
+  flex-shrink: 0;
+}
+.cfg-status.is-on .cfg-status__dot { background: var(--adm-success); box-shadow: 0 0 0 4px var(--adm-success-bg); }
+.cfg-status.is-warn { background: var(--adm-warning-bg); color: var(--adm-warning-fg); }
+.cfg-status.is-warn .cfg-status__dot { background: var(--adm-warning-fg); }
+.cfg-status code {
+  background: var(--adm-card);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.cfg-clear-check input { accent-color: var(--adm-danger); }
+body.adm-page .cfg-panel .field input:disabled {
+  background: var(--adm-muted-bg);
+  color: var(--adm-text-faint);
+  text-decoration: line-through;
+  cursor: not-allowed;
+}
+
+/* ==========================================================
+   26c. Avatar field + cropper (foto do autor)
+   ========================================================== */
+.avatar-field { display: flex; align-items: center; gap: 16px; }
+.avatar-field [hidden] { display: none !important; }
+.avatar-field__preview {
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-radius: 50%;
+  border: 1px solid var(--adm-border);
+  background: var(--adm-muted-bg);
+  color: var(--adm-text-faint);
+}
+.avatar-field__preview img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.avatar-field__controls { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.avatar-field__btns { display: flex; flex-wrap: wrap; gap: 8px; }
+body.adm-page .avatar-field label.btn {
+  display: inline-flex;
+  margin: 0;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--adm-accent);
+}
+
+.cropper {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.6);
+}
+.cropper[hidden] { display: none; }
+.cropper__panel {
+  width: min(420px, 100%);
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  padding: 24px;
+  background: var(--adm-card);
+  border-radius: var(--adm-radius);
+  box-shadow: var(--adm-shadow-md);
+}
+.cropper__title { margin: 0; font-size: 15px; font-weight: 600; color: var(--adm-text); }
+.cropper__hint { margin: 4px 0 16px; font-size: 13px; line-height: 1.5; color: var(--adm-text-muted); }
+.cropper__stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1;
+  overflow: hidden;
+  border-radius: var(--adm-radius-sm);
+  background: var(--adm-muted-bg);
+}
+.cropper__stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  touch-action: none;
+}
+.cropper__stage canvas:active { cursor: grabbing; }
+/* Máscara circular: mostra como o avatar vai aparecer. */
+.cropper__ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  box-shadow: 0 0 0 999px rgba(15, 23, 42, 0.45);
+  pointer-events: none;
+}
+.cropper__zoom {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  font-size: 13px;
+  color: var(--adm-text-muted);
+}
+.cropper__zoom input { flex: 1; accent-color: var(--adm-accent); }
+.cropper__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+.cropper__err { margin-top: 12px; font-size: 13px; color: var(--adm-danger); }
+.cropper__err[hidden] { display: none; }
+
+/* Prévia do box de autor no admin */
+.author-box-preview .author-box {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--adm-border);
+  border-radius: var(--adm-radius);
+  background: var(--adm-muted-bg);
+}
+.author-box-preview .author-box__avatar {
+  width: 56px;
+  height: 56px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  object-fit: cover;
+}
+.author-box-preview .author-box__avatar--fallback {
+  display: grid;
+  place-items: center;
+  background: var(--adm-accent-bg);
+  color: var(--adm-accent);
+  font-size: 20px;
+  font-weight: 700;
+}
+.author-box-preview .author-box__label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--adm-text-faint);
+}
+.author-box-preview .author-box__name { margin: 2px 0 0; font-size: 15px; font-weight: 600; color: var(--adm-text); }
+.author-box-preview .author-box__bio { margin: 4px 0 0; font-size: 13px; line-height: 1.5; color: var(--adm-text-muted); }
 
 /* ==========================================================
    27. Public typography scales (body classes)

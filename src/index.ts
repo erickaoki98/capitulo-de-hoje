@@ -41,6 +41,10 @@ import {
 import { excerpt, sanitizeDescription } from './markdown';
 import { isArchivedCategoryError, normalizeCategoryKey } from './archive.ts';
 import { maybeCollectMigrationProgress } from './migrationProgress.ts';
+import {
+  isValidGaMeasurementId, resolveGaIdUpdate, normalizeAuthorName, normalizeAuthorBio,
+  sanitizeAvatarUrl, sniffImageType, normalizeConfigTab,
+} from './configuracoes.ts';
 
 const HTML_HEADERS = {
   'Content-Type': 'text/html; charset=utf-8',
@@ -787,21 +791,24 @@ ${urls.join('\n')}
         return new Response(null, { status: 303, headers: { Location: '/admin/settings?saved=1' } });
       }
 
-      // ============= Admin: Configurações (Typography) =============
+      // ============= Admin: Configurações (Tipografia / Autor / Tracking / Cookies) =============
       if (pathname === '/admin/configuracoes' && request.method === 'GET') {
         if (!authed) return redirectToLogin();
-        const [t, b, cookieBanner] = await Promise.all([
-          getSetting(env.DB, 'typography.title_scale'),
-          getSetting(env.DB, 'typography.body_scale'),
+        const [typography, cookieBanner, gaRaw, authorName, authorBio, authorAvatar] = await Promise.all([
+          loadTypography(env),
           loadCookieBanner(env),
+          // Valor CRU (não loadGaId): o campo precisa mostrar o ID salvo mesmo se
+          // estiver malformado — senão salvar a página parece "apagar" o GA.
+          getSetting(env.DB, 'google_analytics_id'),
+          getSetting(env.DB, 'author.default_name'),
+          getSetting(env.DB, 'author.default_bio'),
+          getSetting(env.DB, 'author.default_avatar'),
         ]);
-        const titleScale = (['sm','md','lg','xl'] as const).includes(t as any)
-          ? t as 'sm' | 'md' | 'lg' | 'xl' : 'md';
-        const bodyScale = (['sm','md','lg'] as const).includes(b as any)
-          ? b as 'sm' | 'md' | 'lg' : 'md';
         return new Response(renderAdminConfiguracoes(env, request, {
-          typography: { titleScale, bodyScale },
+          typography,
           cookieBanner,
+          googleAnalyticsId: gaRaw?.trim() ?? '',
+          defaultAuthor: { name: authorName ?? '', bio: authorBio ?? '', avatar: authorAvatar ?? '' },
           tab: url.searchParams.get('tab') ?? undefined,
           saved: url.searchParams.get('saved') === '1',
         }), { headers: NO_CACHE_HEADERS });
@@ -810,18 +817,78 @@ ${urls.join('\n')}
       if (pathname === '/admin/configuracoes' && request.method === 'POST') {
         if (!authed) return redirectToLogin();
         const form = await request.formData();
-        const titleScale = String(form.get('typography.title_scale') ?? 'md');
-        const bodyScale = String(form.get('typography.body_scale') ?? 'md');
+        const t = String(form.get('typography.title_scale') ?? '');
+        const b = String(form.get('typography.body_scale') ?? '');
+        const titleScale = (['sm','md','lg','xl'] as const).includes(t as any) ? t as 'sm' | 'md' | 'lg' | 'xl' : 'md';
+        const bodyScale = (['sm','md','lg'] as const).includes(b as any) ? b as 'sm' | 'md' | 'lg' : 'md';
         // Checkbox desmarcado não é enviado → ausência = aviso desligado.
         const cookieBanner = form.get('cookie_banner.enabled') === '1' ? '1' : '0';
-        await Promise.all([
+
+        // Autor padrão: só grava se o form trouxe os campos (evita zerar por um POST parcial).
+        const hasAuthor = form.has('author.default_name');
+        const authorName = normalizeAuthorName(form.get('author.default_name'));
+        const authorBio = normalizeAuthorBio(form.get('author.default_bio'));
+        const authorAvatar = sanitizeAvatarUrl(form.get('author.default_avatar'));
+
+        // PROTEÇÃO ANALYTICS: vazio/ausente nunca apaga; remover só via checkbox explícito.
+        const currentGa = (await getSetting(env.DB, 'google_analytics_id'))?.trim() ?? '';
+        const ga = resolveGaIdUpdate(
+          form.get('google_analytics_id'), form.get('google_analytics_id.clear') === '1', currentGa,
+        );
+
+        const errors: string[] = [];
+        if (ga.kind === 'invalid') errors.push(`Measurement ID inválido: "${ga.value}". Use o formato G-XXXXXXXXXX.`);
+        if (hasAuthor && authorAvatar === null) errors.push('A foto do autor tem um endereço inválido. Envie a foto novamente.');
+        if (errors.length) {
+          // Nada é gravado: devolve o form com o que foi digitado para corrigir.
+          return new Response(renderAdminConfiguracoes(env, request, {
+            typography: { titleScale, bodyScale },
+            cookieBanner: cookieBanner === '1',
+            googleAnalyticsId: ga.kind === 'invalid' || ga.kind === 'set' ? ga.value : currentGa,
+            defaultAuthor: { name: authorName, bio: authorBio, avatar: authorAvatar ?? '' },
+            tab: ga.kind === 'invalid' ? 'tracking' : 'autor',
+            error: `${errors.join(' ')} Nenhuma alteração foi salva.`,
+          }), { status: 422, headers: NO_CACHE_HEADERS });
+        }
+
+        const writes: Promise<void>[] = [
           setSetting(env.DB, 'typography.title_scale', titleScale),
           setSetting(env.DB, 'typography.body_scale', bodyScale),
           setSetting(env.DB, 'cookie_banner.enabled', cookieBanner),
-        ]);
+        ];
+        if (hasAuthor) {
+          writes.push(
+            setSetting(env.DB, 'author.default_name', authorName),
+            setSetting(env.DB, 'author.default_bio', authorBio),
+            setSetting(env.DB, 'author.default_avatar', authorAvatar ?? ''),
+          );
+        }
+        if (ga.kind === 'set') writes.push(setSetting(env.DB, 'google_analytics_id', ga.value));
+        if (ga.kind === 'clear') writes.push(setSetting(env.DB, 'google_analytics_id', ''));
+        await Promise.all(writes);
         await bumpCacheVersion(env);
-        const tab = String(form.get('_tab') ?? '').replace(/[^a-z]/g, '');
+        const tab = normalizeConfigTab(form.get('_tab'));
         return new Response(null, { status: 303, headers: { Location: `/admin/configuracoes?saved=1${tab ? `&tab=${tab}` : ''}` } });
+      }
+
+      // ============= Admin: upload da foto do autor (cropper de avatar) =============
+      // Corpo = imagem crua (o cropper envia um JPEG 400×400). Salva no R2 e
+      // devolve a URL pública /img/<chave>, que vai no campo hidden do form.
+      if (pathname === '/admin/upload/avatar' && request.method === 'POST') {
+        if (!authed) return json({ error: 'Sessão expirada. Faça login novamente.' }, 401);
+        const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+        if (Number(request.headers.get('Content-Length') || 0) > MAX_AVATAR_BYTES) {
+          return json({ error: 'Imagem muito grande (máx 2MB após o recorte).' }, 413);
+        }
+        const bytes = new Uint8Array(await request.arrayBuffer());
+        if (bytes.byteLength > MAX_AVATAR_BYTES) return json({ error: 'Imagem muito grande (máx 2MB após o recorte).' }, 413);
+        const img = sniffImageType(bytes);
+        if (!img) return json({ error: 'Arquivo não é uma imagem JPG, PNG ou WebP válida.' }, 415);
+        const key = `avatar-${Date.now()}-${crypto.randomUUID().slice(0, 8)}.${img.ext}`;
+        await env.IMAGES.put(key, bytes, {
+          httpMetadata: { contentType: img.mime, cacheControl: 'public, max-age=31536000, immutable' },
+        });
+        return json({ url: `/img/${key}` });
       }
 
       // ============= Admin: Analytics =============
@@ -1346,7 +1413,7 @@ async function loadAdSettings(env: Env): Promise<SiteAdSettings | undefined> {
  * ⚠️ PROTEÇÃO ANALYTICS — NÃO REMOVER ESTA FUNÇÃO NEM PARAR DE PASSAR O gaId.
  *
  * Carrega o Measurement ID do Google Analytics (settings key: 'google_analytics_id',
- * salvo pelo admin em /admin/settings). Retorna '' quando não configurado.
+ * salvo pelo admin em /admin/configuracoes → aba Tracking). Retorna '' quando não configurado.
  *
  * INVARIANTE (já quebrou uma vez → GA parou de receber dados silenciosamente):
  *   Toda página pública que renderiza HTML para visitantes (home, post e QUALQUER
@@ -1363,7 +1430,8 @@ async function loadGaId(env: Env): Promise<string> {
   if (!raw) return '';
   // Aceita só o formato GA4 (G-XXXXXXXXXX). ID malformado não é injetado (não quebra
   // a página) e fica registrado no log pra facilitar o diagnóstico.
-  if (!/^G-[A-Z0-9]{6,}$/i.test(raw)) {
+  // Mesma regra do POST /admin/configuracoes (src/configuracoes.ts).
+  if (!isValidGaMeasurementId(raw)) {
     console.warn(`[analytics] google_analytics_id inválido em settings: "${raw}" — esperado G-XXXXXXXXXX. GA não será injetado.`);
     return '';
   }
