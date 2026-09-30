@@ -20,7 +20,7 @@ Confirmado pelo navegador: `sergiooaokii@gmail.com`, conta `pub-9160979665550731
 4. Depois da publicação autorizada, abrir `/admin/adsense`, conectar e conceder `openid`, `email` e `adsense.readonly`. A identidade deve ser verificada e corresponder ao e-mail configurado. Acesso offline permite a atualização automática. A tela de consentimento Google deve permitir esse usuário; em modo de teste os tokens podem expirar em sete dias.
 5. Verificar o primeiro relatório, período, moeda e domínio antes de considerar sincronização concluída.
 
-Publicação e configuração dos secrets concluídas na conta correta. A sincronização real ainda depende do login administrativo, consentimento Google e validação do primeiro relatório. Não usar a conta Megumi para este Worker.
+Publicação e configuração dos secrets concluídas na conta correta. Consentimento Google e primeira sincronização real concluídos em 29/09/2026 às 23:03:44 (Brasília). Conta e publisher conferidos no painel; relatório de 30/08 a 28/09/2026, moeda USD, filtro exclusivo do domínio e www, 30 linhas diárias. Não usar a conta Megumi para este Worker.
 
 ## Segurança e armazenamento
 
@@ -83,3 +83,7 @@ Branch: `codex/adsense-admin`. Worker: `capitulo-de-hoje`, conta Cloudflare acim
 - `src/workerSafety.test.mjs`
 - `tsconfig.cost-guard.json`
 - `wrangler.jsonc`
+
+## Validação final em produção
+
+Versão `bbf393b0-f9e2-4c1a-b437-7c8936ebb5a1`, commit `b77f5d8`, com `origin/main` `faec0cd` incorporada e 84 testes aprovados. Corrigida a política de referência da página HTML para `same-origin`, preservando o Origin dos formulários; redirects OAuth continuam `no-referrer`. O fluxo real de conexão e atualização manual terminou em `status=ready`. A próxima tentativa foi limitada a uma hora, como previsto. A branch permanece separada da main: futuras publicações devem incorporar esta integração e a proteção D1 para não removê-las novamente.
