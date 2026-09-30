@@ -7,6 +7,7 @@ import {
   type AdConfig, type AdPlacementConfig, renderAdSenseScript, renderAdUnit, renderAdIns, injectInContentAds,
 } from './adsense';
 import { isValidGaMeasurementId } from './configuracoes.ts';
+import { gaConfigParams, gaContentGroup, renderGaEventsScript } from './gaEvents.ts';
 import {
   type NativeConfig, type MixPlacement, type MixReport, type SlotFormat,
   MIX_PLACEMENTS, NATIVE_FORMATS, PLACEMENT_LABELS, SLOT_FORMATS, SLOT_FORMAT_LABELS,
@@ -291,6 +292,11 @@ interface LayoutOptions {
   cookieBanner?: boolean; // aviso "Usamos cookies" (padrão: exibe; admin → Configurações → Cookies)
 }
 
+/** Pathname de uma URL absoluta ('' se inválida — ex.: admin passa url vazia). */
+function safePathname(u: string): string {
+  try { return new URL(u).pathname; } catch { return ''; }
+}
+
 function layout(opts: LayoutOptions, body: string): string {
   const {
     title, description, url, siteTitle,
@@ -358,7 +364,7 @@ ${/* PROTEÇÃO ANALYTICS — NÃO REMOVER. O GA só é injetado quando `gaId` c
      receber dados", quase sempre a causa é uma rota pública que esqueceu de
      passar o gaId (não é aqui). Mantenha `!isAdmin` para nunca medir o /admin. */''}
 ${gaId && !isAdmin ? `<script async src="https://www.googletagmanager.com/gtag/js?id=${escapeHtml(gaId)}"></script>
-<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','${escapeHtml(gaId)}');</script>` : ''}
+<script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','${escapeHtml(gaId)}',${gaConfigParams(gaContentGroup({ type, category, path: safePathname(url) }))});</script>` : ''}
 </head>
 <body class="${finalBodyClass}">
 <header class="site-header">
@@ -515,6 +521,7 @@ ${!isAdmin ? `<script>
   // derrubava o fill rate, principalmente em artigos longos. Removido.
 })();
 </script>
+${gaId && !isAdmin ? renderGaEventsScript() : ''}
 </body>
 </html>`;
 }

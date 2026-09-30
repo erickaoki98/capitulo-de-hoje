@@ -340,7 +340,7 @@ function nativeEl(fmt){
   if(fmt==='faixa'){key=(W.matchMedia&&W.matchMedia('(min-width: 760px)').matches&&f['728x90'])?'728x90':(f['320x100']?'320x100':'');}
   var img=key&&f[key];if(!img)return null;
   var a=D.createElement('a');a.href=img[1];a.target='_blank';a.rel='sponsored noopener';
-  a.className='cdh-spot cdh-spot--'+key;
+  a.className='cdh-spot cdh-spot--'+key;a.setAttribute('data-cr',cr.i);
   var im=D.createElement('img');im.src=img[0];im.width=img[2];im.height=img[3];im.alt=cr.a;
   im.loading='lazy';im.decoding='async';a.appendChild(im);
   return {el:a,img:im,fmt:key};
