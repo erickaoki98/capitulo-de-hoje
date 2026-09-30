@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  bannerHref,
   buildMixReport,
   detectFormat,
   mergeCreatives,
@@ -301,4 +302,92 @@ test('RPM do grupo AdSense: API convertida, cotação manual, fallback manual e 
   assert.equal(effectiveAdsenseRpm(base, { ...auto, currency: 'BRL' }, null).value, 2);
   assert.equal(effectiveAdsenseRpm(base, null, 5.2).source, 'none');
   assert.equal(parseNativeConfig(JSON.stringify({ rpmAuto: false, usdBrl: 999 })).usdBrl, 100);
+});
+
+// ---------- ID único do banner nas UTMs ----------
+
+// Galeria nova da Toda Fase: utm_content = ID do banner, utm_term = formato.
+const tfSnippet = (id, fmt, term, w, h) =>
+  `<textarea readonly>&lt;a href=&quot;https://todafase.com/?utm_source=capitulodehoje&amp;utm_medium=banner&amp;utm_campaign=virada40&amp;utm_content=${id}&amp;utm_term=${term}&quot;&gt;&lt;img src=&quot;https://todafase.com/banners/${id}-${fmt}.jpg&quot; width=&quot;${w}&quot; height=&quot;${h}&quot; alt=&quot;Publicidade Toda Fase: Nova fase&quot;&gt;&lt;/a&gt;</textarea>`;
+const TF_PAGE = `<h2>TF01 · Nova fase</h2>${tfSnippet('tf01-nova-fase', '300x250', '300x250', 300, 250)}${tfSnippet('tf01-nova-fase', 'nativo-16x9', '16x9', 1200, 675)}`;
+
+test('parseBannerSnippets usa o utm_content do link como ID do banner', () => {
+  const { banners } = parseBannerSnippets(TF_PAGE, 'https://todafase.com/banners');
+  assert.deepEqual(banners.map((b) => [b.id, b.format, b.label]), [
+    ['tf01-nova-fase', '300x250', 'TF01 · Nova fase'],
+    ['tf01-nova-fase', '16x9', 'TF01 · Nova fase'],
+  ]);
+  // O ID é o da UTM mesmo quando o arquivo tem outro nome.
+  const other = '<a href="https://x.example/?utm_content=tf07-menopausa-30&utm_term=300x250"><img src="/b/qualquer-300x250.jpg" width="300" height="250"></a>';
+  assert.equal(parseBannerSnippets(other, 'https://x.example/').banners[0].id, 'tf07-menopausa-30');
+});
+
+test('todo link de banner sai com utm_content = ID e utm_term = formato', () => {
+  assert.equal(
+    bannerHref('https://todafase.com/?utm_source=capitulodehoje&utm_medium=banner&utm_campaign=virada40&utm_content=v1-nova-fase-300x250', 'tf01-nova-fase', '300x250'),
+    'https://todafase.com/?utm_source=capitulodehoje&utm_medium=banner&utm_campaign=virada40&utm_content=tf01-nova-fase&utm_term=300x250',
+  );
+  // Sem UTM nenhuma: ganha origem e meio padrão do blog.
+  assert.equal(bannerHref('https://loja.example/p', 'x', '16x9'),
+    'https://loja.example/p?utm_source=capitulodehoje&utm_medium=banner&utm_content=x&utm_term=16x9');
+  // Vale para a config salva e para o que vai para a página.
+  const cfg = configWith();
+  assert.equal(cfg.creatives[0].images['16x9'].href,
+    'https://loja.example/?a=1&utm_source=capitulodehoje&utm_medium=banner&utm_content=v1-nova-fase&utm_term=16x9');
+  assert.match(runtimeConfig(cfg).c[1].f['728x90'][1], /utm_content=v2-30-segundos&utm_term=728x90$/);
+});
+
+test('mergeCreatives renomeia o banner que voltou com ID novo e a mesma imagem, sem duplicar', () => {
+  const existing = parseNativeConfig(JSON.stringify({ creatives: [
+    { id: 'v1-nova-fase', label: 'V1 · Nova fase', alt: 'x', active: false, images: {
+      '300x250': { src: '/img/nv-1.jpg', href: 'https://todafase.com/?utm_content=v1-nova-fase-300x250', w: 300, h: 250 } } },
+    { id: 'v2-30-segundos', label: 'V2', alt: '', active: true, images: {
+      '300x250': { src: '/img/nv-2.jpg', href: 'https://todafase.com/', w: 300, h: 250 } } },
+  ] })).creatives;
+  const { banners } = parseBannerSnippets(TF_PAGE, 'https://todafase.com/banners');
+  // Mesmo conteúdo = mesmo arquivo no R2 (nome pelo hash).
+  const srcMap = new Map([
+    ['https://todafase.com/banners/tf01-nova-fase-300x250.jpg', '/img/nv-1.jpg'],
+    ['https://todafase.com/banners/tf01-nova-fase-nativo-16x9.jpg', '/img/nv-9.jpg'],
+  ]);
+  const r = mergeCreatives(existing, banners, srcMap);
+  assert.deepEqual([r.added, r.updated, r.renamed], [0, 0, 1]);
+  assert.deepEqual(r.creatives.map((c) => c.id), ['tf01-nova-fase', 'v2-30-segundos']);
+  const tf01 = r.creatives[0];
+  assert.equal(tf01.active, false);            // continua pausado
+  assert.equal(tf01.label, 'TF01 · Nova fase');
+  assert.deepEqual(tf01.aliases, ['v1-nova-fase']);
+  assert.deepEqual(Object.keys(tf01.images).sort(), ['16x9', '300x250']);
+  // Salvo e relido, o link já leva o ID novo.
+  const saved = parseNativeConfig(JSON.stringify({ creatives: r.creatives }));
+  assert.match(saved.creatives[0].images['300x250'].href, /utm_content=tf01-nova-fase&utm_term=300x250$/);
+  // Reimportar a mesma galeria não muda nada.
+  const again = mergeCreatives(saved.creatives, banners, srcMap);
+  assert.deepEqual([again.added, again.renamed, again.creatives.length], [0, 0, 2]);
+});
+
+test('eventos com o ID antigo do banner contam para o ID atual', () => {
+  const cfg = configWith({ creatives: [
+    { id: 'tf01-nova-fase', label: 'TF01', alt: '', active: true, aliases: ['v1-nova-fase'],
+      images: { '16x9': { src: '/img/nv-a.jpg', href: 'https://loja.example/', w: 1200, h: 675 } } },
+    { id: 'tf02-30-segundos', label: 'TF02', alt: '', active: true,
+      images: { '16x9': { src: '/img/nv-c.jpg', href: 'https://loja.example/', w: 1200, h: 675 } } },
+  ] });
+  // Página ainda em cache manda o ID antigo.
+  assert.deepEqual(sanitizeEventBatch({ t: 'abc123', e: [['inContent', 'native', 'v1-nova-fase', '16x9', 'click', 1]] }, cfg),
+    [{ placement: 'inContent', source: 'native', creative: 'tf01-nova-fase', format: '16x9', event: 'click', count: 1 }]);
+  const ev = (creative, event, count) => ({ placement: 'inContent', source: 'native', creative, format: '16x9', event, count });
+  const r = buildMixReport([ev('v1-nova-fase', 'imp', 300), ev('tf01-nova-fase', 'imp', 200), ev('v1-nova-fase', 'click', 5)], cfg);
+  const tf01 = r.creatives.find((c) => c.id === 'tf01-nova-fase');
+  assert.deepEqual([tf01.imps, tf01.clicks], [500, 5]);
+  assert.equal(r.creatives.some((c) => c.id === 'v1-nova-fase'), false);
+});
+
+test('ID antigo não pode ser o ID atual de outro banner nem estar em dois', () => {
+  const cfg = parseNativeConfig(JSON.stringify({ creatives: [
+    { id: 'a', aliases: ['b', 'velho', 'a'], images: {} },
+    { id: 'b', aliases: ['velho', 'outro'], images: {} },
+  ] }));
+  assert.deepEqual(cfg.creatives[0].aliases, ['velho']);
+  assert.deepEqual(cfg.creatives[1].aliases, ['outro']);
 });

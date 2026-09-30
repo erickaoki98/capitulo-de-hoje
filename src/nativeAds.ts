@@ -69,11 +69,14 @@ export interface NativeImage {
 }
 
 export interface NativeCreative {
-  id: string;      // 'v1-nova-fase'
-  label: string;   // 'V1 · Nova fase'
+  /** ID único do banner, o mesmo do utm_content do link ('tf07-menopausa-30'). */
+  id: string;
+  label: string;   // 'TF07 · Menopausa 30%'
   alt: string;     // headline / texto alternativo
   active: boolean;
   images: Partial<Record<NativeFormat, NativeImage>>;
+  /** IDs que este banner já teve. Eventos antigos (e páginas ainda em cache) contam para o ID atual. */
+  aliases?: string[];
 }
 
 export interface NativePlacementCfg {
@@ -194,6 +197,25 @@ export function slugifyId(s: string): string {
     .replace(/-+$/g, '');
 }
 
+/**
+ * Todo link de banner leva o ID do banner na UTM: utm_content = ID e utm_term = formato
+ * (utm_source/utm_medium entram se faltarem). Assim o site de destino sabe qual banner foi clicado.
+ */
+export function bannerHref(href: string, id: string, format: NativeFormat): string {
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return href;
+  }
+  const q = url.searchParams;
+  if (!q.has('utm_source')) q.set('utm_source', 'capitulodehoje');
+  if (!q.has('utm_medium')) q.set('utm_medium', 'banner');
+  q.set('utm_content', id);
+  q.set('utm_term', format);
+  return url.toString();
+}
+
 function sanitizeCreative(raw: unknown): NativeCreative | null {
   if (!raw || typeof raw !== 'object') return null;
   const r = raw as Record<string, unknown>;
@@ -208,15 +230,29 @@ function sanitizeCreative(raw: unknown): NativeCreative | null {
     const href = safeHttpUrl(img.href);
     const w = clampNum(img.w, 1, 4000, 0);
     const h = clampNum(img.h, 1, 4000, 0);
-    if (src && href && w && h) images[f] = { src, href, w, h };
+    if (src && href && w && h) images[f] = { src, href: bannerHref(href, id, f), w, h };
   }
+  const aliases = [...new Set((Array.isArray(r.aliases) ? r.aliases : []).map((a) => slugifyId(String(a))))]
+    .filter((a) => a && a !== id)
+    .slice(0, 20);
   return {
     id,
     label: String(r.label ?? id).slice(0, 80) || id,
     alt: String(r.alt ?? '').slice(0, 200),
     active: r.active !== false,
     images,
+    ...(aliases.length ? { aliases } : {}),
   };
+}
+
+/** ID atual de cada criativo, achado também pelos IDs antigos (aliases). */
+function currentIds(cfg: NativeConfig): Map<string, string> {
+  const ids = new Map<string, string>();
+  for (const c of cfg.creatives) ids.set(c.id, c.id);
+  for (const c of cfg.creatives) {
+    for (const a of c.aliases ?? []) if (!ids.has(a)) ids.set(a, c.id);
+  }
+  return ids;
 }
 
 export function parseNativeConfig(raw: string | null): NativeConfig {
@@ -241,6 +277,12 @@ export function parseNativeConfig(raw: string | null): NativeConfig {
   for (const c of Array.isArray(parsed.creatives) ? parsed.creatives : []) {
     const s = sanitizeCreative(c);
     if (s && !seen.has(s.id)) { seen.add(s.id); creatives.push(s); }
+  }
+  // ID antigo nunca aponta para outro banner: não pode ser o ID atual de ninguém nem estar em dois.
+  for (const c of creatives) {
+    const own = (c.aliases ?? []).filter((a) => !seen.has(a));
+    for (const a of own) seen.add(a);
+    if (own.length) c.aliases = own; else delete c.aliases;
   }
   const testId = typeof parsed.testId === 'string' && /^[a-z0-9]{1,16}$/.test(parsed.testId) ? parsed.testId : '';
   return {
@@ -551,7 +593,8 @@ export function sanitizeEventBatch(body: unknown, cfg: NativeConfig): MixEventRo
   if (!body || typeof body !== 'object') return [];
   const b = body as { t?: unknown; e?: unknown };
   if (!cfg.testId || b.t !== cfg.testId || !Array.isArray(b.e)) return [];
-  const ids = new Set(cfg.creatives.map((c) => c.id));
+  // Página em cache de antes de um banner mudar de ID ainda manda o ID antigo: conta para o atual.
+  const ids = currentIds(cfg);
   const agg = new Map<string, MixEventRow>();
   for (const raw of b.e.slice(0, MAX_BEACON_ROWS)) {
     if (!Array.isArray(raw) || raw.length !== 6) continue;
@@ -569,7 +612,7 @@ export function sanitizeEventBatch(body: unknown, cfg: NativeConfig): MixEventRo
       if (typeof cr !== 'string' || !ids.has(cr) || !(NATIVE_FORMATS as unknown[]).includes(fmt)) continue;
     } else continue;
     const row: Omit<MixEventRow, 'count'> = {
-      placement: pl as MixPlacement | '', source: src as MixSource, creative: cr as string,
+      placement: pl as MixPlacement | '', source: src as MixSource, creative: ids.get(cr as string) ?? (cr as string),
       format: fmt as NativeFormat | '', event: ev,
     };
     const key = [row.placement, row.source, row.creative, row.format, row.event].join('|');
@@ -755,6 +798,8 @@ export function buildMixReport(rows: MixStatRow[], cfg: NativeConfig): MixReport
     if (!v) { v = { imps: 0, clicks: 0 }; m.set(k, v); }
     return v;
   };
+  // Eventos gravados com um ID antigo do banner somam no ID atual.
+  const current = currentIds(cfg);
   for (const r of rows) {
     const n = Number(r.count) || 0;
     if (r.event === 'pv') {
@@ -765,10 +810,11 @@ export function buildMixReport(rows: MixStatRow[], cfg: NativeConfig): MixReport
     if (r.source !== 'native') continue;
     const isImp = r.event === 'imp';
     if (isImp) nativeImps += n; else nativeClicks += n;
+    const creative = current.get(r.creative) ?? r.creative;
     const stratum = `${r.placement}|${r.format}`;
-    let cs = byCreativeStratum.get(r.creative);
-    if (!cs) { cs = new Map(); byCreativeStratum.set(r.creative, cs); }
-    for (const v of [acc(byCreative, r.creative), acc(byFormat, r.format), acc(byPlacement, r.placement), acc(byStratum, stratum), acc(cs, stratum)]) {
+    let cs = byCreativeStratum.get(creative);
+    if (!cs) { cs = new Map(); byCreativeStratum.set(creative, cs); }
+    for (const v of [acc(byCreative, creative), acc(byFormat, r.format), acc(byPlacement, r.placement), acc(byStratum, stratum), acc(cs, stratum)]) {
       if (isImp) v.imps += n; else v.clicks += n;
     }
   }
@@ -911,16 +957,29 @@ export function detectFormat(w: number, h: number, filename = ''): NativeFormat 
   return null;
 }
 
-/** 'v1-nova-fase-300x250.jpg' → 'v1-nova-fase' */
+/** Sufixo de formato no fim de um nome ('-300x250', '-nativo-16x9'). */
+const FORMAT_SUFFIX = /[-_](nativo[-_])?(\d{2,4}x\d{2,4}|16x9)$/i;
+
+/** 'tf01-nova-fase-300x250.jpg' → 'tf01-nova-fase' */
 function creativeIdFromFilename(src: string): string {
   const base = (src.split('?')[0].split('#')[0].split('/').pop() ?? '').replace(/\.[a-z0-9]{2,5}$/i, '');
-  return slugifyId(base.replace(/[-_](nativo[-_])?(\d{2,4}x\d{2,4}|16x9)$/i, ''));
+  return slugifyId(base.replace(FORMAT_SUFFIX, ''));
+}
+
+/** ID do banner pelo utm_content do link. Links antigos traziam o formato junto ('v1-nova-fase-300x250'). */
+function creativeIdFromHref(href: string): string {
+  try {
+    return slugifyId((new URL(href).searchParams.get('utm_content') ?? '').replace(FORMAT_SUFFIX, ''));
+  } catch {
+    return '';
+  }
 }
 
 /**
  * Lê uma página de banners (ou códigos colados) e extrai todos os `<a href><img></a>`.
  * Aceita os códigos dentro de <textarea> (escapados, como na página da Toda Fase) ou soltos.
- * O rótulo de cada criativo vem do <h2> mais próximo acima do código.
+ * O rótulo de cada criativo vem do <h2> mais próximo acima do código. O ID vem do utm_content
+ * do link (o ID único do banner); sem ele, do nome do arquivo da imagem.
  */
 export function parseBannerSnippets(html: string, baseUrl: string): { banners: ParsedBanner[]; skipped: number } {
   const headings: Array<{ pos: number; text: string }> = [];
@@ -952,7 +1011,7 @@ export function parseBannerSnippets(html: string, baseUrl: string): { banners: P
       const w = Number(attr(imgTag, 'width')) || 0;
       const h = Number(attr(imgTag, 'height')) || 0;
       const format = detectFormat(w, h, srcRaw);
-      const id = creativeIdFromFilename(srcRaw) || slugifyId(attr(imgTag, 'alt'));
+      const id = creativeIdFromHref(href) || creativeIdFromFilename(srcRaw) || slugifyId(attr(imgTag, 'alt'));
       if (!href || !src || !format || !id) { skipped++; continue; }
       const key = `${id}|${format}`;
       if (seen.has(key)) continue;
@@ -972,16 +1031,32 @@ export function parseBannerSnippets(html: string, baseUrl: string): { banners: P
 /**
  * Junta banners importados com os criativos existentes. Atualiza os que já existem
  * (mantendo ativo/pausado), adiciona os novos (ativos) e nunca apaga nada.
+ * Banner que voltou com ID novo (mesma imagem já no R2, que tem nome pelo hash do conteúdo)
+ * é renomeado em vez de duplicado: mantém ativo/pausado e guarda o ID antigo em `aliases`,
+ * para os eventos já gravados continuarem contando.
  */
 export function mergeCreatives(
   existing: NativeCreative[], banners: ParsedBanner[], srcMap: Map<string, string> = new Map(),
-): { creatives: NativeCreative[]; added: number; updated: number } {
-  const out = existing.map((c) => ({ ...c, images: { ...c.images } }));
+): { creatives: NativeCreative[]; added: number; updated: number; renamed: number } {
+  const out = existing.map((c) => ({ ...c, images: { ...c.images }, ...(c.aliases ? { aliases: [...c.aliases] } : {}) }));
   const byId = new Map(out.map((c) => [c.id, c]));
   const touched = new Set<string>();
   let added = 0;
+  let renamed = 0;
   for (const b of banners) {
+    const src = srcMap.get(b.src) ?? b.src;
     let c = byId.get(b.id);
+    if (!c) {
+      const twin = out.find((x) => !touched.has(x.id) && Object.values(x.images).some((img) => img?.src === src));
+      if (twin) {
+        byId.delete(twin.id);
+        twin.aliases = [...new Set([...(twin.aliases ?? []), twin.id])].filter((a) => a !== b.id);
+        twin.id = b.id;
+        byId.set(b.id, twin);
+        c = twin;
+        renamed++;
+      }
+    }
     if (!c) {
       c = { id: b.id, label: b.label, alt: b.alt, active: true, images: {} };
       out.push(c);
@@ -993,7 +1068,7 @@ export function mergeCreatives(
       c.label = b.label || c.label;
     }
     if (b.alt && (!c.alt || b.format === '16x9')) c.alt = b.alt;
-    c.images[b.format] = { src: srcMap.get(b.src) ?? b.src, href: b.href, w: b.w, h: b.h };
+    c.images[b.format] = { src, href: b.href, w: b.w, h: b.h };
   }
-  return { creatives: out, added, updated: [...touched].length - added };
+  return { creatives: out, added, updated: touched.size - added - renamed, renamed };
 }

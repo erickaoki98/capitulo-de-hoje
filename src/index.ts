@@ -799,8 +799,8 @@ ${urls.join('\n')}
             report: buildMixReport(rows, { ...cfg, adsensePageRpm: rpm.value }),
             range,
             flash: url.searchParams.get('saved') === '1' ? 'saved' : url.searchParams.get('reset') === '1' ? 'reset' : null,
-            imported: imp.length === 5 && imp.every(Number.isFinite)
-              ? { added: imp[0], updated: imp[1], skipped: imp[2], copied: imp[3], failed: imp[4] } : null,
+            imported: (imp.length === 5 || imp.length === 6) && imp.every(Number.isFinite)
+              ? { added: imp[0], updated: imp[1], skipped: imp[2], copied: imp[3], failed: imp[4], renamed: imp[5] ?? 0 } : null,
             importError: NATIVE_IMPORT_ERRORS[url.searchParams.get('err') ?? ''],
           };
         }
@@ -889,7 +889,7 @@ ${urls.join('\n')}
           ...cur, creatives: merged.creatives, sourceUrl: sourceUrl || cur.sourceUrl,
         }));
         await saveNativeConfig(env, cur, next);
-        const imp = [merged.added, merged.updated, skipped, copied, failed].join('.');
+        const imp = [merged.added, merged.updated, skipped, copied, failed, merged.renamed].join('.');
         return new Response(null, { status: 303, headers: { Location: `/admin/settings?tab=nativos&imp=${imp}` } });
       }
 

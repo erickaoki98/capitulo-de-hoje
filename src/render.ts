@@ -2152,7 +2152,7 @@ export interface NativePanelData {
   adsenseConnected: boolean;
   range: 'all' | '7' | '1';
   flash?: 'saved' | 'reset' | null;
-  imported?: { added: number; updated: number; skipped: number; copied: number; failed: number } | null;
+  imported?: { added: number; updated: number; skipped: number; copied: number; failed: number; renamed: number } | null;
   importError?: string;
 }
 
@@ -2552,7 +2552,7 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
   if (d.flash === 'reset') flashes.push(alert('success', okIcon, '<strong>Novo teste iniciado.</strong> A contagem recomeçou do zero (os dados antigos continuam guardados, só não entram mais no resultado).'));
   if (d.imported) {
     const im = d.imported;
-    flashes.push(alert('success', okIcon, `<strong>Importação concluída.</strong> ${im.added} criativo(s) novo(s), ${im.updated} atualizado(s), ${im.copied} imagem(ns) copiada(s) para o R2${im.failed ? ` · ${im.failed} imagem(ns) não baixaram e continuam apontando para o site de origem` : ''}${im.skipped ? ` · ${im.skipped} banner(s) ignorado(s) (tamanho não suportado)` : ''}.`));
+    flashes.push(alert('success', okIcon, `<strong>Importação concluída.</strong> ${im.added} criativo(s) novo(s), ${im.updated} atualizado(s)${im.renamed ? `, ${im.renamed} com ID novo (mesma imagem: continua ativo/pausado como estava e os dados do ID antigo seguem contando)` : ''}, ${im.copied} imagem(ns) copiada(s) para o R2${im.failed ? ` · ${im.failed} imagem(ns) não baixaram e continuam apontando para o site de origem` : ''}${im.skipped ? ` · ${im.skipped} banner(s) ignorado(s) (tamanho não suportado)` : ''}.`));
   }
   if (d.importError) flashes.push(alert('error', warnIcon, escapeHtml(d.importError)));
   if (!adsenseConfigured) flashes.push(alert('info', infoIcon, 'O teste usa as posições do AdSense. Configure o <strong>Publisher ID</strong> e os slots na aba AdSense para os banners nativos aparecerem.'));
@@ -2665,7 +2665,7 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
           <td>
             <div class="nv-banner">
               ${c.thumb ? `<img class="nv-thumb" src="${escapeHtml(c.thumb)}" alt="" loading="lazy" decoding="async">` : '<span class="nv-thumb nv-thumb--empty"></span>'}
-              <div><strong>${escapeHtml(c.label)}</strong><div class="muted">${escapeHtml(c.alt.replace(/^Publicidade[^:]*:\s*/i, ''))}</div></div>
+              <div><strong>${escapeHtml(c.label)}</strong> <code class="nv-id">${escapeHtml(c.id)}</code><div class="muted">${escapeHtml(c.alt.replace(/^Publicidade[^:]*:\s*/i, ''))}</div></div>
             </div>
           </td>
           <td class="num">${fmtInt(c.imps)}</td>
@@ -2756,6 +2756,7 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
           <div class="nv-creative__text">
             <strong>${escapeHtml(c.label)}</strong>
             <div class="muted">${escapeHtml(c.alt.replace(/^Publicidade[^:]*:\s*/i, ''))}</div>
+            <div class="nv-idline">ID <code class="nv-id">${escapeHtml(c.id)}</code>${c.aliases?.length ? ` <span class="muted">· antes: ${c.aliases.map((a) => escapeHtml(a)).join(', ')}</span>` : ''}</div>
             <div class="nv-chips">${chips}</div>
           </div>
           <label class="check nv-creative__del"><input type="checkbox" name="cr.remove.${escapeHtml(c.id)}" value="1"> <span>remover</span></label>
@@ -2879,7 +2880,7 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
           <div class="field">
             <label for="nv-snippets">…ou cole os códigos dos banners</label>
             <textarea id="nv-snippets" name="snippets" rows="4" placeholder='&lt;a href="https://…"&gt;&lt;img src="https://…/banner-300x250.jpg" width="300" height="250" alt="…"&gt;&lt;/a&gt;'></textarea>
-            <small class="field__help">Tamanhos aceitos: 300x250, 320x100, 728x90, 320x50 e 16:9 (ex.: 1200x675). Banners com o mesmo nome de arquivo viram um só criativo. Reimportar atualiza sem apagar nada.</small>
+            <small class="field__help">Tamanhos aceitos: 300x250, 320x100, 728x90, 320x50 e 16:9 (ex.: 1200x675). O ID de cada banner vem do <code>utm_content</code> do link (ex.: <code>tf07-menopausa-30</code>; sem UTM, do nome do arquivo) e os tamanhos com o mesmo ID viram um só criativo. Todo clique sai com <code>utm_content</code> = ID e <code>utm_term</code> = formato. Reimportar atualiza sem apagar nada; banner que voltou com ID novo e a mesma imagem é renomeado, sem duplicar.</small>
           </div>
           <button type="submit" class="btn btn--ghost">Importar banners</button>
         </form>
