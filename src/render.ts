@@ -5,14 +5,15 @@ import type { UserRole } from './auth';
 import { renderMarkdown, readingTime, stripBrokenImageFigures } from './markdown';
 import {
   type AdConfig, type AdPlacementConfig, renderAdSenseScript, renderAdUnit, renderAdIns, injectInContentAds,
+  adsenseScriptSrc,
 } from './adsense';
 import { isValidGaMeasurementId } from './configuracoes.ts';
 import { gaConfigParams, gaContentGroup, renderGaEventsScript } from './gaEvents.ts';
 import {
   type NativeConfig, type MixPlacement, type MixReport, type SlotFormat,
-  MIX_PLACEMENTS, NATIVE_FORMATS, PLACEMENT_LABELS, SLOT_FORMATS, SLOT_FORMAT_LABELS,
+  MIX_PLACEMENTS, NATIVE_FORMATS, PLACEMENT_LABELS, PLACEMENT_FORMATS, SLOT_FORMAT_LABELS,
   MIN_IMPS_PER_CREATIVE, WIN_PROBABILITY,
-  mixPlacementOn, nativeActive, renderMixRuntime, renderMixSlot, runnableCreatives, slotImages,
+  mixActive, nativeActive, renderMixRuntime, renderMixSlot, runnableCreatives, slotImages,
 } from './nativeAds.ts';
 
 export interface SiteAdSettings {
@@ -23,24 +24,33 @@ export interface SiteAdSettings {
 }
 
 /**
- * Unidade AdSense de uma posição. Se o teste nativo × AdSense estiver ligado nessa
- * posição, vira slot misto (o navegador sorteia nativo ou AdSense); senão sai EXATAMENTE
- * o HTML de sempre (renderAdUnit com push inline).
+ * Unidade AdSense de uma posição. Com o teste nativo × AdSense ligado, TODA posição vira slot
+ * misto (o navegador decide pelo grupo do visitante: AdSense ou banner nativo/vazio); com o
+ * teste desligado sai EXATAMENTE o HTML de sempre (renderAdUnit com push inline).
  */
 function adUnitOrMix(
   native: NativeConfig | undefined, placement: MixPlacement,
   wrap: (unit: string) => string,
   publisherId: string, slotId: string, format: AdPlacementConfig['format'],
 ): string {
-  if (mixPlacementOn(native, placement)) {
+  if (mixActive(native)) {
     return renderMixSlot(placement, wrap(renderAdIns(publisherId, slotId, format)));
   }
   return wrap(renderAdUnit(publisherId, slotId, format));
 }
 
-/** Runtime do teste só entra no <head> se a página tiver algum slot misto. */
-function mixRuntimeFor(native: NativeConfig | undefined, html: string): string {
-  return native && html.includes('class="cdh-mix ') ? renderMixRuntime(native) : '';
+/**
+ * <head> do AdSense. Com o teste ligado, o adsbygoogle.js NÃO vai no HTML: o runtime do teste
+ * carrega só para o grupo AdSense (o grupo nativo não vê AdSense nenhum, nem Auto ads).
+ * As duas coisas andam juntas de propósito — nunca sai uma sem a outra.
+ */
+function adsHeadFor(ads: SiteAdSettings | undefined): string {
+  if (!ads?.publisherId) return '';
+  if (ads.native && nativeActive(ads.native)) {
+    return renderAdSenseScript(ads.publisherId, ads.autoAds, false)
+      + renderMixRuntime(ads.native, adsenseScriptSrc(ads.publisherId));
+  }
+  return renderAdSenseScript(ads.publisherId, ads.autoAds);
 }
 
 export interface SiteTypography {
@@ -572,9 +582,7 @@ export function renderHome(
   const stickyAd = (pubId && ads?.config.stickyFooter.enabled && ads.config.stickyFooter.slotId)
     ? `<div class="ad-sticky-footer">${adUnitOrMix(ads.native, 'stickyFooter', (u) => u, pubId, ads.config.stickyFooter.slotId, ads.config.stickyFooter.format)}</div>`
     : '';
-  const adsHead = (pubId && ads)
-    ? renderAdSenseScript(pubId, ads.autoAds) + mixRuntimeFor(ads.native, body + stickyAd)
-    : '';
+  const adsHead = adsHeadFor(ads);
 
   return layout(
     {
@@ -1296,9 +1304,7 @@ ${adIf('bottomOfPage', 'ad-slot--bottom')}
   const stickyAd = (pubId && ads?.config.stickyFooter.enabled && ads.config.stickyFooter.slotId)
     ? `<div class="ad-sticky-footer">${adUnitOrMix(ads.native, 'stickyFooter', (u) => u, pubId, ads.config.stickyFooter.slotId, ads.config.stickyFooter.format)}</div>`
     : '';
-  const adsHead = (pubId && ads)
-    ? renderAdSenseScript(pubId, ads.autoAds) + mixRuntimeFor(ads.native, body + stickyAd)
-    : '';
+  const adsHead = adsHeadFor(ads);
 
   return layout(
     {
@@ -2552,7 +2558,7 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
       </div>
       <div class="status-strip__item is-info">
         <span class="status-strip__dot"></span>
-        <div><strong>Split</strong><small>${cfg.share}% nativo · ${100 - cfg.share}% AdSense</small></div>
+        <div><strong>Grupos</strong><small>${cfg.share}% dos leitores só com nativos · ${100 - cfg.share}% com AdSense</small></div>
       </div>
       <div class="status-strip__item is-info">
         <span class="status-strip__dot"></span>
@@ -2562,24 +2568,25 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
 
   // ---------- Veredito ----------
   const verdict: string[] = [];
-  if (r.nativeImps === 0) {
+  if (r.nativePv === 0 && r.adsensePv === 0) {
     verdict.push(running
-      ? 'Coletando dados: ainda não há impressões de banner nativo neste teste.'
-      : 'O teste está desligado. Importe os banners, ligue o teste e escolha o split abaixo.');
+      ? 'Coletando dados: ainda não há pageviews registrados neste teste.'
+      : 'O teste está desligado. Importe os banners, ligue o teste e escolha o % de leitores.');
   } else {
-    if (e.lift !== null && e.nativeRpm !== null) {
+    if (e.lift !== null && e.nativePageRpm !== null) {
       const pct = Math.abs(e.lift * 100).toLocaleString('pt-BR', { maximumFractionDigits: 0 });
-      const clear = e.nativeRpmRange !== null && (e.nativeRpmRange.low > e.adsenseRpm || e.nativeRpmRange.high < e.adsenseRpm);
-      verdict.push(`${e.lift >= 0 ? `O nativo rende <strong>${pct}% mais</strong>` : `O nativo rende <strong>${pct}% menos</strong>`} que o AdSense por impressão: RPM estimado de ${fmtBrl(e.nativeRpm)} contra ${fmtBrl(e.adsenseRpm)}. ${clear ? 'A diferença já está fora da margem de erro.' : 'Ainda está dentro da margem de erro, então deixe rodar mais.'}`);
-    } else if (e.adsenseRpm <= 0) {
-      verdict.push('Informe o <strong>RPM do AdSense</strong> abaixo para comparar os dois em reais.');
+      const range = e.nativePageRpmRange;
+      const clear = range !== null && (range.low > e.adsensePageRpm || range.high < e.adsensePageRpm);
+      verdict.push(`Por mil páginas vistas, o grupo nativo rende <strong>${pct}% ${e.lift >= 0 ? 'mais' : 'menos'}</strong> que o grupo AdSense: ${fmtBrl(e.nativePageRpm)} contra ${fmtBrl(e.adsensePageRpm)}. ${clear ? 'A diferença já está fora da margem de erro.' : 'Ainda está dentro da margem de erro, então deixe rodar mais.'}`);
+    } else if (e.adsensePageRpm <= 0) {
+      verdict.push('Informe o <strong>RPM de página do AdSense</strong> abaixo para comparar os dois grupos em reais.');
     }
     if (e.breakEvenCpc !== null) {
-      verdict.push(`Com o CTR atual (${fmtPct(r.nativeCtr)}), o nativo empata com o AdSense quando cada clique vale <strong>${fmtBrl(e.breakEvenCpc)}</strong>. ${e.valuePerClick > 0 ? `Você informou ${fmtBrl(e.valuePerClick)} por clique.` : 'Se um clique vale mais que isso para a loja, o nativo ganha.'}`);
+      verdict.push(`O grupo nativo gera ${fmtInt(r.clicksPerPv * 1000)} cliques a cada mil páginas. Para empatar com o AdSense, cada clique precisa valer <strong>${fmtBrl(e.breakEvenCpc)}</strong> em comissão. ${e.valuePerClick > 0 ? `Você informou ${fmtBrl(e.valuePerClick)} por clique.` : 'Se a comissão média por clique for maior que isso, o nativo ganha.'}`);
     }
     const leader = r.creatives[0];
     if (r.winner) {
-      verdict.push(`<strong>${escapeHtml(r.winner.label)}</strong> é o melhor banner: ${fmtChance(r.winner.pBest)} de chance de ter o maior CTR (${fmtPct(r.winner.ctr)}).${e.bestRpm !== null && e.adsenseRpm > 0 ? ` Rodando só ele, o RPM nativo seria ${fmtBrl(e.bestRpm)} (${e.bestRpm >= e.adsenseRpm ? '+' : '−'}${Math.abs((e.bestRpm / e.adsenseRpm - 1) * 100).toFixed(0)}% vs AdSense).` : ''}`);
+      verdict.push(`<strong>${escapeHtml(r.winner.label)}</strong> é o melhor banner: ${fmtChance(r.winner.pBest)} de chance de ter o maior CTR (${fmtPct(r.winner.ctr)}).${r.winner.pageRpm !== null && e.adsensePageRpm > 0 ? ` Rodando só ele, o grupo nativo renderia ${fmtBrl(r.winner.pageRpm)} por mil páginas (${r.winner.pageRpm >= e.adsensePageRpm ? '+' : '−'}${Math.abs((r.winner.pageRpm / e.adsensePageRpm - 1) * 100).toFixed(0)}% vs AdSense).` : ''}`);
     } else if (leader && leader.pBest > 0) {
       verdict.push(`Líder até agora: <strong>${escapeHtml(leader.label)}</strong>, com ${fmtChance(leader.pBest)} de chance de ser o melhor. Ainda sem vencedor: o sistema declara um quando todos os banners têm ${fmtInt(MIN_IMPS_PER_CREATIVE)}+ impressões e um deles passa de ${Math.round(WIN_PROBABILITY * 100)}% de chance.`);
     }
@@ -2588,36 +2595,37 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
   const rangeLabel = (k: NativePanelData['range'], label: string) =>
     `<a href="/admin/settings?tab=nativos${k === 'all' ? '' : `&range=${k}`}" class="pill ${d.range === k ? 'is-active' : ''}">${label}</a>`;
   const lift = e.lift;
+  const totalPv = r.adsensePv + r.nativePv;
   const kpis = `<section class="kpi-grid kpi-grid--4">
       <div class="kpi-card">
-        <div class="kpi-card__head"><span class="kpi-card__label">Impressões AdSense</span></div>
-        <div class="kpi-card__value">${fmtInt(r.adsenseImps)}</div>
-        <div class="kpi-card__hint">${e.adsenseRevenue !== null ? `≈ ${fmtBrl(e.adsenseRevenue)} estimados` : 'só conta anúncio preenchido'}</div>
+        <div class="kpi-card__head"><span class="kpi-card__label">Páginas · grupo AdSense</span></div>
+        <div class="kpi-card__value">${fmtInt(r.adsensePv)}</div>
+        <div class="kpi-card__hint">${e.adsenseRevenue !== null ? `≈ ${fmtBrl(e.adsenseRevenue)} estimados` : 'informe o RPM de página'}</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-card__head"><span class="kpi-card__label">Impressões nativo</span></div>
-        <div class="kpi-card__value">${fmtInt(r.nativeImps)}</div>
-        <div class="kpi-card__hint">${r.adsenseImps + r.nativeImps > 0 ? `${fmtPct(r.nativeImps / (r.adsenseImps + r.nativeImps), 0)} do total medido` : 'banner apareceu na tela'}</div>
+        <div class="kpi-card__head"><span class="kpi-card__label">Páginas · grupo nativo</span></div>
+        <div class="kpi-card__value">${fmtInt(r.nativePv)}</div>
+        <div class="kpi-card__hint">${totalPv > 0 ? `${fmtPct(r.nativePv / totalPv, 0)} do total (meta: ${cfg.share}%)` : '—'}</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-card__head"><span class="kpi-card__label">Cliques nativo · CTR</span></div>
-        <div class="kpi-card__value">${fmtInt(r.nativeClicks)} <span class="nv-kpi-sub">${fmtPct(r.nativeCtr)}</span></div>
-        <div class="kpi-card__hint">${r.nativeImps > 0 ? `margem: ${fmtPct(r.nativeCtrCi.low)} a ${fmtPct(r.nativeCtrCi.high)}` : '—'}</div>
+        <div class="kpi-card__head"><span class="kpi-card__label">Cliques nativos · por mil páginas</span></div>
+        <div class="kpi-card__value">${fmtInt(r.nativeClicks)} <span class="nv-kpi-sub">${r.nativePv > 0 ? fmtInt(r.clicksPerPv * 1000) + '/mil' : ''}</span></div>
+        <div class="kpi-card__hint">${r.nativeImps > 0 ? `CTR por impressão: ${fmtPct(r.nativeCtr)}` : '—'}</div>
       </div>
       <div class="kpi-card">
-        <div class="kpi-card__head"><span class="kpi-card__label">RPM nativo × AdSense</span></div>
-        <div class="kpi-card__value">${e.nativeRpm !== null ? fmtBrl(e.nativeRpm) : '—'}</div>
+        <div class="kpi-card__head"><span class="kpi-card__label">Receita por mil páginas</span></div>
+        <div class="kpi-card__value">${e.nativePageRpm !== null ? fmtBrl(e.nativePageRpm) : '—'}</div>
         <div class="kpi-card__hint">${lift !== null
-          ? `<span class="kpi-card__trend kpi-card__trend--${lift > 0.005 ? 'up' : lift < -0.005 ? 'down' : 'flat'}">${lift >= 0 ? '↑ +' : '↓ −'}${Math.abs(lift * 100).toFixed(0)}%</span> vs ${fmtBrl(e.adsenseRpm)}`
-          : 'informe RPM e valor por clique'}</div>
+          ? `<span class="kpi-card__trend kpi-card__trend--${lift > 0.005 ? 'up' : lift < -0.005 ? 'down' : 'flat'}">${lift >= 0 ? '↑ +' : '↓ −'}${Math.abs(lift * 100).toFixed(0)}%</span> vs AdSense ${fmtBrl(e.adsensePageRpm)}`
+          : 'informe RPM de página e valor por clique'}</div>
       </div>
     </section>`;
 
   const resultsCard = `<section class="card">
       <header class="card__header" style="gap:1rem;flex-wrap:wrap">
         <div style="flex:1;min-width:220px">
-          <h2 class="card__title">Resultado: nativo × AdSense</h2>
-          <p class="card__desc">Receita por impressão nas mesmas posições. Impressão = unidade apareceu na tela.</p>
+          <h2 class="card__title">Resultado: grupo nativo × grupo AdSense</h2>
+          <p class="card__desc">Receita por mil páginas vistas de cada grupo de leitores. No grupo AdSense entram blocos, âncora e vinheta; no nativo, os cliques nos banners.</p>
         </div>
         <div class="filter-pills">
           ${rangeLabel('all', since ? `Desde ${since}` : 'Tudo')}
@@ -2656,19 +2664,19 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
           <td style="min-width:130px">
             <div class="views-bar"><span class="views-bar__fill" style="width:${(c.pBest / maxP * 100).toFixed(1)}%"></span><strong>${c.imps >= 100 ? fmtChance(c.pBest) : '—'}</strong></div>
           </td>
-          <td class="num nowrap">${c.rpm !== null && c.imps > 0 ? fmtBrl(c.rpm) : '—'}</td>
+          <td class="num nowrap">${c.pageRpm !== null && c.pv > 0 ? fmtBrl(c.pageRpm) : '—'}</td>
           <td>${statusBadge(c)}</td>
         </tr>`).join('');
   const rankingCard = `<section class="card">
       <header class="card__header">
         <div>
           <h2 class="card__title">Qual banner ganha</h2>
-          <p class="card__desc">Cada visitante vê sempre o mesmo banner, sorteado entre os ativos. “Chance de ser o melhor” compara o CTR real provável de cada um (entra no ranking a partir de 100 impressões).</p>
+          <p class="card__desc">No grupo nativo, cada leitor vê sempre o mesmo banner, sorteado entre os ativos. “Chance de ser o melhor” compara o CTR real provável de cada um (entra no ranking a partir de 100 impressões).</p>
         </div>
       </header>
       <div class="nv-table-wrap">
         <table class="data-table">
-          <thead><tr><th>Banner</th><th class="num">Impressões</th><th class="num">Cliques</th><th class="num">CTR</th><th>Chance de ser o melhor</th><th class="num">RPM est.</th><th>Status</th></tr></thead>
+          <thead><tr><th>Banner</th><th class="num">Impressões</th><th class="num">Cliques</th><th class="num">CTR</th><th>Chance de ser o melhor</th><th class="num">Receita / mil páginas</th><th>Status</th></tr></thead>
           <tbody>${rankingRows}</tbody>
         </table>
       </div>
@@ -2676,13 +2684,12 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
 
   // ---------- Quebras: posição e formato ----------
   const placementRows = r.byPlacement.length === 0
-    ? '<tr><td colspan="5" class="empty-state">Sem dados ainda.</td></tr>'
+    ? '<tr><td colspan="4" class="empty-state">Sem dados ainda.</td></tr>'
     : r.byPlacement.map((p) => `<tr>
         <td>${escapeHtml(PLACEMENT_LABELS[p.placement as MixPlacement] ?? p.placement)}</td>
-        <td class="num">${fmtInt(p.adsenseImps)}</td>
-        <td class="num">${fmtInt(p.nativeImps)}</td>
+        <td class="num">${fmtInt(p.imps)}</td>
         <td class="num">${fmtInt(p.clicks)}</td>
-        <td class="num">${p.nativeImps > 0 ? fmtPct(p.ctr) : '—'}</td>
+        <td class="num">${p.imps > 0 ? fmtPct(p.ctr) : '—'}</td>
       </tr>`).join('');
   const formatRows = r.byFormat.length === 0
     ? '<tr><td colspan="4" class="empty-state">Sem dados ainda.</td></tr>'
@@ -2693,10 +2700,10 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
         <td class="num">${f.imps > 0 ? fmtPct(f.ctr) : '—'}</td>
       </tr>`).join('');
   const breakdownCard = `<section class="card">
-      <header class="card__header"><div><h2 class="card__title">Por posição e por formato</h2><p class="card__desc">Onde o banner nativo funciona melhor, e em qual tamanho.</p></div></header>
+      <header class="card__header"><div><h2 class="card__title">Banners nativos por posição e formato</h2><p class="card__desc">Onde o banner nativo funciona melhor, e em qual tamanho.</p></div></header>
       <div class="nv-split">
         <div class="nv-table-wrap"><table class="data-table">
-          <thead><tr><th>Posição</th><th class="num">Impr. AdSense</th><th class="num">Impr. nativo</th><th class="num">Cliques</th><th class="num">CTR</th></tr></thead>
+          <thead><tr><th>Posição</th><th class="num">Impressões</th><th class="num">Cliques</th><th class="num">CTR</th></tr></thead>
           <tbody>${placementRows}</tbody>
         </table></div>
         <div class="nv-table-wrap"><table class="data-table">
@@ -2708,17 +2715,23 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
 
   // ---------- Configuração ----------
   const formatAvailable = (fmt: SlotFormat) => cfg.creatives.filter((c) => c.active && slotImages(c, fmt).length > 0).length;
+  const placementHelp: Partial<Record<MixPlacement, string>> = {
+    anchor: 'Substitui a âncora do Google, o formato que mais rende hoje.',
+    vignette: 'Tela cheia ao clicar num link do site, no máximo 1 a cada 5 min. Substitui a vinheta do Google.',
+    topOfContent: 'Logo abaixo do compartilhar: o melhor bloco manual do AdSense.',
+  };
   const placementCfgRows = MIX_PLACEMENTS.map((k) => {
     const pl = cfg.placements[k];
     const avail = formatAvailable(pl.format);
     const warn = pl.on && cfg.creatives.length > 0 && avail === 0
-      ? `<small class="nv-warn">Nenhum banner ativo tem esse tamanho: aqui só roda AdSense.</small>` : '';
+      ? `<small class="nv-warn">Nenhum banner ativo tem esse tamanho: esta posição fica vazia no grupo nativo.</small>` : '';
+    const help = placementHelp[k] ? `<small class="nv-place-help">${placementHelp[k]}</small>` : '';
     return `<div class="nv-place-row">
         <label class="check"><input type="checkbox" name="pl.on.${k}" value="1" ${pl.on ? 'checked' : ''}> <span>${escapeHtml(PLACEMENT_LABELS[k])}</span></label>
         <select name="pl.format.${k}" aria-label="Formato do banner em ${escapeHtml(PLACEMENT_LABELS[k])}">
-          ${SLOT_FORMATS.map((f) => `<option value="${f}" ${pl.format === f ? 'selected' : ''}>${escapeHtml(SLOT_FORMAT_LABELS[f])}</option>`).join('')}
+          ${PLACEMENT_FORMATS[k].map((f) => `<option value="${f}" ${pl.format === f ? 'selected' : ''}>${escapeHtml(SLOT_FORMAT_LABELS[f])}</option>`).join('')}
         </select>
-        ${warn}
+        ${help}${warn}
       </div>`;
   }).join('');
 
@@ -2740,13 +2753,14 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
         </div>`;
     }).join('');
 
+  const shareText = (v: number) => `${v}% dos leitores só com nativos · ${100 - v}% com AdSense`;
   const configCard = `<form method="POST" action="/admin/settings/native">
       <section class="card">
         <header class="card__header card__header--icon">
           <span class="card__header-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></span>
           <div>
             <h2 class="card__title">Configuração do teste</h2>
-            <p class="card__desc">Quanto do tráfego vai para os banners nativos, em quais posições e com quais banners.</p>
+            <p class="card__desc">Quantos leitores ficam sem AdSense, e onde os banners nativos aparecem para eles.</p>
           </div>
         </header>
         <div class="card__body">
@@ -2754,7 +2768,7 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
             <header class="placement-card__header">
               <div class="placement-card__heading">
                 <h3>Teste ligado</h3>
-                <p>Desligado, o site volta a mostrar só AdSense, com o mesmo HTML de antes.</p>
+                <p>Desligado, o site volta a mostrar só AdSense para todos, com o mesmo HTML de antes.</p>
               </div>
               <label class="toggle">
                 <input type="checkbox" name="enabled" value="1" aria-label="Teste ligado" ${cfg.enabled ? 'checked' : ''}>
@@ -2764,38 +2778,38 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
           </div>
 
           <div class="field">
-            <label for="nv-share">Percentual para banners nativos</label>
+            <label for="nv-share">Percentual de leitores no grupo nativo</label>
             <div class="nv-share">
-              <input type="range" id="nv-share" min="0" max="100" step="5" value="${cfg.share}" oninput="this.form.share.value=this.value;document.getElementById('nv-share-out').textContent=this.value+'% nativo · '+(100-this.value)+'% AdSense'">
-              <input type="number" name="share" min="0" max="100" step="1" value="${cfg.share}" aria-label="Percentual nativo" oninput="var v=Math.max(0,Math.min(100,+this.value||0));document.getElementById('nv-share').value=v;document.getElementById('nv-share-out').textContent=v+'% nativo · '+(100-v)+'% AdSense'">
+              <input type="range" id="nv-share" min="0" max="100" step="5" value="${cfg.share}" oninput="this.form.share.value=this.value;document.getElementById('nv-share-out').textContent=this.value+'% dos leitores só com nativos · '+(100-this.value)+'% com AdSense'">
+              <input type="number" name="share" min="0" max="100" step="1" value="${cfg.share}" aria-label="Percentual de leitores no grupo nativo" oninput="var v=Math.max(0,Math.min(100,+this.value||0));document.getElementById('nv-share').value=v;document.getElementById('nv-share-out').textContent=v+'% dos leitores só com nativos · '+(100-v)+'% com AdSense'">
             </div>
-            <small class="field__help"><strong id="nv-share-out">${cfg.share}% nativo · ${100 - cfg.share}% AdSense</strong>. Cada posição participante sorteia na hora: nativo com essa chance, senão AdSense. Para comparar rápido sem arriscar receita, 20–30% é um bom começo.</small>
+            <small class="field__help"><strong id="nv-share-out">${shareText(cfg.share)}</strong>. Cada leitor é sorteado uma vez e fica no mesmo grupo até você zerar o teste. O grupo nativo <strong>não vê AdSense nenhum</strong>, nem âncora ou vinheta do Google. Aumentar o % depois só adiciona leitores novos ao grupo nativo.</small>
           </div>
 
           <div class="field-row">
             <div class="field">
-              <label for="nv-max">Máximo de banners nativos por página</label>
-              <input type="number" id="nv-max" name="maxPerPage" min="1" max="10" value="${cfg.maxPerPage}">
-              <small class="field__help">Evita a mesma marca repetida 5 vezes no mesmo artigo. O que passar do limite fica com o AdSense.</small>
+              <label for="nv-max">Máximo de banners dentro da página (grupo nativo)</label>
+              <input type="number" id="nv-max" name="maxPerPage" min="0" max="20" value="${cfg.maxPerPage}">
+              <small class="field__help">0 = sem limite. Âncora e vinheta não contam. O que passar do limite fica vazio, nunca AdSense. O AdSense põe 11 por artigo hoje; 4 já cobre topo + 3 no texto.</small>
             </div>
           </div>
 
           <div class="field">
-            <label>Posições e formato do banner</label>
+            <label>Posições e formato do banner (grupo nativo)</label>
             <div class="nv-places">${placementCfgRows}</div>
-            <small class="field__help">Só participam posições que já estão ligadas na aba AdSense. “Faixa” mostra 728x90 no computador e 320x100 no celular.</small>
+            <small class="field__help">Posição desmarcada fica sem anúncio para o grupo nativo. As posições do meio da página só existem onde a aba AdSense tem o bloco ligado; âncora e vinheta aparecem sempre. “Faixa” mostra 728x90 no computador e 320x100 no celular.</small>
           </div>
 
           <div class="field-row">
             <div class="field">
-              <label for="nv-rpm">RPM do AdSense (R$ por mil impressões)</label>
-              <input type="number" id="nv-rpm" name="adsenseRpm" min="0" step="0.01" value="${cfg.adsenseRpm || ''}" placeholder="ex.: 4,50" inputmode="decimal">
-              <small class="field__help">AdSense → Relatórios → “RPM de impressões” do mesmo período (não o RPM de página).</small>
+              <label for="nv-rpm">RPM de página do AdSense (R$ por mil páginas)</label>
+              <input type="number" id="nv-rpm" name="adsensePageRpm" min="0" step="0.01" value="${cfg.adsensePageRpm || ''}" placeholder="ex.: 11,00" inputmode="decimal">
+              <small class="field__help">AdSense → Relatórios → “RPM da página”, do total (blocos + âncora + vinheta), convertido para reais.</small>
             </div>
             <div class="field">
               <label for="nv-vpc">Valor de um clique no banner (R$)</label>
-              <input type="number" id="nv-vpc" name="valuePerClick" min="0" step="0.01" value="${cfg.valuePerClick || ''}" placeholder="ex.: 1,20" inputmode="decimal">
-              <small class="field__help">= taxa de conversão × lucro por venda. Ex.: 2% × R$ 60 = R$ 1,20. Confira na loja pelos pedidos com <code>utm_source=capitulodehoje</code>.</small>
+              <input type="number" id="nv-vpc" name="valuePerClick" min="0" step="0.01" value="${cfg.valuePerClick || ''}" placeholder="deixe vazio se não souber" inputmode="decimal">
+              <small class="field__help">Comissão de afiliado ÷ cliques no banner. Meça com uma tag de afiliado só para o tráfego <code>utm_source=capitulodehoje</code>. Vazio: o painel mostra o valor de empate.</small>
             </div>
           </div>
 

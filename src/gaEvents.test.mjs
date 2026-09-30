@@ -38,7 +38,7 @@ test('runtime dos banners nativos também é JavaScript válido e marca o criati
     enabled: true, share: 30, testId: 'abc',
     creatives: [{ id: 'v1', label: 'V1', alt: 'a', images: { '16x9': { src: '/img/nv-a.jpg', href: 'https://a.example/', w: 1200, h: 675 } } }],
   }));
-  const body = scriptBody(renderMixRuntime(cfg).trim());
+  const body = scriptBody(renderMixRuntime(cfg, 'https://x.example/adsbygoogle.js').trim());
   assert.doesNotThrow(() => new Function(body));
   assert.match(body, /setAttribute\('data-cr',cr\.i\)/);
 });

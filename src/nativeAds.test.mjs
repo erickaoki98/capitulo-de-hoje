@@ -5,7 +5,8 @@ import {
   buildMixReport,
   detectFormat,
   mergeCreatives,
-  mixPlacementOn,
+  MIX_PLACEMENTS,
+  mixActive,
   nativeActive,
   parseBannerSnippets,
   parseNativeConfig,
@@ -16,6 +17,7 @@ import {
   sanitizeEventBatch,
   wilson,
 } from './nativeAds.ts';
+import { adsenseScriptSrc, renderAdSenseScript } from './adsense.ts';
 
 // Página no mesmo formato da de banners: <h2> por variação + códigos escapados em <textarea>.
 const snippet = (id, fmt, w, h, alt) =>
@@ -103,14 +105,17 @@ test('mergeCreatives atualiza sem apagar e mantém pausados', () => {
 
 test('parseNativeConfig limita valores e descarta lixo', () => {
   const cfg = parseNativeConfig(JSON.stringify({
-    share: 250, maxPerPage: 0, testId: 'BAD ID', adsenseRpm: -3,
+    share: 250, maxPerPage: 99, testId: 'BAD ID', adsensePageRpm: -3,
     placements: { inContent: { on: true, format: 'gigante' } },
     creatives: [{ id: '', images: {} }, { id: 'ok', images: { '16x9': { src: 'javascript:x', href: 'https://a.b', w: 1, h: 1 } } }],
   }));
   assert.equal(cfg.share, 100);
-  assert.equal(cfg.maxPerPage, 1);
+  assert.equal(cfg.maxPerPage, 20);
+  assert.equal(parseNativeConfig(JSON.stringify({ maxPerPage: 0 })).maxPerPage, 0); // 0 = sem limite
   assert.equal(cfg.testId, '');
-  assert.equal(cfg.adsenseRpm, 0);
+  assert.equal(cfg.adsensePageRpm, 0);
+  // formato que não faz sentido na posição volta ao padrão (âncora não aceita 16:9)
+  assert.equal(parseNativeConfig(JSON.stringify({ placements: { anchor: { on: true, format: '16x9' } } })).placements.anchor.format, 'faixa');
   assert.equal(cfg.placements.inContent.format, '16x9');
   assert.equal(cfg.creatives.length, 1);
   assert.deepEqual(cfg.creatives[0].images, {});
@@ -122,14 +127,13 @@ test('nativeActive exige teste ligado, share > 0, testId e criativo com formato 
   assert.equal(nativeActive(configWith({ share: 0 })), false);
   assert.equal(nativeActive(configWith({ enabled: false })), false);
   assert.equal(nativeActive(configWith({ testId: '' })), false);
-  // Só stickyFooter ligado (320x50) e nenhum criativo tem 320x50 → não roda.
-  const onlySticky = Object.fromEntries(
-    ['beforePost', 'topOfContent', 'inContent', 'afterContent', 'bottomOfPage', 'betweenCards', 'stickyFooter']
-      .map((k) => [k, { on: k === 'stickyFooter', format: '320x50' }]),
-  );
-  assert.equal(nativeActive(configWith({ placements: onlySticky })), false);
-  assert.equal(mixPlacementOn(configWith(), 'inContent'), true);
-  assert.equal(mixPlacementOn(configWith(), 'stickyFooter'), false);
+  // Só posições em 320x50 ligadas e nenhum criativo tem 320x50 → não roda.
+  const only320x50 = Object.fromEntries(MIX_PLACEMENTS.map((k) => [k,
+    k === 'stickyFooter' || k === 'anchor' ? { on: true, format: '320x50' } : { on: false, format: '300x250' }]));
+  assert.equal(nativeActive(configWith({ placements: only320x50 })), false);
+  // Com o teste ligado, TODA posição do AdSense vira slot misto (grupo nativo não vê AdSense).
+  assert.equal(mixActive(configWith()), true);
+  assert.equal(mixActive(configWith({ enabled: false })), false);
 });
 
 test('renderMixSlot embrulha o AdSense num <template> inerte', () => {
@@ -144,32 +148,38 @@ test('runtime embute só criativos/tamanhos em uso e escapa </script>', () => {
   const rc = runtimeConfig(cfg);
   assert.deepEqual(rc.c.map((c) => c.i), ['v1-nova-fase', 'v2-30-segundos', 'x']);
   assert.deepEqual(Object.keys(rc.c[0].f).sort(), ['16x9', '320x100']);
-  const js = renderMixRuntime(cfg);
+  const js = renderMixRuntime(cfg, 'https://pagead2.example/adsbygoogle.js?client=ca-pub-1');
   assert.doesNotMatch(js.slice(8, -9), /<\/script>/);
-  assert.equal(renderMixRuntime(configWith({ enabled: false })), '');
+  assert.doesNotThrow(() => new Function(js.replace(/^<script>/, '').replace(/<\/script>$/, '')));
+  assert.match(js, /"a":"https:\/\/pagead2\.example\/adsbygoogle\.js\?client=ca-pub-1"/);
+  assert.equal(renderMixRuntime(configWith({ enabled: false }), 'x'), '');
 });
 
-test('sanitizeEventBatch valida teste, criativo, formato e agrega', () => {
+test('sanitizeEventBatch aceita pageview por grupo e impressão/clique de nativo', () => {
   const cfg = configWith();
   const rows = sanitizeEventBatch({
     t: 'abc123',
     e: [
-      ['inContent', 'native', 'v1-nova-fase', '16x9', 'imp', 1],
-      ['inContent', 'native', 'v1-nova-fase', '16x9', 'imp', 2],
-      ['inContent', 'native', 'v1-nova-fase', '16x9', 'click', 1],
-      ['inContent', 'native', 'inventado', '16x9', 'imp', 1],
-      ['inContent', 'adsense', '', '', 'imp', 1],
-      ['inContent', 'adsense', '', '', 'click', 1],
-      ['sidebar', 'native', 'v1-nova-fase', '16x9', 'imp', 1],
+      ['', 'adsense', '', '', 'pv', 1],
+      ['', 'native', 'v1-nova-fase', '', 'pv', 1],
+      ['', 'native', 'v1-nova-fase', '', 'pv', 1],
+      ['', 'native', 'inventado', '', 'pv', 1],
+      ['inContent', 'adsense', '', '', 'pv', 1],
+      ['anchor', 'native', 'v1-nova-fase', '320x100', 'imp', 1],
+      ['vignette', 'native', 'v1-nova-fase', '16x9', 'click', 1],
       ['inContent', 'native', 'v1-nova-fase', '16x9', 'imp', 1e9],
+      ['inContent', 'adsense', '', '', 'imp', 1],
+      ['sidebar', 'native', 'v1-nova-fase', '16x9', 'imp', 1],
     ],
   }, cfg);
   assert.deepEqual(rows, [
+    { placement: '', source: 'adsense', creative: '', format: '', event: 'pv', count: 1 },
+    { placement: '', source: 'native', creative: 'v1-nova-fase', format: '', event: 'pv', count: 2 },
+    { placement: 'anchor', source: 'native', creative: 'v1-nova-fase', format: '320x100', event: 'imp', count: 1 },
+    { placement: 'vignette', source: 'native', creative: 'v1-nova-fase', format: '16x9', event: 'click', count: 1 },
     { placement: 'inContent', source: 'native', creative: 'v1-nova-fase', format: '16x9', event: 'imp', count: 100 },
-    { placement: 'inContent', source: 'native', creative: 'v1-nova-fase', format: '16x9', event: 'click', count: 1 },
-    { placement: 'inContent', source: 'adsense', creative: '', format: '', event: 'imp', count: 1 },
   ]);
-  assert.deepEqual(sanitizeEventBatch({ t: 'outro', e: [['inContent', 'adsense', '', '', 'imp', 1]] }, cfg), []);
+  assert.deepEqual(sanitizeEventBatch({ t: 'outro', e: [['', 'adsense', '', '', 'pv', 1]] }, cfg), []);
 });
 
 test('wilson e probabilityBest se comportam como esperado', () => {
@@ -197,34 +207,51 @@ test('buildMixReport deixa fora do ranking criativo com poucas impressões', () 
   assert.equal(r.winner, null);
 });
 
-test('buildMixReport compara nativo x AdSense e aponta vencedor', () => {
-  const cfg = configWith({ adsenseRpm: 4, valuePerClick: 1.5 });
+test('buildMixReport compara os grupos por mil páginas e aponta vencedor', () => {
+  const cfg = configWith({ adsensePageRpm: 11, valuePerClick: 0.5 });
   const rows = [
-    { placement: 'inContent', source: 'adsense', creative: '', format: '', event: 'imp', count: 50000 },
-    { placement: 'inContent', source: 'native', creative: 'v1-nova-fase', format: '16x9', event: 'imp', count: 20000 },
-    { placement: 'inContent', source: 'native', creative: 'v1-nova-fase', format: '16x9', event: 'click', count: 100 },
-    { placement: 'topOfContent', source: 'native', creative: 'v2-30-segundos', format: '728x90', event: 'imp', count: 20000 },
-    { placement: 'topOfContent', source: 'native', creative: 'v2-30-segundos', format: '728x90', event: 'click', count: 40 },
+    { placement: '', source: 'adsense', creative: '', format: '', event: 'pv', count: 80000 },
+    { placement: '', source: 'native', creative: 'v1-nova-fase', format: '', event: 'pv', count: 10000 },
+    { placement: '', source: 'native', creative: 'v2-30-segundos', format: '', event: 'pv', count: 10000 },
+    { placement: 'anchor', source: 'native', creative: 'v1-nova-fase', format: '320x100', event: 'imp', count: 9000 },
+    { placement: 'anchor', source: 'native', creative: 'v1-nova-fase', format: '320x100', event: 'click', count: 300 },
+    { placement: 'inContent', source: 'native', creative: 'v2-30-segundos', format: '728x90', event: 'imp', count: 20000 },
+    { placement: 'inContent', source: 'native', creative: 'v2-30-segundos', format: '728x90', event: 'click', count: 100 },
   ];
   const r = buildMixReport(rows, cfg);
-  assert.equal(r.adsenseImps, 50000);
-  assert.equal(r.nativeImps, 40000);
-  assert.equal(r.nativeClicks, 140);
-  // CTR 0,35% × R$1,50 × 1000 = R$5,25 de RPM vs R$4 do AdSense → +31,25%
-  assert.ok(Math.abs(r.economics.nativeRpm - 5.25) < 1e-9);
-  assert.ok(Math.abs(r.economics.lift - 0.3125) < 1e-9);
-  // Empate: 4 / (0,0035 × 1000) ≈ R$1,14 por clique
-  assert.ok(Math.abs(r.economics.breakEvenCpc - 4 / 3.5) < 1e-9);
-  assert.equal(r.creatives[0].id, 'v1-nova-fase');
-  assert.equal(r.enoughData, true);
+  assert.equal(r.adsensePv, 80000);
+  assert.equal(r.nativePv, 20000);
+  assert.equal(r.nativeClicks, 400);
+  // 400 cliques / 20.000 páginas = 20 por mil × R$0,50 = R$10 por mil páginas vs R$11 → −9,1%
+  assert.ok(Math.abs(r.clicksPerPv - 0.02) < 1e-12);
+  assert.ok(Math.abs(r.economics.nativePageRpm - 10) < 1e-9);
+  assert.ok(Math.abs(r.economics.lift - (10 / 11 - 1)) < 1e-9);
+  // Empate: R$11 / 20 cliques por mil = R$0,55 por clique
+  assert.ok(Math.abs(r.economics.breakEvenCpc - 0.55) < 1e-9);
+  assert.ok(Math.abs(r.economics.adsenseRevenue - 880) < 1e-9);
+  assert.equal(r.creatives[0].id, 'v1-nova-fase'); // CTR 3,3% vs 0,5%
+  assert.equal(r.creatives[0].pv, 10000);
+  assert.ok(Math.abs(r.creatives[0].pageRpm - 15) < 1e-9); // 300/10.000 × 0,5 × 1000
   assert.equal(r.winner?.id, 'v1-nova-fase');
-  assert.deepEqual(r.byPlacement.map((p) => p.placement), ['topOfContent', 'inContent']);
+  assert.deepEqual(r.byPlacement.map((p) => p.placement), ['anchor', 'inContent']);
 });
 
 test('buildMixReport sem RPM/valor por clique não inventa números', () => {
   const r = buildMixReport([], configWith());
-  assert.equal(r.economics.nativeRpm, null);
+  assert.equal(r.economics.nativePageRpm, null);
   assert.equal(r.economics.lift, null);
   assert.equal(r.winner, null);
   assert.equal(r.creatives.length, 2);
+});
+
+test('head do AdSense: com o teste desligado sai igual; ligado, sem o script mas com consent granted', () => {
+  const on = renderAdSenseScript('ca-pub-123', true);
+  const off = renderAdSenseScript('ca-pub-123', true, false);
+  assert.match(on, /<script async src="https:\/\/pagead2\.googlesyndication\.com\/pagead\/js\/adsbygoogle\.js\?client=ca-pub-123" crossorigin="anonymous"><\/script>$/);
+  assert.doesNotMatch(off, /adsbygoogle\.js/);
+  for (const html of [on, off]) {
+    assert.match(html, /'ad_storage': 'granted'/);
+    assert.doesNotMatch(html, /denied/);
+  }
+  assert.equal(adsenseScriptSrc('123'), 'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-123');
 });

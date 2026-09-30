@@ -1,18 +1,21 @@
 /**
- * Banners nativos (anúncios próprios, ex.: Toda Fase) + teste A/B contra o AdSense.
+ * Banners nativos (anúncios próprios, ex.: Toda Fase) × AdSense, com split POR USUÁRIO.
  *
- * Settings (D1 settings table):
- *   native.config: JSON (NativeConfig) — split %, posições, criativos, RPM/valor por clique.
- * Eventos (D1): tabela `ad_mix_events` — impressões/cliques por dia × teste × posição × fonte × criativo × formato.
+ * Settings (D1): native.config → JSON (NativeConfig). Eventos (D1): tabela `ad_mix_events`.
  *
- * Como funciona na página pública (o HTML é CACHEADO na borda):
- *  - O servidor NÃO sorteia nada: um HTML cacheado entregaria o mesmo sorteio para todo mundo.
- *  - Cada posição participante vira `<div class="cdh-mix"><template>AdSense</template></div>`
- *    + um script inline que decide NO NAVEGADOR: banner nativo (share %) ou AdSense.
- *  - O criativo nativo é fixo por visitante (localStorage) → teste A/B limpo entre banners.
- *  - Impressão = unidade apareceu na tela (IntersectionObserver). AdSense só conta se preenchido
- *    (data-ad-status="filled", ou "unfill-optimized" com iframe), então slot vazio não vira impressão.
- *  - Eventos vão em lote (sendBeacon) para /api/ev → 1 batch de escrita no D1 por envio.
+ * Como funciona (o HTML é CACHEADO na borda, então nada é sorteado no servidor):
+ *  - Cada visitante cai num grupo, fixo por teste (localStorage): `share`% → grupo NATIVO,
+ *    o resto → grupo ADSENSE.
+ *  - Grupo AdSense: tudo como sempre. O runtime carrega o adsbygoogle.js (com Auto ads: âncora
+ *    e vinheta) e cada posição recebe o seu <ins> com exatamente 1 push.
+ *  - Grupo nativo: o adsbygoogle.js NEM CARREGA. Cada posição ligada no teste recebe um banner
+ *    nativo (até `maxPerPage`); as demais ficam vazias. Âncora e vinheta NATIVAS entram no lugar
+ *    das do Google — são os formatos que mais rendem no AdSense (RPM ~5x o dos blocos).
+ *  - A comparação é por PAGEVIEW (receita por mil páginas), porque âncora e vinheta fazem metade
+ *    da receita do AdSense e não aparecem como impressão de bloco.
+ *  - O criativo nativo também é fixo por visitante → teste A/B limpo entre banners.
+ *  - Eventos em lote (sendBeacon) para /api/ev → 1 batch de escrita no D1 por envio.
+ *  - O grupo vai para o GA como user property `ad_arm` (nativo | adsense).
  *
  * Este módulo não importa nada em runtime (só tipos) para rodar direto no `node --test`.
  */
@@ -27,13 +30,31 @@ export const NATIVE_FORMATS: NativeFormat[] = ['16x9', '300x250', '320x100', '72
 export type SlotFormat = '16x9' | '300x250' | 'faixa' | '320x50';
 export const SLOT_FORMATS: SlotFormat[] = ['16x9', '300x250', 'faixa', '320x50'];
 
-/** Posições de anúncio que podem participar do teste (mesmas chaves do AdConfig). */
+/**
+ * Posições. As 7 do AdSense usam as mesmas chaves do AdConfig e viram slot misto no HTML.
+ * `anchor` (faixa fixa no rodapé) e `vignette` (tela cheia ao trocar de página) existem só no
+ * grupo nativo: o runtime cria, no lugar da âncora e da vinheta automáticas do Google.
+ */
 export type MixPlacement =
+  | 'anchor' | 'vignette'
   | 'beforePost' | 'topOfContent' | 'inContent' | 'afterContent'
   | 'bottomOfPage' | 'betweenCards' | 'stickyFooter';
 export const MIX_PLACEMENTS: MixPlacement[] = [
-  'beforePost', 'topOfContent', 'inContent', 'afterContent', 'bottomOfPage', 'betweenCards', 'stickyFooter',
+  'anchor', 'vignette', 'beforePost', 'topOfContent', 'inContent', 'afterContent', 'bottomOfPage', 'betweenCards', 'stickyFooter',
 ];
+
+/** Formatos que fazem sentido em cada posição (o 1º é o recomendado). */
+export const PLACEMENT_FORMATS: Record<MixPlacement, SlotFormat[]> = {
+  anchor: ['faixa', '320x50'],
+  vignette: ['16x9', '300x250'],
+  beforePost: ['faixa', '300x250', '16x9'],
+  topOfContent: ['300x250', '16x9', 'faixa'],
+  inContent: ['16x9', '300x250', 'faixa'],
+  afterContent: ['300x250', '16x9', 'faixa'],
+  bottomOfPage: ['300x250', '16x9', 'faixa'],
+  betweenCards: ['16x9', '300x250'],
+  stickyFooter: ['320x50', 'faixa'],
+};
 
 export interface NativeImage {
   src: string;   // '/img/nv-xxxx.jpg' (cópia no R2) ou URL https
@@ -57,15 +78,17 @@ export interface NativePlacementCfg {
 
 export interface NativeConfig {
   enabled: boolean;
-  /** % das impressões elegíveis que vão para o nativo (0–100). */
+  /** % dos USUÁRIOS no grupo nativo (0–100): esses não veem AdSense nenhum. */
   share: number;
-  /** Teto de banners nativos por página (o resto fica com o AdSense). */
+  /** Teto de banners nativos DENTRO da página no grupo nativo (0 = sem limite). Âncora e
+   *  vinheta não contam. O que passar do teto fica vazio — nunca AdSense. */
   maxPerPage: number;
   /** Id do teste atual. Muda ao "reiniciar contagem"; eventos antigos deixam de contar. */
   testId: string;
   startedAt: number;
-  /** RPM de impressões do AdSense (R$ por mil), digitado pelo admin a partir do relatório do AdSense. */
-  adsenseRpm: number;
+  /** RPM DE PÁGINA do AdSense (R$ por mil pageviews, somando blocos + âncora + vinheta),
+   *  digitado pelo admin a partir do relatório do AdSense. */
+  adsensePageRpm: number;
   /** Quanto vale um clique no banner nativo (R$) = conversão × lucro por venda. */
   valuePerClick: number;
   /** Última URL usada no importador. */
@@ -74,9 +97,16 @@ export interface NativeConfig {
   creatives: NativeCreative[];
 }
 
+/**
+ * Padrão = imitar onde o AdSense mais rende neste site: âncora (RPM US$ 0,96) e vinheta
+ * (US$ 1,17) primeiro; depois o bloco logo abaixo do compartilhar (US$ 0,33, 64% visível).
+ * "Antes do título" fica de fora (pior visibilidade e causa o pulo de layout).
+ */
 export const DEFAULT_NATIVE_PLACEMENTS: Record<MixPlacement, NativePlacementCfg> = {
+  anchor:       { on: true,  format: 'faixa' },
+  vignette:     { on: true,  format: '16x9' },
   beforePost:   { on: false, format: 'faixa' },
-  topOfContent: { on: true,  format: 'faixa' },
+  topOfContent: { on: true,  format: '300x250' },
   inContent:    { on: true,  format: '16x9' },
   afterContent: { on: true,  format: '300x250' },
   bottomOfPage: { on: false, format: '300x250' },
@@ -87,10 +117,10 @@ export const DEFAULT_NATIVE_PLACEMENTS: Record<MixPlacement, NativePlacementCfg>
 export const DEFAULT_NATIVE_CONFIG: NativeConfig = {
   enabled: false,
   share: 20,
-  maxPerPage: 2,
+  maxPerPage: 4,
   testId: '',
   startedAt: 0,
-  adsenseRpm: 0,
+  adsensePageRpm: 0,
   valuePerClick: 0,
   sourceUrl: '',
   placements: DEFAULT_NATIVE_PLACEMENTS,
@@ -98,6 +128,8 @@ export const DEFAULT_NATIVE_CONFIG: NativeConfig = {
 };
 
 export const PLACEMENT_LABELS: Record<MixPlacement, string> = {
+  anchor: 'Âncora (faixa fixa no rodapé)',
+  vignette: 'Vinheta (tela cheia ao trocar de página)',
   beforePost: 'Antes do título',
   topOfContent: 'Topo do conteúdo',
   inContent: 'No meio do texto',
@@ -190,7 +222,7 @@ export function parseNativeConfig(raw: string | null): NativeConfig {
   for (const k of MIX_PLACEMENTS) {
     const p = rawPl[k];
     if (!p) continue;
-    const format = SLOT_FORMATS.includes(p.format as SlotFormat) ? p.format as SlotFormat : placements[k].format;
+    const format = PLACEMENT_FORMATS[k].includes(p.format as SlotFormat) ? p.format as SlotFormat : placements[k].format;
     placements[k] = { on: p.on === true, format };
   }
   const seen = new Set<string>();
@@ -203,10 +235,10 @@ export function parseNativeConfig(raw: string | null): NativeConfig {
   return {
     enabled: parsed.enabled === true,
     share: Math.round(clampNum(parsed.share, 0, 100, DEFAULT_NATIVE_CONFIG.share)),
-    maxPerPage: Math.round(clampNum(parsed.maxPerPage, 1, 10, DEFAULT_NATIVE_CONFIG.maxPerPage)),
+    maxPerPage: Math.round(clampNum(parsed.maxPerPage, 0, 20, DEFAULT_NATIVE_CONFIG.maxPerPage)),
     testId,
     startedAt: clampNum(parsed.startedAt, 0, 8.64e15, 0),
-    adsenseRpm: clampNum(parsed.adsenseRpm, 0, 10_000, 0),
+    adsensePageRpm: clampNum(parsed.adsensePageRpm, 0, 10_000, 0),
     valuePerClick: clampNum(parsed.valuePerClick, 0, 10_000, 0),
     sourceUrl: safeHttpUrl(parsed.sourceUrl),
     placements,
@@ -236,9 +268,12 @@ export function nativeActive(cfg: NativeConfig | null | undefined): boolean {
   return !!cfg && cfg.enabled && cfg.share > 0 && !!cfg.testId && runnableCreatives(cfg).length > 0;
 }
 
-/** A posição participa do teste (renderizar como slot misto)? */
-export function mixPlacementOn(cfg: NativeConfig | null | undefined, placement: MixPlacement): boolean {
-  return !!cfg && nativeActive(cfg) && cfg.placements[placement].on;
+/**
+ * Com o teste ligado, TODA posição do AdSense vira slot misto — o grupo nativo não pode ver
+ * AdSense em lugar nenhum (posição desligada no teste = fica vazia para esse grupo).
+ */
+export function mixActive(cfg: NativeConfig | null | undefined): boolean {
+  return !!cfg && nativeActive(cfg);
 }
 
 // ============== Render público ==============
@@ -263,8 +298,8 @@ export function renderMixSlot(placement: MixPlacement, adsenseHtml: string): str
 }
 
 /** Config compacta embutida na página: só criativos rodáveis e só os tamanhos usados. */
-export function runtimeConfig(cfg: NativeConfig): {
-  t: string; s: number; m: number;
+export function runtimeConfig(cfg: NativeConfig, adsenseSrc = ''): {
+  t: string; s: number; m: number; a: string;
   p: Partial<Record<MixPlacement, SlotFormat>>;
   c: Array<{ i: string; a: string; f: Partial<Record<NativeFormat, [string, string, number, number]>> }>;
 } {
@@ -284,28 +319,51 @@ export function runtimeConfig(cfg: NativeConfig): {
     }
     return { i: cr.id, a: cr.alt, f };
   });
-  return { t: cfg.testId, s: cfg.share, m: cfg.maxPerPage, p, c };
+  return { t: cfg.testId, s: cfg.share, m: cfg.maxPerPage, a: adsenseSrc, p, c };
 }
 
+/** Intervalo mínimo entre duas vinhetas nativas para o mesmo leitor. */
+export const NATIVE_VIGNETTE_GAP_MS = 5 * 60 * 1000;
+
 /**
- * Runtime do teste (vai no <head>, antes de qualquer slot). ES5 de propósito
- * (Android antigo). Define window.cdhMix(scriptEl).
+ * Runtime do teste (no <head>, antes de qualquer slot). ES5 de propósito (Android antigo).
+ * Decide o grupo do visitante, carrega (ou não) o AdSense e define window.cdhMix(scriptEl).
+ * `adsenseSrc` = URL do adsbygoogle.js: com o teste ligado, só o runtime o carrega.
+ * Qualquer erro no sorteio cai no grupo AdSense (nunca fica sem anúncio por bug nosso).
  */
-export function renderMixRuntime(cfg: NativeConfig): string {
+export function renderMixRuntime(cfg: NativeConfig, adsenseSrc: string): string {
   if (!nativeActive(cfg)) return '';
   return `<script>
 (function(){
-var C=${scriptJson(runtimeConfig(cfg))};
-var W=window,D=document,KEY='cdh_nv';
-function pick(){
-  var s=null;
-  try{s=JSON.parse(localStorage.getItem(KEY)||'null');}catch(e){}
-  if(s&&s.t===C.t){for(var i=0;i<C.c.length;i++){if(C.c[i].i===s.c)return C.c[i];}}
-  var c=C.c[Math.floor(Math.random()*C.c.length)];
-  try{localStorage.setItem(KEY,JSON.stringify({t:C.t,c:c.i}));}catch(e){}
-  return c;
+var C=${scriptJson(runtimeConfig(cfg, adsenseSrc))};
+var W=window,D=document,KEY='cdh_nv',VIG='cdh_nv_vig',ANC='cdh_nv_anchor_off',GAP=${NATIVE_VIGNETTE_GAP_MS};
+var arm='a',cr=null,used=0,q={},qn=0,timer=0;
+function loadAds(){
+  if(W.__cdhAds||!C.a)return;W.__cdhAds=1;
+  var s=D.createElement('script');s.async=true;s.src=C.a;s.crossOrigin='anonymous';
+  (D.head||D.documentElement).appendChild(s);
 }
-var cr=C.c.length?pick():null,used=0,q={},qn=0,timer=0;
+function slotOf(s){var b=s&&s.previousElementSibling;if(!b||b.__cdh)return null;b.__cdh=1;return b;}
+function adsense(b){
+  var t=b.querySelector('template');if(!t)return;
+  b.appendChild(D.importNode(t.content,true));
+  if(!b.querySelector('ins.adsbygoogle'))return;
+  try{(W.adsbygoogle=W.adsbygoogle||[]).push({});}catch(e){}
+}
+try{
+  var st=null;try{st=JSON.parse(localStorage.getItem(KEY)||'null');}catch(e){}
+  if(!st||st.t!==C.t||typeof st.u!=='number')st={t:C.t,u:Math.random()*100,c:''};
+  if(st.u<C.s&&C.c.length){
+    for(var i=0;i<C.c.length;i++){if(C.c[i].i===st.c)cr=C.c[i];}
+    if(!cr)cr=C.c[Math.floor(Math.random()*C.c.length)];
+    st.c=cr.i;arm='n';
+  }
+  try{localStorage.setItem(KEY,JSON.stringify(st));}catch(e){}
+}catch(e){arm='a';cr=null;}
+W.cdhArm=arm==='n'?'nativo':'adsense';
+try{W.dataLayer=W.dataLayer||[];(function(){W.dataLayer.push(arguments);})('set','user_properties',{ad_arm:W.cdhArm});}catch(e){}
+if(arm==='a'){loadAds();W.cdhMix=function(s){var b=slotOf(s);if(b)adsense(b);};}
+
 function flush(){
   if(timer){clearTimeout(timer);timer=0;}
   if(!qn)return;
@@ -321,20 +379,16 @@ function track(m,ev,now){
 }
 D.addEventListener('visibilitychange',function(){if(D.visibilityState==='hidden')flush();});
 W.addEventListener('pagehide',flush);
+track(['',arm==='n'?'native':'adsense',cr?cr.i:'',''],'pv');
+if(arm!=='n')return;
+
+/* ===== Grupo nativo daqui para baixo (AdSense não carrega) ===== */
 var io=('IntersectionObserver' in W)?new IntersectionObserver(function(es){
   for(var i=0;i<es.length;i++){var e=es[i];
     if(!e.isIntersecting||e.boundingClientRect.height<2)continue;
     io.unobserve(e.target);if(e.target.__cdh)track(e.target.__cdh,'imp');}
 }):null;
 function watch(el,m){if(!io)return;el.__cdh=m;io.unobserve(el);io.observe(el);}
-function watchAds(ins,m){
-  var mo=null;
-  function check(){var st=ins.getAttribute('data-ad-status');
-    if(st==='filled'||(st==='unfill-optimized'&&ins.querySelector('iframe'))){if(mo)mo.disconnect();watch(ins,m);return true;}
-    if(st==='unfilled'){if(mo)mo.disconnect();return true;}return false;}
-  if(check()||!W.MutationObserver)return;
-  mo=new MutationObserver(check);mo.observe(ins,{attributes:true,attributeFilter:['data-ad-status'],childList:true,subtree:true});
-}
 function nativeEl(fmt){
   var f=cr.f,key=fmt;
   if(fmt==='faixa'){key=(W.matchMedia&&W.matchMedia('(min-width: 760px)').matches&&f['728x90'])?'728x90':(f['320x100']?'320x100':'');}
@@ -345,25 +399,70 @@ function nativeEl(fmt){
   im.loading='lazy';im.decoding='async';a.appendChild(im);
   return {el:a,img:im,fmt:key};
 }
+function wire(n,pl,onErr){
+  var m=[pl,'native',cr.i,n.fmt],im=n.img;
+  n.el.addEventListener('click',function(){track(m,'click',true);});
+  if(im.complete&&im.naturalWidth)watch(im,m);else im.addEventListener('load',function(){watch(im,m);});
+  if(onErr)im.addEventListener('error',onErr);
+}
+function hide(b){var w=b.closest?b.closest('.post-card--ad, .ad-sticky-footer'):null;(w||b).style.display='none';}
 W.cdhMix=function(s){
-  var box=s&&s.previousElementSibling;
-  if(!box||box.__cdh)return;box.__cdh=1;
-  var pl=box.getAttribute('data-pl'),fmt=C.p[pl],n=null;
-  if(cr&&fmt&&used<C.m&&Math.random()*100<C.s)n=nativeEl(fmt);
-  if(n){
-    used++;box.className+=' is-native';box.appendChild(n.el);
-    var m=[pl,'native',cr.i,n.fmt],im=n.img;
-    n.el.addEventListener('click',function(){track(m,'click',true);});
-    if(im.complete&&im.naturalWidth)watch(im,m);else im.addEventListener('load',function(){watch(im,m);});
-    im.addEventListener('error',function(){box.style.display='none';});
-    return;
-  }
-  var tpl=box.querySelector('template');if(!tpl)return;
-  box.appendChild(D.importNode(tpl.content,true));
-  var ins=box.querySelector('ins.adsbygoogle');if(!ins)return;
-  try{(W.adsbygoogle=W.adsbygoogle||[]).push({});}catch(e){}
-  watchAds(ins,[pl,'adsense','','']);
+  var b=slotOf(s);if(!b)return;
+  var pl=b.getAttribute('data-pl'),fmt=C.p[pl],n=null;
+  if(fmt&&(!C.m||used<C.m))n=nativeEl(fmt);
+  if(!n){hide(b);return;}
+  used++;b.className+=' is-native';b.appendChild(n.el);
+  wire(n,pl,function(){hide(b);});
 };
+
+/* Âncora nativa: faixa fixa no rodapé, como a âncora do Google. Fechar = some até o fim da sessão. */
+function anchor(){
+  if(!C.p.anchor)return;
+  try{if(sessionStorage.getItem(ANC))return;}catch(e){}
+  var n=nativeEl(C.p.anchor);if(!n)return;
+  n.img.loading='eager';
+  var bar=D.createElement('div');bar.className='cdh-anchor';
+  var x=D.createElement('button');x.type='button';x.className='cdh-anchor__close';
+  x.setAttribute('aria-label','Fechar anúncio');x.innerHTML='&times;';
+  x.addEventListener('click',function(){
+    if(bar.parentNode)bar.parentNode.removeChild(bar);
+    D.documentElement.className=D.documentElement.className.replace(/\\bhas-cdh-anchor\\b/,'');
+    try{sessionStorage.setItem(ANC,'1');}catch(e){}
+  });
+  bar.appendChild(n.el);bar.appendChild(x);D.body.appendChild(bar);
+  D.documentElement.className+=' has-cdh-anchor';
+  wire(n,'anchor',function(){x.click();});
+}
+if(D.readyState==='loading')D.addEventListener('DOMContentLoaded',anchor);else anchor();
+
+/* Vinheta nativa: ao clicar num link interno, mostra o banner em tela cheia antes de seguir
+   (como a vinheta do Google). No máximo 1 a cada GAP ms por leitor. */
+function vignetteDue(){var l=0;try{l=+sessionStorage.getItem(VIG)||0;}catch(e){}return Date.now()-l>GAP;}
+function vignette(n,href){
+  var ov=D.createElement('div');ov.className='cdh-vig';
+  ov.setAttribute('role','dialog');ov.setAttribute('aria-modal','true');ov.setAttribute('aria-label','Publicidade');
+  var box=D.createElement('div');box.className='cdh-vig__box';
+  var x=D.createElement('button');x.type='button';x.className='cdh-vig__close';
+  x.setAttribute('aria-label','Fechar e continuar');x.innerHTML='&times;';
+  var go=D.createElement('a');go.className='cdh-vig__go';go.href=href;go.textContent='Continuar para o capítulo →';
+  x.addEventListener('click',function(){location.href=href;});
+  n.img.loading='eager';
+  box.appendChild(x);box.appendChild(n.el);box.appendChild(go);ov.appendChild(box);D.body.appendChild(ov);
+  wire(n,'vignette',function(){location.href=href;});
+  try{go.focus();}catch(e){}
+}
+D.addEventListener('click',function(e){
+  if(!C.p.vignette||e.defaultPrevented||e.button!==0||e.metaKey||e.ctrlKey||e.shiftKey||e.altKey)return;
+  var a=e.target&&e.target.closest?e.target.closest('a[href]'):null;
+  if(!a||a.target==='_blank'||a.hasAttribute('download')||a.closest('.cdh-spot, .cdh-vig'))return;
+  var u;try{u=new URL(a.href,location.href);}catch(x){return;}
+  if(u.origin!==location.origin||u.pathname===location.pathname||/^\\/(admin|api)(\\/|$)/.test(u.pathname))return;
+  if(!vignetteDue())return;
+  var n=nativeEl(C.p.vignette);if(!n)return;
+  e.preventDefault();
+  try{sessionStorage.setItem(VIG,String(Date.now()));}catch(x){}
+  vignette(n,u.href);
+});
 })();
 </script>`;
 }
@@ -371,10 +470,11 @@ W.cdhMix=function(s){
 // ============== Eventos (beacon) ==============
 
 export type MixSource = 'native' | 'adsense';
-export type MixEvent = 'imp' | 'click';
+/** imp/click = banner nativo; pv = pageview do grupo (native|adsense), sem posição. */
+export type MixEvent = 'imp' | 'click' | 'pv';
 
 export interface MixEventRow {
-  placement: MixPlacement;
+  placement: MixPlacement | '';
   source: MixSource;
   creative: string;
   format: NativeFormat | '';
@@ -388,6 +488,8 @@ const MAX_COUNT_PER_ROW = 100;
 /**
  * Valida o corpo do beacon contra a config atual. Descarta testes antigos, criativos
  * desconhecidos e lixo (evita que alguém encha o D1 com linhas inventadas).
+ * Aceita: pageview do grupo AdSense ['', 'adsense', '', '', 'pv', n], pageview do grupo nativo
+ * ['', 'native', criativo, '', 'pv', n] e impressão/clique de banner nativo.
  * Retorna as linhas agregadas por chave, ou [] se nada for válido.
  */
 export function sanitizeEventBatch(body: unknown, cfg: NativeConfig): MixEventRow[] {
@@ -399,18 +501,20 @@ export function sanitizeEventBatch(body: unknown, cfg: NativeConfig): MixEventRo
   for (const raw of b.e.slice(0, MAX_BEACON_ROWS)) {
     if (!Array.isArray(raw) || raw.length !== 6) continue;
     const [pl, src, cr, fmt, ev, n] = raw as unknown[];
-    if (!(MIX_PLACEMENTS as unknown[]).includes(pl)) continue;
-    if (ev !== 'imp' && ev !== 'click') continue;
     const count = Math.floor(Number(n));
     if (!Number.isFinite(count) || count < 1) continue;
-    if (src === 'native') {
+    if (ev === 'pv') {
+      if (pl !== '' || fmt !== '') continue;
+      if (src === 'adsense') { if (cr !== '') continue; }
+      else if (src === 'native') { if (typeof cr !== 'string' || !ids.has(cr)) continue; }
+      else continue;
+    } else if (ev === 'imp' || ev === 'click') {
+      // Só banner nativo: impressão/clique do AdSense quem mede é o próprio AdSense.
+      if (src !== 'native' || !(MIX_PLACEMENTS as unknown[]).includes(pl)) continue;
       if (typeof cr !== 'string' || !ids.has(cr) || !(NATIVE_FORMATS as unknown[]).includes(fmt)) continue;
-    } else if (src === 'adsense') {
-      // Cliques no AdSense não são medidos (iframe de outro domínio).
-      if (cr !== '' || fmt !== '' || ev !== 'imp') continue;
     } else continue;
     const row: Omit<MixEventRow, 'count'> = {
-      placement: pl as MixPlacement, source: src, creative: cr as string,
+      placement: pl as MixPlacement | '', source: src as MixSource, creative: cr as string,
       format: fmt as NativeFormat | '', event: ev,
     };
     const key = [row.placement, row.source, row.creative, row.format, row.event].join('|');
@@ -531,29 +635,34 @@ export interface CreativeResult {
   ctr: number;
   ci: Interval;
   pBest: number;
-  /** RPM estimado (R$ por mil impressões) = CTR × valor por clique × 1000. null sem valor por clique. */
-  rpm: number | null;
+  /** Pageviews de quem viu este banner (grupo nativo). */
+  pv: number;
+  /** Receita estimada por mil pageviews com este banner. null sem valor por clique. */
+  pageRpm: number | null;
 }
 
 export interface MixReport {
-  adsenseImps: number;
+  adsensePv: number;
+  nativePv: number;
   nativeImps: number;
   nativeClicks: number;
   nativeCtr: number;
-  nativeCtrCi: Interval;
+  /** Cliques em banner nativo por pageview do grupo nativo. */
+  clicksPerPv: number;
+  clicksPerPvCi: Interval;
   creatives: CreativeResult[];
   byFormat: Array<{ format: string; imps: number; clicks: number; ctr: number }>;
-  byPlacement: Array<{ placement: string; adsenseImps: number; nativeImps: number; clicks: number; ctr: number }>;
+  byPlacement: Array<{ placement: string; imps: number; clicks: number; ctr: number }>;
   economics: {
-    adsenseRpm: number;
+    adsensePageRpm: number;
     valuePerClick: number;
-    nativeRpm: number | null;
-    nativeRpmRange: Interval | null;
-    /** Nativo vs AdSense: +0.35 = rende 35% mais. */
+    nativePageRpm: number | null;
+    nativePageRpmRange: Interval | null;
+    /** Nativo vs AdSense por pageview: +0.35 = rende 35% mais. */
     lift: number | null;
-    /** Valor por clique em que o nativo empata com o AdSense. */
+    /** Valor por clique em que o grupo nativo empata com o AdSense. */
     breakEvenCpc: number | null;
-    bestRpm: number | null;
+    bestPageRpm: number | null;
     adsenseRevenue: number | null;
     nativeRevenue: number | null;
   };
@@ -566,37 +675,47 @@ export const MIN_IMPS_PER_CREATIVE = 1000;
 export const MIN_IMPS_TO_RANK = 100;
 export const WIN_PROBABILITY = 0.95;
 
+/** Intervalo 95% para uma taxa de contagem (cliques por pageview), aproximação de Poisson. */
+function rateInterval(count: number, exposure: number): Interval {
+  if (exposure <= 0) return { low: 0, high: 0 };
+  const half = 1.96 * Math.sqrt(Math.max(count, 1));
+  return { low: Math.max(0, (count - half) / exposure), high: (count + half) / exposure };
+}
+
 export function buildMixReport(rows: MixStatRow[], cfg: NativeConfig): MixReport {
-  let adsenseImps = 0;
+  let adsensePv = 0;
+  let nativePv = 0;
   let nativeImps = 0;
   let nativeClicks = 0;
-  const byCreative = new Map<string, { imps: number; clicks: number }>();
+  const byCreative = new Map<string, { imps: number; clicks: number; pv: number }>();
   const byFormat = new Map<string, { imps: number; clicks: number }>();
-  const byPlacement = new Map<string, { adsenseImps: number; nativeImps: number; clicks: number }>();
-  const bump = <K>(m: Map<K, { imps: number; clicks: number }>, k: K, ev: string, n: number) => {
-    const cur = m.get(k) ?? { imps: 0, clicks: 0 };
-    if (ev === 'imp') cur.imps += n; else cur.clicks += n;
-    m.set(k, cur);
+  const byPlacement = new Map<string, { imps: number; clicks: number }>();
+  const cur = <V extends { imps: number; clicks: number }>(m: Map<string, V>, k: string, init: V): V => {
+    const v = m.get(k) ?? init; m.set(k, v); return v;
   };
   for (const r of rows) {
     const n = Number(r.count) || 0;
-    const pl = byPlacement.get(r.placement) ?? { adsenseImps: 0, nativeImps: 0, clicks: 0 };
-    if (r.source === 'adsense') {
-      if (r.event === 'imp') { adsenseImps += n; pl.adsenseImps += n; }
-    } else if (r.source === 'native') {
-      if (r.event === 'imp') { nativeImps += n; pl.nativeImps += n; } else { nativeClicks += n; pl.clicks += n; }
-      bump(byCreative, r.creative, r.event, n);
-      bump(byFormat, r.format, r.event, n);
+    if (r.event === 'pv') {
+      if (r.source === 'adsense') adsensePv += n;
+      else if (r.source === 'native') { nativePv += n; cur(byCreative, r.creative, { imps: 0, clicks: 0, pv: 0 }).pv += n; }
+      continue;
     }
-    byPlacement.set(r.placement, pl);
+    if (r.source !== 'native') continue;
+    const isImp = r.event === 'imp';
+    if (isImp) nativeImps += n; else nativeClicks += n;
+    for (const v of [
+      cur(byCreative, r.creative, { imps: 0, clicks: 0, pv: 0 }),
+      cur(byFormat, r.format, { imps: 0, clicks: 0 }),
+      cur(byPlacement, r.placement, { imps: 0, clicks: 0 }),
+    ]) { if (isImp) v.imps += n; else v.clicks += n; }
   }
 
   const vpc = cfg.valuePerClick;
-  const rpmOf = (ctr: number): number | null => (vpc > 0 ? ctr * vpc * 1000 : null);
+  const pageRpmOf = (clicks: number, pv: number): number | null => (vpc > 0 && pv > 0 ? (clicks / pv) * vpc * 1000 : null);
 
   // Criativos: todos os configurados (mesmo sem dados) + ids que só existem nos eventos.
-  const ids = [...new Set([...cfg.creatives.map((c) => c.id), ...byCreative.keys()])];
-  const arms = ids.map((id) => byCreative.get(id) ?? { imps: 0, clicks: 0 });
+  const ids = [...new Set([...cfg.creatives.map((c) => c.id), ...byCreative.keys()])].filter(Boolean);
+  const arms = ids.map((id) => byCreative.get(id) ?? { imps: 0, clicks: 0, pv: 0 });
   // Só entra no ranking quem já tem um mínimo de impressões.
   const ranked = arms.map((a, i) => ({ a, i })).filter(({ a }) => a.imps >= MIN_IMPS_TO_RANK);
   const pRanked = probabilityBest(ranked.map(({ a }) => a));
@@ -604,12 +723,12 @@ export function buildMixReport(rows: MixStatRow[], cfg: NativeConfig): MixReport
   ranked.forEach(({ i }, k) => { pBest[i] = pRanked[k]; });
   const creatives: CreativeResult[] = ids.map((id, i) => {
     const c = cfg.creatives.find((x) => x.id === id);
-    const { imps, clicks } = arms[i];
+    const { imps, clicks, pv } = arms[i];
     const ctr = imps > 0 ? clicks / imps : 0;
     const thumb = c ? (c.images['16x9'] ?? c.images['300x250'] ?? c.images['320x100'] ?? c.images['728x90'] ?? c.images['320x50'])?.src ?? '' : '';
     return {
       id, label: c?.label ?? id, alt: c?.alt ?? '', thumb, active: c?.active ?? false,
-      imps, clicks, ctr, ci: wilson(clicks, imps), pBest: pBest[i], rpm: rpmOf(ctr),
+      imps, clicks, ctr, ci: wilson(clicks, imps), pBest: pBest[i], pv, pageRpm: pageRpmOf(clicks, pv),
     };
   }).sort((a, b) =>
     // Rankeados primeiro; chance arredondada (abaixo de 1% é ruído do Monte Carlo); depois CTR.
@@ -624,18 +743,19 @@ export function buildMixReport(rows: MixStatRow[], cfg: NativeConfig): MixReport
   const winner = enoughData && top && top.pBest >= WIN_PROBABILITY ? top : null;
 
   const nativeCtr = nativeImps > 0 ? nativeClicks / nativeImps : 0;
-  const nativeCtrCi = wilson(nativeClicks, nativeImps);
-  const rpm = cfg.adsenseRpm;
-  const nativeRpm = nativeImps > 0 ? rpmOf(nativeCtr) : null;
-  const nativeRpmRange = nativeRpm !== null
-    ? { low: nativeCtrCi.low * vpc * 1000, high: nativeCtrCi.high * vpc * 1000 } : null;
-  const lift = nativeRpm !== null && rpm > 0 ? nativeRpm / rpm - 1 : null;
-  const breakEvenCpc = rpm > 0 && nativeCtr > 0 ? rpm / (nativeCtr * 1000) : null;
-  const bestWithData = withData.slice().sort((a, b) => b.pBest - a.pBest)[0];
-  const bestRpm = bestWithData ? rpmOf(bestWithData.ctr) : null;
+  const clicksPerPv = nativePv > 0 ? nativeClicks / nativePv : 0;
+  const clicksPerPvCi = rateInterval(nativeClicks, nativePv);
+  const rpm = cfg.adsensePageRpm;
+  const nativePageRpm = pageRpmOf(nativeClicks, nativePv);
+  const nativePageRpmRange = nativePageRpm !== null
+    ? { low: clicksPerPvCi.low * vpc * 1000, high: clicksPerPvCi.high * vpc * 1000 } : null;
+  const lift = nativePageRpm !== null && rpm > 0 ? nativePageRpm / rpm - 1 : null;
+  const breakEvenCpc = rpm > 0 && clicksPerPv > 0 ? rpm / (clicksPerPv * 1000) : null;
+  const leader = withData.slice().sort((a, b) => b.pBest - a.pBest)[0];
+  const bestPageRpm = leader ? leader.pageRpm : null;
 
   return {
-    adsenseImps, nativeImps, nativeClicks, nativeCtr, nativeCtrCi,
+    adsensePv, nativePv, nativeImps, nativeClicks, nativeCtr, clicksPerPv, clicksPerPvCi,
     creatives,
     byFormat: [...byFormat.entries()]
       .map(([format, v]) => ({ format, ...v, ctr: v.imps > 0 ? v.clicks / v.imps : 0 }))
@@ -644,17 +764,17 @@ export function buildMixReport(rows: MixStatRow[], cfg: NativeConfig): MixReport
       .filter((k) => byPlacement.has(k))
       .map((k) => {
         const v = byPlacement.get(k)!;
-        return { placement: k, ...v, ctr: v.nativeImps > 0 ? v.clicks / v.nativeImps : 0 };
+        return { placement: k, ...v, ctr: v.imps > 0 ? v.clicks / v.imps : 0 };
       }),
     economics: {
-      adsenseRpm: rpm,
+      adsensePageRpm: rpm,
       valuePerClick: vpc,
-      nativeRpm,
-      nativeRpmRange,
+      nativePageRpm,
+      nativePageRpmRange,
       lift,
       breakEvenCpc,
-      bestRpm,
-      adsenseRevenue: rpm > 0 ? (adsenseImps / 1000) * rpm : null,
+      bestPageRpm,
+      adsenseRevenue: rpm > 0 ? (adsensePv / 1000) * rpm : null,
       nativeRevenue: vpc > 0 ? nativeClicks * vpc : null,
     },
     enoughData,
