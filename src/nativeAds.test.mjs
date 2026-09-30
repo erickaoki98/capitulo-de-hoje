@@ -161,7 +161,8 @@ test('sanitizeEventBatch aceita pageview por grupo e impressão/clique de nativo
     t: 'abc123',
     e: [
       ['', 'adsense', '', '', 'pv', 1],
-      ['', 'native', 'v1-nova-fase', '', 'pv', 1],
+      ['', 'native', '', '', 'pv', 1],
+      ['', 'native', '', '', 'pv', 1],
       ['', 'native', 'v1-nova-fase', '', 'pv', 1],
       ['', 'native', 'inventado', '', 'pv', 1],
       ['inContent', 'adsense', '', '', 'pv', 1],
@@ -174,7 +175,8 @@ test('sanitizeEventBatch aceita pageview por grupo e impressão/clique de nativo
   }, cfg);
   assert.deepEqual(rows, [
     { placement: '', source: 'adsense', creative: '', format: '', event: 'pv', count: 1 },
-    { placement: '', source: 'native', creative: 'v1-nova-fase', format: '', event: 'pv', count: 2 },
+    { placement: '', source: 'native', creative: '', format: '', event: 'pv', count: 2 },
+    { placement: '', source: 'native', creative: 'v1-nova-fase', format: '', event: 'pv', count: 1 },
     { placement: 'anchor', source: 'native', creative: 'v1-nova-fase', format: '320x100', event: 'imp', count: 1 },
     { placement: 'vignette', source: 'native', creative: 'v1-nova-fase', format: '16x9', event: 'click', count: 1 },
     { placement: 'inContent', source: 'native', creative: 'v1-nova-fase', format: '16x9', event: 'imp', count: 100 },
@@ -211,12 +213,16 @@ test('buildMixReport compara os grupos por mil páginas e aponta vencedor', () =
   const cfg = configWith({ adsensePageRpm: 11, valuePerClick: 0.5 });
   const rows = [
     { placement: '', source: 'adsense', creative: '', format: '', event: 'pv', count: 80000 },
-    { placement: '', source: 'native', creative: 'v1-nova-fase', format: '', event: 'pv', count: 10000 },
-    { placement: '', source: 'native', creative: 'v2-30-segundos', format: '', event: 'pv', count: 10000 },
-    { placement: 'anchor', source: 'native', creative: 'v1-nova-fase', format: '320x100', event: 'imp', count: 9000 },
-    { placement: 'anchor', source: 'native', creative: 'v1-nova-fase', format: '320x100', event: 'click', count: 300 },
-    { placement: 'inContent', source: 'native', creative: 'v2-30-segundos', format: '728x90', event: 'imp', count: 20000 },
-    { placement: 'inContent', source: 'native', creative: 'v2-30-segundos', format: '728x90', event: 'click', count: 100 },
+    { placement: '', source: 'native', creative: '', format: '', event: 'pv', count: 20000 },
+    // Os dois banners passam pelas duas posições (ordem sorteada por página); V1 é melhor em ambas.
+    { placement: 'anchor', source: 'native', creative: 'v1-nova-fase', format: '320x100', event: 'imp', count: 5000 },
+    { placement: 'anchor', source: 'native', creative: 'v1-nova-fase', format: '320x100', event: 'click', count: 200 },
+    { placement: 'anchor', source: 'native', creative: 'v2-30-segundos', format: '320x100', event: 'imp', count: 5000 },
+    { placement: 'anchor', source: 'native', creative: 'v2-30-segundos', format: '320x100', event: 'click', count: 100 },
+    { placement: 'inContent', source: 'native', creative: 'v1-nova-fase', format: '16x9', event: 'imp', count: 10000 },
+    { placement: 'inContent', source: 'native', creative: 'v1-nova-fase', format: '16x9', event: 'click', count: 60 },
+    { placement: 'inContent', source: 'native', creative: 'v2-30-segundos', format: '16x9', event: 'imp', count: 10000 },
+    { placement: 'inContent', source: 'native', creative: 'v2-30-segundos', format: '16x9', event: 'click', count: 40 },
   ];
   const r = buildMixReport(rows, cfg);
   assert.equal(r.adsensePv, 80000);
@@ -229,10 +235,12 @@ test('buildMixReport compara os grupos por mil páginas e aponta vencedor', () =
   // Empate: R$11 / 20 cliques por mil = R$0,55 por clique
   assert.ok(Math.abs(r.economics.breakEvenCpc - 0.55) < 1e-9);
   assert.ok(Math.abs(r.economics.adsenseRevenue - 880) < 1e-9);
-  assert.equal(r.creatives[0].id, 'v1-nova-fase'); // CTR 3,3% vs 0,5%
-  assert.equal(r.creatives[0].pv, 10000);
-  assert.ok(Math.abs(r.creatives[0].pageRpm - 15) < 1e-9); // 300/10.000 × 0,5 × 1000
+  assert.equal(r.creatives[0].id, 'v1-nova-fase');
   assert.equal(r.winner?.id, 'v1-nova-fase');
+  // Esperado do V1 = 5.000 × 3% (âncora) + 10.000 × 0,5% (texto) = 200 cliques; teve 260 → índice 1,3.
+  assert.ok(Math.abs(r.creatives[0].index - 1.3) < 1e-9);
+  // "Se só ele rodasse": R$10 por mil páginas × 1,3 = R$13.
+  assert.ok(Math.abs(r.economics.bestPageRpm - 13) < 1e-9);
   assert.deepEqual(r.byPlacement.map((p) => p.placement), ['anchor', 'inContent']);
 });
 
@@ -254,4 +262,25 @@ test('head do AdSense: com o teste desligado sai igual; ligado, sem o script mas
     assert.doesNotMatch(html, /denied/);
   }
   assert.equal(adsenseScriptSrc('123'), 'https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-123');
+});
+
+test('ranking ajusta pela posição: quem caiu mais no texto não perde por isso (paradoxo de Simpson)', () => {
+  const cfg = configWith();
+  const ev = (placement, format, creative, event, count) => ({ placement, source: 'native', creative, format, event, count });
+  // Em CADA posição o V2 tem CTR maior que o V1. Mas o V1 caiu quase sempre na âncora (CTR alto por
+  // natureza) e o V2 quase sempre no meio do texto — no CTR bruto o V1 "ganharia".
+  const rows = [
+    ev('anchor', '320x100', 'v1-nova-fase', 'imp', 9000), ev('anchor', '320x100', 'v1-nova-fase', 'click', 360),     // 4,0%
+    ev('anchor', '320x100', 'v2-30-segundos', 'imp', 1000), ev('anchor', '320x100', 'v2-30-segundos', 'click', 60),   // 6,0%
+    ev('inContent', '16x9', 'v1-nova-fase', 'imp', 1000), ev('inContent', '16x9', 'v1-nova-fase', 'click', 3),         // 0,3%
+    ev('inContent', '16x9', 'v2-30-segundos', 'imp', 9000), ev('inContent', '16x9', 'v2-30-segundos', 'click', 45),    // 0,5%
+  ];
+  const r = buildMixReport(rows, cfg);
+  const v1 = r.creatives.find((c) => c.id === 'v1-nova-fase');
+  const v2 = r.creatives.find((c) => c.id === 'v2-30-segundos');
+  assert.ok(v1.ctr > v2.ctr, 'no bruto o V1 parece melhor');
+  assert.ok(v2.adjCtr > v1.adjCtr, 'ajustado à posição, o V2 é melhor');
+  assert.ok(v2.index > 1 && v1.index < 1);
+  assert.equal(r.creatives[0].id, 'v2-30-segundos');
+  assert.ok(v2.pBest > 0.95);
 });

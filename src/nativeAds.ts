@@ -13,7 +13,10 @@
  *    das do Google — são os formatos que mais rendem no AdSense (RPM ~5x o dos blocos).
  *  - A comparação é por PAGEVIEW (receita por mil páginas), porque âncora e vinheta fazem metade
  *    da receita do AdSense e não aparecem como impressão de bloco.
- *  - O criativo nativo também é fixo por visitante → teste A/B limpo entre banners.
+ *  - Os banners VARIAM ao longo da página (sem repetir) e a ordem é sorteada a cada página. Por
+ *    isso o ranking entre banners usa o CTR AJUSTADO À POSIÇÃO (padronização indireta: cliques
+ *    reais ÷ cliques esperados se o banner tivesse o CTR médio de cada posição/formato em que
+ *    apareceu) — âncora e topo recebem mais clique que o meio do texto por natureza.
  *  - Eventos em lote (sendBeacon) para /api/ev → 1 batch de escrita no D1 por envio.
  *  - O grupo vai para o GA como user property `ad_arm` (nativo | adsense).
  *
@@ -337,7 +340,7 @@ export function renderMixRuntime(cfg: NativeConfig, adsenseSrc: string): string 
 (function(){
 var C=${scriptJson(runtimeConfig(cfg, adsenseSrc))};
 var W=window,D=document,KEY='cdh_nv',VIG='cdh_nv_vig',ANC='cdh_nv_anchor_off',GAP=${NATIVE_VIGNETTE_GAP_MS};
-var arm='a',cr=null,used=0,q={},qn=0,timer=0;
+var arm='a',used=0,q={},qn=0,timer=0;
 function loadAds(){
   if(W.__cdhAds||!C.a)return;W.__cdhAds=1;
   var s=D.createElement('script');s.async=true;s.src=C.a;s.crossOrigin='anonymous';
@@ -352,14 +355,10 @@ function adsense(b){
 }
 try{
   var st=null;try{st=JSON.parse(localStorage.getItem(KEY)||'null');}catch(e){}
-  if(!st||st.t!==C.t||typeof st.u!=='number')st={t:C.t,u:Math.random()*100,c:''};
-  if(st.u<C.s&&C.c.length){
-    for(var i=0;i<C.c.length;i++){if(C.c[i].i===st.c)cr=C.c[i];}
-    if(!cr)cr=C.c[Math.floor(Math.random()*C.c.length)];
-    st.c=cr.i;arm='n';
-  }
-  try{localStorage.setItem(KEY,JSON.stringify(st));}catch(e){}
-}catch(e){arm='a';cr=null;}
+  if(!st||st.t!==C.t||typeof st.u!=='number')st={t:C.t,u:Math.random()*100};
+  if(st.u<C.s&&C.c.length)arm='n';
+  try{localStorage.setItem(KEY,JSON.stringify({t:st.t,u:st.u}));}catch(e){}
+}catch(e){arm='a';}
 W.cdhArm=arm==='n'?'nativo':'adsense';
 try{W.dataLayer=W.dataLayer||[];(function(){W.dataLayer.push(arguments);})('set','user_properties',{ad_arm:W.cdhArm});}catch(e){}
 if(arm==='a'){loadAds();W.cdhMix=function(s){var b=slotOf(s);if(b)adsense(b);};}
@@ -379,7 +378,7 @@ function track(m,ev,now){
 }
 D.addEventListener('visibilitychange',function(){if(D.visibilityState==='hidden')flush();});
 W.addEventListener('pagehide',flush);
-track(['',arm==='n'?'native':'adsense',cr?cr.i:'',''],'pv');
+track(['',arm==='n'?'native':'adsense','',''],'pv');
 if(arm!=='n')return;
 
 /* ===== Grupo nativo daqui para baixo (AdSense não carrega) ===== */
@@ -389,18 +388,36 @@ var io=('IntersectionObserver' in W)?new IntersectionObserver(function(es){
     io.unobserve(e.target);if(e.target.__cdh)track(e.target.__cdh,'imp');}
 }):null;
 function watch(el,m){if(!io)return;el.__cdh=m;io.unobserve(el);io.observe(el);}
+/* Banners variados: a ordem é sorteada a cada página e cada posição pega o próximo banner que
+   ainda não apareceu nesta página (e tem o tamanho pedido). Só repete se faltar banner.
+   Como a posição muda a cada página, o relatório ajusta o CTR de cada banner pela posição. */
+var order=C.c.slice(),shown={};
+for(var i=order.length-1;i>0;i--){var j=Math.floor(Math.random()*(i+1)),t=order[i];order[i]=order[j];order[j]=t;}
+function keyFor(c,fmt){
+  var f=c.f;
+  if(fmt!=='faixa')return f[fmt]?fmt:'';
+  return (W.matchMedia&&W.matchMedia('(min-width: 760px)').matches&&f['728x90'])?'728x90':(f['320x100']?'320x100':'');
+}
+function pick(fmt){
+  var best=null,bn=1e9;
+  for(var i=0;i<order.length;i++){
+    var c=order[i];if(!keyFor(c,fmt))continue;
+    var n=shown[c.i]||0;if(n<bn){best=c;bn=n;}if(!n)break;
+  }
+  if(best)shown[best.i]=(shown[best.i]||0)+1;
+  return best;
+}
 function nativeEl(fmt){
-  var f=cr.f,key=fmt;
-  if(fmt==='faixa'){key=(W.matchMedia&&W.matchMedia('(min-width: 760px)').matches&&f['728x90'])?'728x90':(f['320x100']?'320x100':'');}
-  var img=key&&f[key];if(!img)return null;
+  var c=pick(fmt);if(!c)return null;
+  var key=keyFor(c,fmt),img=c.f[key];
   var a=D.createElement('a');a.href=img[1];a.target='_blank';a.rel='sponsored noopener';
-  a.className='cdh-spot cdh-spot--'+key;a.setAttribute('data-cr',cr.i);
-  var im=D.createElement('img');im.src=img[0];im.width=img[2];im.height=img[3];im.alt=cr.a;
+  a.className='cdh-spot cdh-spot--'+key;a.setAttribute('data-cr',c.i);
+  var im=D.createElement('img');im.src=img[0];im.width=img[2];im.height=img[3];im.alt=c.a;
   im.loading='lazy';im.decoding='async';a.appendChild(im);
-  return {el:a,img:im,fmt:key};
+  return {el:a,img:im,fmt:key,cr:c};
 }
 function wire(n,pl,onErr){
-  var m=[pl,'native',cr.i,n.fmt],im=n.img;
+  var m=[pl,'native',n.cr.i,n.fmt],im=n.img;
   n.el.addEventListener('click',function(){track(m,'click',true);});
   if(im.complete&&im.naturalWidth)watch(im,m);else im.addEventListener('load',function(){watch(im,m);});
   if(onErr)im.addEventListener('error',onErr);
@@ -488,8 +505,8 @@ const MAX_COUNT_PER_ROW = 100;
 /**
  * Valida o corpo do beacon contra a config atual. Descarta testes antigos, criativos
  * desconhecidos e lixo (evita que alguém encha o D1 com linhas inventadas).
- * Aceita: pageview do grupo AdSense ['', 'adsense', '', '', 'pv', n], pageview do grupo nativo
- * ['', 'native', criativo, '', 'pv', n] e impressão/clique de banner nativo.
+ * Aceita: pageview de cada grupo ['', 'adsense'|'native', '', '', 'pv', n] e impressão/clique
+ * de banner nativo. (Pageview nativo com id de criativo = página em cache de antes da variação.)
  * Retorna as linhas agregadas por chave, ou [] se nada for válido.
  */
 export function sanitizeEventBatch(body: unknown, cfg: NativeConfig): MixEventRow[] {
@@ -506,7 +523,7 @@ export function sanitizeEventBatch(body: unknown, cfg: NativeConfig): MixEventRo
     if (ev === 'pv') {
       if (pl !== '' || fmt !== '') continue;
       if (src === 'adsense') { if (cr !== '') continue; }
-      else if (src === 'native') { if (typeof cr !== 'string' || !ids.has(cr)) continue; }
+      else if (src === 'native') { if (cr !== '' && !(typeof cr === 'string' && ids.has(cr))) continue; }
       else continue;
     } else if (ev === 'imp' || ev === 'click') {
       // Só banner nativo: impressão/clique do AdSense quem mede é o próprio AdSense.
@@ -635,10 +652,11 @@ export interface CreativeResult {
   ctr: number;
   ci: Interval;
   pBest: number;
-  /** Pageviews de quem viu este banner (grupo nativo). */
-  pv: number;
-  /** Receita estimada por mil pageviews com este banner. null sem valor por clique. */
-  pageRpm: number | null;
+  /** CTR ajustado à posição: índice × CTR médio do teste (compara banners em pé de igualdade). */
+  adjCtr: number;
+  adjCi: Interval;
+  /** Cliques reais ÷ cliques esperados nas posições em que apareceu (1,2 = 20% acima da média). */
+  index: number | null;
 }
 
 export interface MixReport {
@@ -687,54 +705,81 @@ export function buildMixReport(rows: MixStatRow[], cfg: NativeConfig): MixReport
   let nativePv = 0;
   let nativeImps = 0;
   let nativeClicks = 0;
-  const byCreative = new Map<string, { imps: number; clicks: number; pv: number }>();
-  const byFormat = new Map<string, { imps: number; clicks: number }>();
-  const byPlacement = new Map<string, { imps: number; clicks: number }>();
-  const cur = <V extends { imps: number; clicks: number }>(m: Map<string, V>, k: string, init: V): V => {
-    const v = m.get(k) ?? init; m.set(k, v); return v;
+  type Acc = { imps: number; clicks: number };
+  const byCreative = new Map<string, Acc>();
+  const byFormat = new Map<string, Acc>();
+  const byPlacement = new Map<string, Acc>();
+  // Estrato = posição × formato (âncora 320x100, texto 16:9…): base do ajuste por posição.
+  const byStratum = new Map<string, Acc>();
+  const byCreativeStratum = new Map<string, Map<string, Acc>>();
+  const acc = (m: Map<string, Acc>, k: string): Acc => {
+    let v = m.get(k);
+    if (!v) { v = { imps: 0, clicks: 0 }; m.set(k, v); }
+    return v;
   };
   for (const r of rows) {
     const n = Number(r.count) || 0;
     if (r.event === 'pv') {
       if (r.source === 'adsense') adsensePv += n;
-      else if (r.source === 'native') { nativePv += n; cur(byCreative, r.creative, { imps: 0, clicks: 0, pv: 0 }).pv += n; }
+      else if (r.source === 'native') nativePv += n;
       continue;
     }
     if (r.source !== 'native') continue;
     const isImp = r.event === 'imp';
     if (isImp) nativeImps += n; else nativeClicks += n;
-    for (const v of [
-      cur(byCreative, r.creative, { imps: 0, clicks: 0, pv: 0 }),
-      cur(byFormat, r.format, { imps: 0, clicks: 0 }),
-      cur(byPlacement, r.placement, { imps: 0, clicks: 0 }),
-    ]) { if (isImp) v.imps += n; else v.clicks += n; }
+    const stratum = `${r.placement}|${r.format}`;
+    let cs = byCreativeStratum.get(r.creative);
+    if (!cs) { cs = new Map(); byCreativeStratum.set(r.creative, cs); }
+    for (const v of [acc(byCreative, r.creative), acc(byFormat, r.format), acc(byPlacement, r.placement), acc(byStratum, stratum), acc(cs, stratum)]) {
+      if (isImp) v.imps += n; else v.clicks += n;
+    }
   }
 
   const vpc = cfg.valuePerClick;
-  const pageRpmOf = (clicks: number, pv: number): number | null => (vpc > 0 && pv > 0 ? (clicks / pv) * vpc * 1000 : null);
+  const nativeCtr = nativeImps > 0 ? nativeClicks / nativeImps : 0;
+
+  // Ajuste por posição (padronização indireta): quantos cliques o banner "deveria" ter tido se
+  // tivesse o CTR médio de cada posição/formato em que apareceu. Índice = real ÷ esperado.
+  const expectedClicks = (id: string): number => {
+    let e = 0;
+    for (const [st, v] of byCreativeStratum.get(id) ?? []) {
+      const base = byStratum.get(st);
+      if (base && base.imps > 0) e += v.imps * (base.clicks / base.imps);
+    }
+    return e;
+  };
 
   // Criativos: todos os configurados (mesmo sem dados) + ids que só existem nos eventos.
   const ids = [...new Set([...cfg.creatives.map((c) => c.id), ...byCreative.keys()])].filter(Boolean);
-  const arms = ids.map((id) => byCreative.get(id) ?? { imps: 0, clicks: 0, pv: 0 });
+  const arms = ids.map((id) => {
+    const { imps, clicks } = byCreative.get(id) ?? { imps: 0, clicks: 0 };
+    const exp = expectedClicks(id);
+    const index = exp > 0 ? clicks / exp : null;
+    // "Impressões equivalentes em posição média": com elas, cliques ÷ adjImps = CTR ajustado.
+    const adjImps = index !== null && nativeCtr > 0 ? Math.max(clicks, exp / nativeCtr) : imps;
+    return { imps, clicks, index, adjImps };
+  });
   // Só entra no ranking quem já tem um mínimo de impressões.
   const ranked = arms.map((a, i) => ({ a, i })).filter(({ a }) => a.imps >= MIN_IMPS_TO_RANK);
-  const pRanked = probabilityBest(ranked.map(({ a }) => a));
+  const pRanked = probabilityBest(ranked.map(({ a }) => ({ clicks: a.clicks, imps: Math.round(a.adjImps) })));
   const pBest = new Array<number>(ids.length).fill(0);
   ranked.forEach(({ i }, k) => { pBest[i] = pRanked[k]; });
   const creatives: CreativeResult[] = ids.map((id, i) => {
     const c = cfg.creatives.find((x) => x.id === id);
-    const { imps, clicks, pv } = arms[i];
+    const { imps, clicks, index, adjImps } = arms[i];
     const ctr = imps > 0 ? clicks / imps : 0;
+    const adjCtr = adjImps > 0 ? clicks / adjImps : 0;
     const thumb = c ? (c.images['16x9'] ?? c.images['300x250'] ?? c.images['320x100'] ?? c.images['728x90'] ?? c.images['320x50'])?.src ?? '' : '';
     return {
       id, label: c?.label ?? id, alt: c?.alt ?? '', thumb, active: c?.active ?? false,
-      imps, clicks, ctr, ci: wilson(clicks, imps), pBest: pBest[i], pv, pageRpm: pageRpmOf(clicks, pv),
+      imps, clicks, ctr, ci: wilson(clicks, imps), pBest: pBest[i],
+      adjCtr, adjCi: wilson(clicks, Math.round(adjImps)), index,
     };
   }).sort((a, b) =>
-    // Rankeados primeiro; chance arredondada (abaixo de 1% é ruído do Monte Carlo); depois CTR.
+    // Rankeados primeiro; chance arredondada (abaixo de 1% é ruído do Monte Carlo); depois CTR ajustado.
     Number(b.imps >= MIN_IMPS_TO_RANK) - Number(a.imps >= MIN_IMPS_TO_RANK)
     || Math.round(b.pBest * 100) - Math.round(a.pBest * 100)
-    || b.ctr - a.ctr
+    || b.adjCtr - a.adjCtr
     || b.imps - a.imps);
 
   const withData = creatives.filter((c) => c.imps > 0);
@@ -742,17 +787,17 @@ export function buildMixReport(rows: MixStatRow[], cfg: NativeConfig): MixReport
   const top = creatives[0];
   const winner = enoughData && top && top.pBest >= WIN_PROBABILITY ? top : null;
 
-  const nativeCtr = nativeImps > 0 ? nativeClicks / nativeImps : 0;
   const clicksPerPv = nativePv > 0 ? nativeClicks / nativePv : 0;
   const clicksPerPvCi = rateInterval(nativeClicks, nativePv);
   const rpm = cfg.adsensePageRpm;
-  const nativePageRpm = pageRpmOf(nativeClicks, nativePv);
+  const nativePageRpm = vpc > 0 && nativePv > 0 ? clicksPerPv * vpc * 1000 : null;
   const nativePageRpmRange = nativePageRpm !== null
     ? { low: clicksPerPvCi.low * vpc * 1000, high: clicksPerPvCi.high * vpc * 1000 } : null;
   const lift = nativePageRpm !== null && rpm > 0 ? nativePageRpm / rpm - 1 : null;
   const breakEvenCpc = rpm > 0 && clicksPerPv > 0 ? rpm / (clicksPerPv * 1000) : null;
-  const leader = withData.slice().sort((a, b) => b.pBest - a.pBest)[0];
-  const bestPageRpm = leader ? leader.pageRpm : null;
+  // Se só o líder rodasse em todas as posições: receita do grupo × índice dele.
+  const leader = withData.slice().sort((a, b) => b.pBest - a.pBest || b.adjCtr - a.adjCtr)[0];
+  const bestPageRpm = leader && leader.index !== null && nativePageRpm !== null ? nativePageRpm * leader.index : null;
 
   return {
     adsensePv, nativePv, nativeImps, nativeClicks, nativeCtr, clicksPerPv, clicksPerPvCi,

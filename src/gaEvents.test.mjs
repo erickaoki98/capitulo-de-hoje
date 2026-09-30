@@ -40,5 +40,5 @@ test('runtime dos banners nativos também é JavaScript válido e marca o criati
   }));
   const body = scriptBody(renderMixRuntime(cfg, 'https://x.example/adsbygoogle.js').trim());
   assert.doesNotThrow(() => new Function(body));
-  assert.match(body, /setAttribute\('data-cr',cr\.i\)/);
+  assert.match(body, /setAttribute\('data-cr',c\.i\)/);
 });
