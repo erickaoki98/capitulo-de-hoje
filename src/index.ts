@@ -223,14 +223,15 @@ export default {
           ctx.waitUntil(recordPageview(env.DB, '/').catch(() => {}));
           return cached;
         }
-        const [posts, ads, typo, gaId] = await Promise.all([
+        const [posts, ads, typo, gaId, cookieBanner] = await Promise.all([
           listPosts(env.DB, { includeDrafts: false, limit: 60 }),
           loadAdSettings(env),
           loadTypography(env),
           loadGaId(env), // PROTEÇÃO ANALYTICS: gaId precisa chegar no render (ver loadGaId)
+          loadCookieBanner(env),
         ]);
         ctx.waitUntil(recordPageview(env.DB, '/').catch(() => {}));
-        const resp = new Response(renderHome(env, request, posts, ads, typo, gaId), { headers: PUBLIC_CACHE_HEADERS });
+        const resp = new Response(renderHome(env, request, posts, ads, typo, gaId, cookieBanner), { headers: PUBLIC_CACHE_HEADERS });
         return writeCache(env, ctx, request, resp);
       }
 
@@ -242,7 +243,7 @@ export default {
           return cached;
         }
         ctx.waitUntil(recordPageview(env.DB, '/privacidade').catch(() => {}));
-        const resp = new Response(renderPrivacy(env, request), { headers: PUBLIC_CACHE_HEADERS });
+        const resp = new Response(renderPrivacy(env, request, await loadCookieBanner(env)), { headers: PUBLIC_CACHE_HEADERS });
         return writeCache(env, ctx, request, resp);
       }
 
@@ -250,7 +251,7 @@ export default {
       if (pathname === '/doc' && request.method === 'GET') {
         const cached = await readCache(env, request);
         if (cached) return cached;
-        const resp = new Response(renderDocs(env, request), { headers: PUBLIC_CACHE_HEADERS });
+        const resp = new Response(renderDocs(env, request, await loadCookieBanner(env)), { headers: PUBLIC_CACHE_HEADERS });
         return writeCache(env, ctx, request, resp);
       }
 
@@ -789,9 +790,10 @@ ${urls.join('\n')}
       // ============= Admin: Configurações (Typography) =============
       if (pathname === '/admin/configuracoes' && request.method === 'GET') {
         if (!authed) return redirectToLogin();
-        const [t, b] = await Promise.all([
+        const [t, b, cookieBanner] = await Promise.all([
           getSetting(env.DB, 'typography.title_scale'),
           getSetting(env.DB, 'typography.body_scale'),
+          loadCookieBanner(env),
         ]);
         const titleScale = (['sm','md','lg','xl'] as const).includes(t as any)
           ? t as 'sm' | 'md' | 'lg' | 'xl' : 'md';
@@ -799,6 +801,8 @@ ${urls.join('\n')}
           ? b as 'sm' | 'md' | 'lg' : 'md';
         return new Response(renderAdminConfiguracoes(env, request, {
           typography: { titleScale, bodyScale },
+          cookieBanner,
+          tab: url.searchParams.get('tab') ?? undefined,
           saved: url.searchParams.get('saved') === '1',
         }), { headers: NO_CACHE_HEADERS });
       }
@@ -808,12 +812,16 @@ ${urls.join('\n')}
         const form = await request.formData();
         const titleScale = String(form.get('typography.title_scale') ?? 'md');
         const bodyScale = String(form.get('typography.body_scale') ?? 'md');
+        // Checkbox desmarcado não é enviado → ausência = aviso desligado.
+        const cookieBanner = form.get('cookie_banner.enabled') === '1' ? '1' : '0';
         await Promise.all([
           setSetting(env.DB, 'typography.title_scale', titleScale),
           setSetting(env.DB, 'typography.body_scale', bodyScale),
+          setSetting(env.DB, 'cookie_banner.enabled', cookieBanner),
         ]);
         await bumpCacheVersion(env);
-        return new Response(null, { status: 303, headers: { Location: '/admin/configuracoes?saved=1' } });
+        const tab = String(form.get('_tab') ?? '').replace(/[^a-z]/g, '');
+        return new Response(null, { status: 303, headers: { Location: `/admin/configuracoes?saved=1${tab ? `&tab=${tab}` : ''}` } });
       }
 
       // ============= Admin: Analytics =============
@@ -1133,7 +1141,7 @@ ${urls.join('\n')}
           }
           const post = await getPublicPostBySlug(env.DB, slug);
           if (post && !post.draft) {
-            const [sharedRankings, ads, typo, gaId] = await Promise.all([
+            const [sharedRankings, ads, typo, gaId, cookieBanner] = await Promise.all([
               getCachedPublicRankings({
                 cache: caches.default,
                 origin: env.CANONICAL_URL || url.origin,
@@ -1149,6 +1157,7 @@ ${urls.join('\n')}
               loadAdSettings(env),
               loadTypography(env),
               loadGaId(env), // PROTEÇÃO ANALYTICS: gaId precisa chegar no render (ver loadGaId)
+              loadCookieBanner(env),
             ]);
             const { topViews, top24h } = rankingsForArticle(sharedRankings, pathname);
             const slugs = topViews.map((v) => v.path.replace(/^\//, ''));
@@ -1179,7 +1188,7 @@ ${urls.join('\n')}
             }
             ctx.waitUntil(recordPageview(env.DB, pathname).catch(() => {}));
             const resp = new Response(
-              renderPost(env, request, post, relatedPosts.slice(0, 12), ads, typo, trendingPosts, undefined, gaId, null, null),
+              renderPost(env, request, post, relatedPosts.slice(0, 12), ads, typo, trendingPosts, undefined, gaId, null, null, cookieBanner),
               { headers: PUBLIC_CACHE_HEADERS },
             );
             return writeCache(env, ctx, request, resp);
@@ -1193,7 +1202,7 @@ ${urls.join('\n')}
       }
 
       // ===== Default 404 =====
-      return new Response(render404(env, request), { status: 404, headers: HTML_HEADERS });
+      return new Response(render404(env, request, await loadCookieBanner(env)), { status: 404, headers: HTML_HEADERS });
     } catch (err) {
       console.error('Worker error:', err);
       return new Response(`<h1>Erro interno</h1><pre>${String(err)}</pre>`, {
@@ -1359,6 +1368,11 @@ async function loadGaId(env: Env): Promise<string> {
     return '';
   }
   return raw;
+}
+
+/** Aviso "Usamos cookies" ligado? (settings 'cookie_banner.enabled'; ausente = ligado). */
+async function loadCookieBanner(env: Env): Promise<boolean> {
+  return (await getSetting(env.DB, 'cookie_banner.enabled')) !== '0';
 }
 
 /** Carrega typography (defaults se não configurado). */

@@ -259,6 +259,7 @@ interface LayoutOptions {
   gaId?: string;         // Google Analytics measurement ID (G-XXXXXXX)
   stickyAd?: string;     // ad fixo no rodapé mobile
   typography?: SiteTypography;
+  cookieBanner?: boolean; // aviso "Usamos cookies" (padrão: exibe; admin → Configurações → Cookies)
 }
 
 function layout(opts: LayoutOptions, body: string): string {
@@ -266,7 +267,7 @@ function layout(opts: LayoutOptions, body: string): string {
     title, description, url, siteTitle,
     type = 'website', pubDate, updatedDate, author,
     image, tags = [], category, jsonLd, bodyClass = '',
-    headInject = '', gaId = '', stickyAd = '', typography,
+    headInject = '', gaId = '', stickyAd = '', typography, cookieBanner = true,
   } = opts;
   const typoClasses = typography ? `t-title-${typography.titleScale} t-body-${typography.bodyScale}` : '';
   const finalBodyClass = `${bodyClass} ${typoClasses}`.trim();
@@ -374,7 +375,7 @@ ${body}
   </div>
 </footer>
 ${stickyAd}
-${!isAdmin ? `<div id="cookie-consent" style="display:none;position:fixed;bottom:12px;left:50%;z-index:9999;transform:translateX(-50%) translateY(20px);opacity:0;max-width:min(440px,calc(100% - 32px));display:none">
+${!isAdmin && cookieBanner ? `<div id="cookie-consent" style="display:none;position:fixed;bottom:12px;left:50%;z-index:9999;transform:translateX(-50%) translateY(20px);opacity:0;max-width:min(440px,calc(100% - 32px));display:none">
   <div style="display:flex;align-items:center;gap:12px;background:#1a1a2e;color:#d4d4d8;padding:8px 10px 8px 16px;border-radius:10px;font-size:0.75rem;line-height:1.4;box-shadow:0 4px 24px rgba(0,0,0,0.2)">
     <span>Usamos cookies. <a href="/privacidade" style="color:#93b5ff;text-decoration:underline">Privacidade</a></span>
     <button onclick="acceptCookies()" style="background:rgba(79,127,255,0.15);color:#93b5ff;border:none;padding:6px 14px;border-radius:6px;font-size:0.6875rem;font-weight:600;cursor:pointer;white-space:nowrap;text-transform:uppercase;letter-spacing:0.04em;transition:background 0.15s" onmouseover="this.style.background='rgba(79,127,255,0.25)'" onmouseout="this.style.background='rgba(79,127,255,0.15)'">Aceitar</button>
@@ -415,8 +416,8 @@ ${!isAdmin ? `<div id="cookie-consent" style="display:none;position:fixed;bottom
     setTimeout(function(){ el.style.display = 'none'; if (sticky) sticky.style.removeProperty('display'); }, 250);
   };
 })();
-</script>
-<script>
+</script>` : ''}
+${!isAdmin ? `<script>
 (function(){
   var vid = localStorage.getItem('_vid');
   if (!vid) { vid = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem('_vid', vid); }
@@ -493,6 +494,7 @@ ${!isAdmin ? `<div id="cookie-consent" style="display:none;position:fixed;bottom
 export function renderHome(
   env: Env, request: Request, posts: (Post | PostCard)[],
   ads?: SiteAdSettings, typography?: SiteTypography, gaId?: string,
+  cookieBanner = true,
 ): string {
   const url = new URL(request.url);
   const siteUrl = siteCanonical(env, url);
@@ -546,6 +548,7 @@ export function renderHome(
       gaId,
       stickyAd,
       typography,
+      cookieBanner,
       jsonLd: {
         '@context': 'https://schema.org',
         '@type': 'WebSite',
@@ -1049,6 +1052,7 @@ export function renderPost(
   trendingPosts?: (Post | PostCard)[], _pollData?: unknown, gaId?: string,
   shopeeConfig?: ShopeeInjectionConfig | null,
   authorProfile?: AuthorProfile | null,
+  cookieBanner = true,
 ): string {
   const url = new URL(request.url);
   const siteOrigin = siteCanonical(env, url);
@@ -1272,6 +1276,7 @@ ${adIf('bottomOfPage', 'ad-slot--bottom')}
       gaId,
       stickyAd,
       typography,
+      cookieBanner,
       jsonLd: {
         '@context': 'https://schema.org',
         '@type': 'NewsArticle',
@@ -1423,7 +1428,7 @@ function renderRelatedSection(posts: (Post | PostCard)[]): string {
 }
 
 
-export function renderPrivacy(env: Env, request: Request): string {
+export function renderPrivacy(env: Env, request: Request, cookieBanner = true): string {
   const url = new URL(request.url);
   const siteUrl = siteCanonical(env, url);
   const today = new Date().toLocaleDateString('pt-BR', { year: 'numeric', month: 'long', day: 'numeric' });
@@ -1434,6 +1439,7 @@ export function renderPrivacy(env: Env, request: Request): string {
       description: `Política de privacidade, uso de cookies, Google AdSense e LGPD do ${env.SITE_TITLE}.`,
       url: `${siteUrl}/privacidade`,
       siteTitle: env.SITE_TITLE,
+      cookieBanner,
     },
     `<article class="post privacy">
   <header class="post__header">
@@ -1516,7 +1522,7 @@ export function renderPrivacy(env: Env, request: Request): string {
 }
 
 // ====== API Documentation ======
-export function renderDocs(env: Env, request: Request): string {
+export function renderDocs(env: Env, request: Request, cookieBanner = true): string {
   const url = new URL(request.url);
   const siteUrl = siteCanonical(env, url);
   const base = `${url.protocol}//${url.host}`;
@@ -1528,6 +1534,7 @@ export function renderDocs(env: Env, request: Request): string {
       url: `${siteUrl}/doc`,
       siteTitle: env.SITE_TITLE,
       bodyClass: 'is-doc',
+      cookieBanner,
     },
     `<article class="post privacy">
   <header class="post__header">
@@ -1726,7 +1733,7 @@ print(r.json())</code></pre>
 }
 
 // ====== 404 ======
-export function render404(env: Env, request: Request): string {
+export function render404(env: Env, request: Request, cookieBanner = true): string {
   const url = new URL(request.url);
   return layout(
     {
@@ -1735,6 +1742,7 @@ export function render404(env: Env, request: Request): string {
       url: `${siteCanonical(env, url)}${url.pathname}`,
       siteTitle: env.SITE_TITLE,
       bodyClass: 'is-404',
+      cookieBanner,
     },
     `<div class="not-found"><h1>404</h1><p>Página não encontrada.</p><p><a href="/" class="btn">Voltar ao início</a></p></div>`,
   );
@@ -2445,19 +2453,21 @@ export function renderAdminConfiguracoes(
     typography: { titleScale: 'sm' | 'md' | 'lg' | 'xl'; bodyScale: 'sm' | 'md' | 'lg' };
     googleAnalyticsId?: string;
     defaultAuthor?: { name: string; bio: string; avatar: string };
+    cookieBanner: boolean;
     tab?: string;
     saved?: boolean;
   },
 ): string {
   void request;
-  const validTabs = ['tipografia', 'autor', 'tracking'] as const;
+  const validTabs = ['tipografia', 'autor', 'tracking', 'cookies'] as const;
   const activeTab = validTabs.includes(data.tab as any) ? data.tab as string : 'tipografia';
   const author = data.defaultAuthor ?? { name: '', bio: '', avatar: '' };
+  const cookieIcon = (size: number) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="${size > 16 ? 1.75 : 2}" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a10 10 0 1 0 10 10 4 4 0 0 1-5-5 4 4 0 0 1-5-5"/><path d="M8.5 8.5v.01"/><path d="M16 15.5v.01"/><path d="M12 12v.01"/><path d="M11 17v.01"/><path d="M7 14v.01"/></svg>`;
 
   return adminShell(env, {
     active: 'configuracoes',
     title: 'Configurações',
-    subtitle: 'Aparência do site e tracking',
+    subtitle: 'Aparência do site, tracking e cookies',
   }, `
     ${data.saved ? `<div class="alert alert--success"><span class="alert__icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></span><div><strong>Configurações salvas.</strong> O cache do site foi limpo automaticamente.</div></div>` : ''}
 
@@ -2473,6 +2483,10 @@ export function renderAdminConfiguracoes(
       <button type="button" role="tab" class="cfg-tabs__tab ${activeTab === 'tracking' ? 'is-active' : ''}" data-tab="tracking" aria-selected="${activeTab === 'tracking'}">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="3" y1="20" x2="21" y2="20"/></svg>
         Tracking
+      </button>
+      <button type="button" role="tab" class="cfg-tabs__tab ${activeTab === 'cookies' ? 'is-active' : ''}" data-tab="cookies" aria-selected="${activeTab === 'cookies'}">
+        ${cookieIcon(16)}
+        Cookies
       </button>
     </nav>
 
@@ -2583,6 +2597,42 @@ export function renderAdminConfiguracoes(
         </section>
       </div>
 
+      <!-- Tab: Cookies -->
+      <div class="cfg-panel ${activeTab === 'cookies' ? 'is-active' : ''}" data-panel="cookies">
+        <section class="card">
+          <header class="card__header card__header--icon">
+            <span class="card__header-icon">${cookieIcon(20)}</span>
+            <div>
+              <h2 class="card__title">Aviso de cookies</h2>
+              <p class="card__desc">Barra “Usamos cookies. Privacidade” que aparece no rodapé das páginas públicas até o visitante clicar em Aceitar.</p>
+            </div>
+          </header>
+          <div class="card__body">
+            <div class="placement-card ${data.cookieBanner ? 'is-on' : ''}" id="cookie-banner-card">
+              <header class="placement-card__header">
+                <span class="placement-card__icon">${cookieIcon(20)}</span>
+                <div class="placement-card__heading">
+                  <h3>Exibir aviso de cookies</h3>
+                  <p>Desligado, o aviso deixa de aparecer em todas as páginas do site.</p>
+                </div>
+                <label class="toggle">
+                  <input type="checkbox" name="cookie_banner.enabled" value="1" aria-label="Exibir aviso de cookies" ${data.cookieBanner ? 'checked' : ''}>
+                  <span class="toggle__track"><span class="toggle__thumb"></span></span>
+                </label>
+              </header>
+              <div class="placement-card__body">
+                <div class="type-preview__label">Pré-visualização</div>
+                <div aria-hidden="true" style="display:flex;align-items:center;justify-content:space-between;gap:12px;max-width:440px;background:#1a1a2e;color:#d4d4d8;padding:8px 10px 8px 16px;border-radius:10px;font-size:0.75rem;line-height:1.4;box-shadow:0 4px 24px rgba(0,0,0,0.2)">
+                  <span>Usamos cookies. <span style="color:#93b5ff;text-decoration:underline">Privacidade</span></span>
+                  <span style="background:rgba(79,127,255,0.15);color:#93b5ff;padding:6px 14px;border-radius:6px;font-size:0.6875rem;font-weight:600;white-space:nowrap;text-transform:uppercase;letter-spacing:0.04em">Aceitar</span>
+                </div>
+              </div>
+            </div>
+            <small class="field__help" style="display:block;margin-top:12px">Anúncios e Google Analytics não são afetados: o consentimento já é concedido por padrão (LGPD), com ou sem o aviso.</small>
+          </div>
+        </section>
+      </div>
+
       <div class="sticky-actions">
         <button type="submit" class="btn btn--primary btn--lg">Salvar configurações</button>
       </div>
@@ -2602,6 +2652,11 @@ export function renderAdminConfiguracoes(
           if (tabInput) tabInput.value = target;
           history.replaceState(null, '', '?tab=' + target);
         });
+      });
+
+      const cookieCard = document.getElementById('cookie-banner-card');
+      cookieCard?.querySelector('input[type="checkbox"]')?.addEventListener('change', (e) => {
+        cookieCard.classList.toggle('is-on', e.target.checked);
       });
 
       const TITLE_SIZES = { sm: '22px', md: '28px', lg: '34px', xl: '42px' };
