@@ -50,7 +50,7 @@ import {
 } from './configuracoes.ts';
 import {
   type NativeConfig, type MixPlacement, type SlotFormat,
-  MIX_PLACEMENTS, SLOT_FORMATS,
+  MIX_PLACEMENTS, PLACEMENT_FORMATS,
   parseNativeConfig, newTestId, sanitizeEventBatch, buildMixReport,
   parseBannerSnippets, mergeCreatives, safeHttpUrl, nativeActive, runtimeConfig,
 } from './nativeAds.ts';
@@ -811,7 +811,7 @@ ${urls.join('\n')}
           const fmt = String(form.get(`pl.format.${k}`) ?? '');
           placements[k] = {
             on: form.get(`pl.on.${k}`) === '1',
-            format: (SLOT_FORMATS as string[]).includes(fmt) ? fmt as SlotFormat : cur.placements[k].format,
+            format: (PLACEMENT_FORMATS[k] as string[]).includes(fmt) ? fmt as SlotFormat : cur.placements[k].format,
           };
         }
         const listed = new Set(form.getAll('cr.ids').map(String));
@@ -825,7 +825,7 @@ ${urls.join('\n')}
           enabled,
           share: Number(form.get('share')),
           maxPerPage: Number(form.get('maxPerPage')),
-          adsenseRpm: Number(String(form.get('adsenseRpm') ?? '').replace(',', '.')) || 0,
+          adsensePageRpm: Number(String(form.get('adsensePageRpm') ?? '').replace(',', '.')) || 0,
           valuePerClick: Number(String(form.get('valuePerClick') ?? '').replace(',', '.')) || 0,
           placements: placements as Record<MixPlacement, { on: boolean; format: SlotFormat }>,
           creatives,

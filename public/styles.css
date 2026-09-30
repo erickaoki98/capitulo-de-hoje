@@ -2888,6 +2888,51 @@ ins.adsbygoogle[data-ad-status="unfill-optimized"] .google-aiuf {
 }
 .ad-sticky-footer .cdh-mix.is-native { display: flex; justify-content: center; }
 
+/* Âncora nativa (grupo nativo): faixa fixa no rodapé, no lugar da âncora do Google.
+   Abaixo do aviso de cookies (9999). O body ganha espaço para o fim da página não ficar coberto. */
+.cdh-anchor {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 120;
+  display: flex; justify-content: center; align-items: center;
+  padding: 6px 44px 6px 8px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -6px 18px rgba(2, 6, 23, 0.10);
+  line-height: 0;
+}
+.cdh-anchor .cdh-spot { border-radius: 8px; }
+.cdh-anchor .cdh-spot img { max-height: 100px; width: auto; }
+.cdh-anchor__close {
+  position: absolute; top: 50%; right: 8px; transform: translateY(-50%);
+  width: 30px; height: 30px; border-radius: 50%;
+  border: 1px solid var(--border); background: var(--bg); color: var(--text-muted);
+  font-size: 20px; line-height: 1; cursor: pointer;
+}
+.cdh-anchor__close:focus-visible { outline: 2px solid var(--link-hover, #2563eb); outline-offset: 2px; }
+html.has-cdh-anchor body { padding-bottom: 118px; }
+
+/* Vinheta nativa: tela cheia ao trocar de página (máx. 1 a cada 5 min), como a do Google. */
+.cdh-vig {
+  position: fixed; inset: 0; z-index: 10000;
+  display: flex; align-items: center; justify-content: center;
+  padding: 56px 16px 24px;
+  background: rgba(10, 12, 16, 0.86);
+}
+.cdh-vig__box { position: relative; width: min(560px, 100%); display: flex; flex-direction: column; gap: 14px; }
+.cdh-vig__box .cdh-spot { display: block; border-radius: 12px; }
+.cdh-vig__box .cdh-spot img { width: 100%; }
+.cdh-vig__go {
+  display: block; text-align: center;
+  padding: 13px 16px; border-radius: 999px;
+  background: #fff; color: #111; font-weight: 700; text-decoration: none;
+}
+.cdh-vig__go:focus-visible { outline: 3px solid #93b5ff; outline-offset: 3px; }
+.cdh-vig__close {
+  position: absolute; top: -44px; right: 0;
+  width: 36px; height: 36px; border-radius: 50%;
+  border: none; background: rgba(255, 255, 255, 0.16); color: #fff;
+  font-size: 22px; line-height: 1; cursor: pointer;
+}
+
 /* ==========================================================
    45b. Trending box (Em Alta) — in-content
    ========================================================== */
@@ -3484,6 +3529,7 @@ body.adm-page .nv-share input[type="number"] { width: 84px; }
   border-radius: var(--adm-radius-sm);
 }
 .nv-place-row .nv-warn { grid-column: 1 / -1; color: var(--adm-warning-fg); font-size: 12px; }
+.nv-place-row .nv-place-help { grid-column: 1 / -1; color: var(--adm-text-muted); font-size: 12px; }
 @media (max-width: 640px) { .nv-place-row { grid-template-columns: 1fr; } }
 .nv-creatives { display: grid; gap: 8px; }
 .nv-creative {

@@ -123,9 +123,11 @@ export function parseAdConfig(raw: string | null): AdConfig {
  * │ União Europeia, aí sim seria preciso um CMP certificado — não é o caso.)│
  * └───────────────────────────────────────────────────────────────────────┘
  */
-export function renderAdSenseScript(publisherId: string, autoAds: boolean): string {
-  const id = publisherId.startsWith('ca-pub-') ? publisherId : `ca-pub-${publisherId}`;
+export function renderAdSenseScript(publisherId: string, autoAds: boolean, loadLibrary = true): string {
+  void autoAds;
   // ⚠️ Consent SEMPRE 'granted' (site BR / LGPD). NUNCA mudar para 'denied'.
+  // loadLibrary=false: teste banners nativos × AdSense ligado — quem carrega o adsbygoogle.js é o
+  // runtime do teste (src/nativeAds.ts), e só para o grupo AdSense. O consent continua igual.
   return `<script>
 window.dataLayer = window.dataLayer || [];
 function gtag(){dataLayer.push(arguments);}
@@ -135,8 +137,14 @@ gtag('consent', 'default', {
   'ad_personalization': 'granted',
   'analytics_storage': 'granted'
 });
-</script>
-<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${escapeAttr(id)}" crossorigin="anonymous"></script>`;
+</script>${loadLibrary ? `
+<script async src="${escapeAttr(adsenseScriptSrc(publisherId))}" crossorigin="anonymous"></script>` : ''}`;
+}
+
+/** URL do adsbygoogle.js da conta (o ?client= também ativa os Auto ads). */
+export function adsenseScriptSrc(publisherId: string): string {
+  const id = publisherId.startsWith('ca-pub-') ? publisherId : `ca-pub-${publisherId}`;
+  return `https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=${encodeURIComponent(id)}`;
 }
 
 /**
