@@ -17,11 +17,11 @@ export async function handleAdSenseRoute(request: Request, env: Env, authed: boo
   // Strict Origin check complements the admin cookie and protects all mutations.
   if (request.method === 'POST' && request.headers.get('Origin') !== url.origin) return new Response('Origem inválida.', { status: 403, headers });
   if (url.pathname === PATH && request.method === 'GET') {
-    const messages: Record<string, string> = { ready: 'Relatório atualizado.', limited: 'A próxima atualização estará disponível após o intervalo de uma hora.', error: 'Não foi possível atualizar. Confira o estado da conexão abaixo.', oauth_error: 'A conexão Google não foi concluída. Confirme a conta solicitada, a permissão de leitura e o Publisher ID em Monetização; depois tente reconectar.', connected: 'Conta conectada. O relatório será atualizado pelo agendamento automático.' };
+    const messages: Record<string, string> = { ready: 'Relatório atualizado.', limited: 'Aguarde alguns minutos: a atualização manual fica disponível 5 minutos depois da anterior.', error: 'Não foi possível atualizar. Confira o estado da conexão abaixo.', oauth_error: 'A conexão Google não foi concluída. Confirme a conta solicitada, a permissão de leitura e o Publisher ID em Monetização; depois tente reconectar.', connected: 'Conta conectada. O relatório será atualizado pelo agendamento automático.' };
     return show(messages[url.searchParams.get('status') ?? '']);
   }
   if (url.pathname === PATH + '/sync' && request.method === 'POST') {
-    return redirect(`${PATH}?status=${await syncReports(env)}`);
+    return redirect(`${PATH}?status=${await syncReports(env, Date.now(), { manual: true })}`);
   }
   if (url.pathname === PATH + '/connect' && request.method === 'POST') {
     if (!isConfigured(env)) return show('O cliente OAuth ainda precisa ser configurado no servidor.', 503);

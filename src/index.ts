@@ -1,5 +1,6 @@
 import { handleAdSenseRoute } from './adsenseRoutes.ts';
-import { syncReports } from './adsenseReports.ts';
+import { syncReports, reportsView, pageRpm, nextDayIn } from './adsenseReports.ts';
+import { usdBrl } from './fx.ts';
 import type { Env, Post, PostInput } from './types';
 import {
   listPosts, getPostBySlug, getPublicPostBySlug, getPostById,
@@ -52,7 +53,7 @@ import {
   type NativeConfig, type MixPlacement, type SlotFormat,
   MIX_PLACEMENTS, PLACEMENT_FORMATS,
   parseNativeConfig, newTestId, sanitizeEventBatch, buildMixReport,
-  parseBannerSnippets, mergeCreatives, safeHttpUrl, nativeActive, runtimeConfig,
+  parseBannerSnippets, mergeCreatives, safeHttpUrl, nativeActive, runtimeConfig, effectiveAdsenseRpm,
 } from './nativeAds.ts';
 
 const HTML_HEADERS = {
@@ -779,11 +780,23 @@ ${urls.join('\n')}
           const sinceDay = range === 'all'
             ? undefined
             : new Date(Date.now() - (range === '7' ? 6 : 0) * 86400_000).toISOString().slice(0, 10);
-          const rows = cfg.testId ? await adMixStats(env.DB, cfg.testId, sinceDay) : [];
+          // RPM de página do grupo AdSense direto da API (snapshot no R2; GET nunca chama o Google).
+          // Com teste rodando, usa os dias inteiros desde o início dele: o grupo nativo não carrega
+          // o AdSense, então esses dias medem exatamente o grupo AdSense.
+          const [rows, adsView, fx] = await Promise.all([
+            cfg.testId ? adMixStats(env.DB, cfg.testId, sinceDay) : Promise.resolve([]),
+            reportsView(env),
+            cfg.rpmAuto && !(cfg.usdBrl > 0) ? usdBrl() : Promise.resolve(null),
+          ]);
+          const snap = adsView.snapshot;
+          const autoRpm = pageRpm(snap, snap && cfg.startedAt ? nextDayIn(snap.timeZone, cfg.startedAt) : undefined);
+          const rpm = effectiveAdsenseRpm(cfg, autoRpm, fx?.rate ?? null);
           const imp = (url.searchParams.get('imp') ?? '').split('.').map(Number);
           native = {
             config: cfg,
-            report: buildMixReport(rows, cfg),
+            rpm,
+            adsenseConnected: adsView.connected,
+            report: buildMixReport(rows, { ...cfg, adsensePageRpm: rpm.value }),
             range,
             flash: url.searchParams.get('saved') === '1' ? 'saved' : url.searchParams.get('reset') === '1' ? 'reset' : null,
             imported: imp.length === 5 && imp.every(Number.isFinite)
@@ -826,6 +839,8 @@ ${urls.join('\n')}
           share: Number(form.get('share')),
           maxPerPage: Number(form.get('maxPerPage')),
           adsensePageRpm: Number(String(form.get('adsensePageRpm') ?? '').replace(',', '.')) || 0,
+          rpmAuto: form.get('rpmAuto') === '1',
+          usdBrl: Number(String(form.get('usdBrl') ?? '').replace(',', '.')) || 0,
           valuePerClick: Number(String(form.get('valuePerClick') ?? '').replace(',', '.')) || 0,
           placements: placements as Record<MixPlacement, { on: boolean; format: SlotFormat }>,
           creatives,

@@ -5,15 +5,24 @@ const CONNECTION = ROOT + 'connection';
 const REPORT = ROOT + 'report';
 const GUARD = ROOT + 'guard';
 export const SYNC_INTERVAL = 60 * 60 * 1000;
+/** Intervalo mínimo entre atualizações MANUAIS (botão no admin). O cron segue de hora em hora. */
+export const MANUAL_GAP = 5 * 60 * 1000;
 export const ADSENSE_SCOPE = 'https://www.googleapis.com/auth/adsense.readonly';
 export const METRICS = ['ESTIMATED_EARNINGS', 'PAGE_VIEWS', 'IMPRESSIONS', 'CLICKS', 'PAGE_VIEWS_RPM', 'PAGE_VIEWS_CTR'] as const;
 export interface Connection { email: string; account: string; timeZone: string; refreshToken: string; id: string }
 export interface ReportRow { date: string; values: number[] }
+/** Quebras dos mesmos 30 dias: por bloco de anúncio e por formato × posicionamento (auto/manual). */
+export const BREAKDOWN_METRICS = ['ESTIMATED_EARNINGS', 'IMPRESSIONS', 'IMPRESSIONS_RPM', 'ACTIVE_VIEW_VIEWABILITY', 'CLICKS'] as const;
+export const UNIT_DIMENSIONS = ['AD_UNIT_NAME', 'AD_UNIT_ID'] as const;
+export const FORMAT_DIMENSIONS = ['AD_FORMAT_NAME', 'AD_PLACEMENT_NAME'] as const;
+const BREAKDOWN_LIMIT = 50;
+export interface BreakdownRow { keys: string[]; values: number[] }
 export interface ReportSnapshot {
   connectionId: string; generatedAt: number; start: string; end: string; domain: string;
   currency: string; timeZone: string; rows: ReportRow[]; totals: number[]; warnings: string[];
+  byUnit?: BreakdownRow[]; byFormat?: BreakdownRow[];
 }
-export interface SyncGuard { nextAttemptAt: number; status: 'syncing' | 'ready' | 'error'; error?: string }
+export interface SyncGuard { nextAttemptAt: number; startedAt?: number; status: 'syncing' | 'ready' | 'error'; error?: string }
 export interface ReportsView {
   configured: boolean; email: string; connected: boolean; account?: string;
   snapshot: ReportSnapshot | null; guard: SyncGuard | null; error?: string;
@@ -79,7 +88,7 @@ export function reportPeriod(timeZone: string, now = Date.now()): { start: strin
   const today = Date.UTC(get('year'), get('month') - 1, get('day'));
   return { start: new Date(today - 30 * 86400000).toISOString().slice(0, 10), end: new Date(today - 86400000).toISOString().slice(0, 10) };
 }
-export function reportUrl(account: string, domain: string, period: {start: string; end: string}): string {
+function reportBase(account: string, domain: string, period: {start: string; end: string}): URL {
   if (!/^accounts\/pub-\d{16}$/.test(account) || !/^[a-z0-9.-]+$/.test(domain)) throw new AdSenseError('Conta ou domínio inválido.');
   const url = new URL(`https://adsense.googleapis.com/v2/${account}/reports:generate`);
   url.searchParams.set('dateRange', 'CUSTOM');
@@ -87,6 +96,24 @@ export function reportUrl(account: string, domain: string, period: {start: strin
     const [year, month, day] = value.split('-');
     for (const [unit, part] of [['year', year], ['month', month], ['day', day]]) url.searchParams.set(`${key}.${unit}`, String(Number(part)));
   }
+  return url;
+}
+/** Quebra por bloco ou por formato, mesmo período e filtro de domínio do relatório diário. */
+export function breakdownUrl(account: string, domain: string, period: {start: string; end: string}, dimensions: readonly string[]): string {
+  const allowed = [...UNIT_DIMENSIONS, ...FORMAT_DIMENSIONS] as readonly string[];
+  if (!dimensions.length || dimensions.some(d => !allowed.includes(d))) throw new AdSenseError('Dimensão de relatório inválida.');
+  const url = reportBase(account, domain, period);
+  dimensions.forEach(d => url.searchParams.append('dimensions', d));
+  BREAKDOWN_METRICS.forEach(metric => url.searchParams.append('metrics', metric));
+  url.searchParams.set('filters', `DOMAIN_CODE==${domain},DOMAIN_CODE==www.${domain}`);
+  url.searchParams.set('reportingTimeZone', 'ACCOUNT_TIME_ZONE');
+  url.searchParams.set('orderBy', '-ESTIMATED_EARNINGS');
+  url.searchParams.set('languageCode', 'pt-BR');
+  url.searchParams.set('limit', String(BREAKDOWN_LIMIT));
+  return url.href;
+}
+export function reportUrl(account: string, domain: string, period: {start: string; end: string}): string {
+  const url = reportBase(account, domain, period);
   url.searchParams.set('dimensions', 'DATE');
   METRICS.forEach(metric => url.searchParams.append('metrics', metric));
   url.searchParams.set('filters', `DOMAIN_CODE==${domain},DOMAIN_CODE==www.${domain}`);
@@ -126,6 +153,48 @@ export function parseReport(raw: RawReport): Pick<ReportSnapshot, 'currency' | '
   if (rows.length && !raw.totals) throw new AdSenseError('O relatório não retornou os totais.');
   return { currency, rows: parsed, totals: raw.totals ? values(raw.totals) : METRICS.map(() => 0), warnings: raw.warnings ?? [] };
 }
+/** Lê uma quebra (bloco/formato). Até 50 linhas; métricas inválidas rejeitam a quebra inteira. */
+export function parseBreakdown(raw: RawReport, dimensions: readonly string[]): BreakdownRow[] {
+  const headers = raw.headers ?? [];
+  const keyIdx = dimensions.map(d => headers.findIndex(h => h.name === d));
+  const valIdx = BREAKDOWN_METRICS.map(m => headers.findIndex(h => h.name === m));
+  if (keyIdx.some(i => i < 0) || valIdx.some(i => i < 0)) throw new AdSenseError('Quebra recebida em formato inesperado.');
+  return (raw.rows ?? []).slice(0, BREAKDOWN_LIMIT).map(row => ({
+    keys: keyIdx.map(i => String(row.cells[i]?.value ?? '').slice(0, 120)),
+    values: valIdx.map(i => {
+      const v = row.cells[i]?.value;
+      if (v === undefined || v.trim() === '' || !Number.isFinite(Number(v))) throw new AdSenseError('A quebra contém uma métrica inválida.');
+      return Number(v);
+    }),
+  }));
+}
+export interface PageRpm { rpm: number; currency: string; start: string; end: string; days: number; sinceTest: boolean; generatedAt: number }
+/**
+ * RPM de página (receita ÷ pageviews × 1000) do relatório. Com `sinceDate`, usa só os dias a partir
+ * dela (ex.: primeiro dia inteiro do teste nativo × AdSense — como o grupo nativo não carrega o
+ * AdSense, esses dias medem exatamente o grupo AdSense). Sem dias suficientes, usa os 30 dias.
+ */
+export function pageRpm(snapshot: ReportSnapshot | null, sinceDate?: string): PageRpm | null {
+  if (!snapshot) return null;
+  const base = { currency: snapshot.currency, generatedAt: snapshot.generatedAt };
+  if (sinceDate) {
+    const rows = snapshot.rows.filter(r => r.date >= sinceDate);
+    const pv = rows.reduce((s, r) => s + r.values[1], 0);
+    if (rows.length && pv > 0) {
+      const earn = rows.reduce((s, r) => s + r.values[0], 0);
+      return { ...base, rpm: earn / pv * 1000, start: rows[0].date, end: rows[rows.length - 1].date, days: rows.length, sinceTest: true };
+    }
+  }
+  const pv = snapshot.totals[1];
+  if (!(pv > 0)) return null;
+  return { ...base, rpm: snapshot.totals[0] / pv * 1000, start: snapshot.start, end: snapshot.end, days: snapshot.rows.length, sinceTest: false };
+}
+/** Dia seguinte a um instante, no calendário do fuso da conta ('YYYY-MM-DD'). */
+export function nextDayIn(timeZone: string, ms: number): string {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(ms);
+  const get = (type: string) => Number(parts.find(p => p.type === type)!.value);
+  return new Date(Date.UTC(get('year'), get('month') - 1, get('day')) + 86400000).toISOString().slice(0, 10);
+}
 export function safeError(e: unknown): string { return e instanceof AdSenseError ? e.message : 'Sincronização indisponível. Os últimos dados válidos foram preservados.'; }
 export async function reportsView(env: Env): Promise<ReportsView> {
   const base: ReportsView = { configured: isConfigured(env), email: env.ADSENSE_GOOGLE_EMAIL ?? '', connected: false, snapshot: null, guard: null };
@@ -137,16 +206,24 @@ export async function reportsView(env: Env): Promise<ReportsView> {
     return { ...base, connected: true, account: connection.account, snapshot: snapshot?.connectionId === connection.id ? snapshot : null, guard: object ? await object.json<SyncGuard>() : null };
   } catch (e) { return { ...base, error: safeError(e) }; }
 }
-/** Both cron and explicit admin refresh use one conditional global reservation. Failures consume it. */
-export async function syncReports(env: Env, now = Date.now()): Promise<'disabled' | 'disconnected' | 'limited' | 'ready' | 'error'> {
+/**
+ * Both cron and explicit admin refresh use one conditional global reservation. Failures consume it.
+ * Cron: no máximo 1 tentativa por hora. Manual (botão do admin): 1 a cada MANUAL_GAP.
+ */
+export async function syncReports(env: Env, now = Date.now(), opts: { manual?: boolean } = {}): Promise<'disabled' | 'disconnected' | 'limited' | 'ready' | 'error'> {
   if (!isConfigured(env)) return 'disabled';
   try {
     const connection = await readPrivate<Connection>(env, CONNECTION);
     if (!connection) return 'disconnected';
     const previous = await env.IMAGES.get(GUARD);
     const guard = previous ? await previous.json<SyncGuard>() : null;
-    if (guard && (!Number.isFinite(guard.nextAttemptAt) || guard.nextAttemptAt > now)) return 'limited';
-    const reserved: SyncGuard = { nextAttemptAt: now + SYNC_INTERVAL, status: 'syncing' };
+    if (guard) {
+      if (opts.manual) {
+        const last = guard.startedAt ?? guard.nextAttemptAt - SYNC_INTERVAL;
+        if (!Number.isFinite(last) || now - last < MANUAL_GAP) return 'limited';
+      } else if (!Number.isFinite(guard.nextAttemptAt) || guard.nextAttemptAt > now) return 'limited';
+    }
+    const reserved: SyncGuard = { nextAttemptAt: now + SYNC_INTERVAL, startedAt: now, status: 'syncing' };
     const reservation = await env.IMAGES.put(GUARD, JSON.stringify(reserved), { onlyIf: previous ? { etagMatches: previous.etag } : { etagDoesNotMatch: '*' } });
     if (!reservation) return 'limited';
     try {
@@ -156,7 +233,22 @@ export async function syncReports(env: Env, now = Date.now()): Promise<'disabled
       const raw = await googleJson<RawReport>(reportUrl(connection.account, domain, period), token.access_token);
       const parsed = parseReport(raw);
       if (parsed.rows.some(row => row.date < period.start || row.date > period.end)) throw new AdSenseError('O relatório retornou dados fora do período solicitado.');
-      await writePrivate(env, REPORT, { ...parsed, ...period, domain, timeZone: connection.timeZone, connectionId: connection.id, generatedAt: now } satisfies ReportSnapshot);
+      // Quebras são complementares: se falharem, o relatório diário é salvo mesmo assim e a quebra
+      // anterior (se houver) é mantida.
+      const [byUnit, byFormat] = await Promise.all([UNIT_DIMENSIONS, FORMAT_DIMENSIONS].map(async dims => {
+        try { return parseBreakdown(await googleJson<RawReport>(breakdownUrl(connection.account, domain, period, dims), token.access_token), dims); }
+        catch { return undefined; }
+      }));
+      const warnings = [...parsed.warnings];
+      let previous: ReportSnapshot | null = null;
+      if (!byUnit || !byFormat) {
+        warnings.push('A quebra por bloco/formato não veio nesta atualização; exibindo a anterior, se houver.');
+        try { previous = await readPrivate<ReportSnapshot>(env, REPORT); } catch { previous = null; }
+      }
+      await writePrivate(env, REPORT, {
+        ...parsed, warnings, ...period, domain, timeZone: connection.timeZone, connectionId: connection.id, generatedAt: now,
+        byUnit: byUnit ?? previous?.byUnit, byFormat: byFormat ?? previous?.byFormat,
+      } satisfies ReportSnapshot);
       await env.IMAGES.put(GUARD, JSON.stringify({ ...reserved, status: 'ready' }), { onlyIf: { etagMatches: reservation.etag } });
       return 'ready';
     } catch (e) {

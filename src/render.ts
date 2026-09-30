@@ -10,11 +10,12 @@ import {
 import { isValidGaMeasurementId } from './configuracoes.ts';
 import { gaConfigParams, gaContentGroup, renderGaEventsScript } from './gaEvents.ts';
 import {
-  type NativeConfig, type MixPlacement, type MixReport, type SlotFormat,
+  type NativeConfig, type MixPlacement, type MixReport, type SlotFormat, type EffectiveRpm,
   MIX_PLACEMENTS, NATIVE_FORMATS, PLACEMENT_LABELS, PLACEMENT_FORMATS, SLOT_FORMAT_LABELS,
   MIN_IMPS_PER_CREATIVE, WIN_PROBABILITY,
   mixActive, nativeActive, renderMixRuntime, renderMixSlot, runnableCreatives, slotImages,
 } from './nativeAds.ts';
+import { MANUAL_GAP, SYNC_INTERVAL } from './adsenseReports.ts';
 
 export interface SiteAdSettings {
   publisherId: string;       // ca-pub-XXX
@@ -2058,7 +2059,6 @@ function adminShell(env: Env, opts: AdminShellOptions, body: string): string {
     ['posts',     '/admin/posts', 'Posts'],
     ['analytics', '/admin/analytics', 'Analytics'],
     ['settings',  '/admin/settings', 'Monetização'],
-    ['adsense',  '/admin/adsense', 'Receita AdSense'],
     ['configuracoes', '/admin/configuracoes', 'Configurações'],
     ['users',     '/admin/users', 'Usuários'],
     ['api-keys',  '/admin/api-keys', 'API'],
@@ -2147,15 +2147,19 @@ function adminShell(env: Env, opts: AdminShellOptions, body: string): string {
 export interface NativePanelData {
   config: NativeConfig;
   report: MixReport;
+  /** RPM de página do grupo AdSense usado na comparação (API ou manual). */
+  rpm: EffectiveRpm;
+  adsenseConnected: boolean;
   range: 'all' | '7' | '1';
   flash?: 'saved' | 'reset' | null;
   imported?: { added: number; updated: number; skipped: number; copied: number; failed: number } | null;
   importError?: string;
 }
 
-function monetizacaoTabs(active: 'adsense' | 'nativos'): string {
+function monetizacaoTabs(active: 'adsense' | 'nativos' | 'relatorio'): string {
   return `<nav class="filter-pills nv-tabs" aria-label="Seções de monetização">
     <a href="/admin/settings" class="pill ${active === 'adsense' ? 'is-active' : ''}">AdSense</a>
+    <a href="/admin/adsense" class="pill ${active === 'relatorio' ? 'is-active' : ''}">Relatório AdSense</a>
     <a href="/admin/settings?tab=nativos" class="pill ${active === 'nativos' ? 'is-active' : ''}">Nativos e teste A/B</a>
   </nav>`;
 }
@@ -2331,7 +2335,6 @@ export function renderAdminSettings(
     active: 'settings',
     title: 'Monetização',
     subtitle: 'Configure Google AdSense, placements e ferramentas de receita',
-    actions: '<a href="/admin/adsense" class="btn">Receita AdSense</a>',
   }, `
     ${monetizacaoTabs('adsense')}
     ${saved ? `<div class="alert alert--success"><span class="alert__icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></span><div><strong>Configurações salvas.</strong></div></div>` : ''}
@@ -2583,7 +2586,9 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
       const clear = range !== null && (range.low > e.adsensePageRpm || range.high < e.adsensePageRpm);
       verdict.push(`Por mil páginas vistas, o grupo nativo rende <strong>${pct}% ${e.lift >= 0 ? 'mais' : 'menos'}</strong> que o grupo AdSense: ${fmtBrl(e.nativePageRpm)} contra ${fmtBrl(e.adsensePageRpm)}. ${clear ? 'A diferença já está fora da margem de erro.' : 'Ainda está dentro da margem de erro, então deixe rodar mais.'}`);
     } else if (e.adsensePageRpm <= 0) {
-      verdict.push('Informe o <strong>RPM de página do AdSense</strong> abaixo para comparar os dois grupos em reais.');
+      verdict.push(d.adsenseConnected
+        ? 'O relatório do AdSense ainda não tem RPM de página. Atualize na aba <a href="/admin/adsense">Relatório AdSense</a> ou informe o valor manual abaixo.'
+        : 'Conecte o AdSense na aba <a href="/admin/adsense">Relatório AdSense</a> para puxar o RPM de página automaticamente, ou informe o valor manual abaixo.');
     }
     if (e.breakEvenCpc !== null) {
       verdict.push(`O grupo nativo gera ${fmtInt(r.clicksPerPv * 1000)} cliques a cada mil páginas. Para empatar com o AdSense, cada clique precisa valer <strong>${fmtBrl(e.breakEvenCpc)}</strong> em comissão. ${e.valuePerClick > 0 ? `Você informou ${fmtBrl(e.valuePerClick)} por clique.` : 'Se a comissão média por clique for maior que isso, o nativo ganha.'}`);
@@ -2621,8 +2626,8 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
         <div class="kpi-card__head"><span class="kpi-card__label">Receita por mil páginas</span></div>
         <div class="kpi-card__value">${e.nativePageRpm !== null ? fmtBrl(e.nativePageRpm) : '—'}</div>
         <div class="kpi-card__hint">${lift !== null
-          ? `<span class="kpi-card__trend kpi-card__trend--${lift > 0.005 ? 'up' : lift < -0.005 ? 'down' : 'flat'}">${lift >= 0 ? '↑ +' : '↓ −'}${Math.abs(lift * 100).toFixed(0)}%</span> vs AdSense ${fmtBrl(e.adsensePageRpm)}`
-          : 'informe RPM de página e valor por clique'}</div>
+          ? `<span class="kpi-card__trend kpi-card__trend--${lift > 0.005 ? 'up' : lift < -0.005 ? 'down' : 'flat'}">${lift >= 0 ? '↑ +' : '↓ −'}${Math.abs(lift * 100).toFixed(0)}%</span> vs AdSense ${fmtBrl(e.adsensePageRpm)}${d.rpm.source === 'auto' ? ' (API)' : ''}`
+          : e.adsensePageRpm > 0 ? `AdSense: ${fmtBrl(e.adsensePageRpm)}${d.rpm.source === 'auto' ? ' (API)' : ''} · informe o valor por clique` : 'sem RPM do AdSense'}</div>
       </div>
     </section>`;
 
@@ -2758,6 +2763,21 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
         </div>`;
     }).join('');
 
+  const ymd = (v: string) => v.split('-').reverse().slice(0, 2).join('/');
+  const rpmInfoHtml = (() => {
+    const a = d.rpm.auto;
+    if (!a) {
+      return d.adsenseConnected
+        ? 'O relatório do AdSense ainda não tem dados. Atualize na aba <a href="/admin/adsense">Relatório AdSense</a>.'
+        : 'Conecte o AdSense na aba <a href="/admin/adsense">Relatório AdSense</a> para puxar o RPM automaticamente.';
+    }
+    const money = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: a.currency });
+    const period = a.sinceTest ? `${ymd(a.start)} a ${ymd(a.end)}, desde o início do teste` : `últimos 30 dias, ${ymd(a.start)} a ${ymd(a.end)}`;
+    const synced = new Date(a.generatedAt).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    const conv = a.currency === 'BRL' ? '' : d.rpm.rate ? ` × cotação ${d.rpm.rate.toLocaleString('pt-BR', { maximumFractionDigits: 4 })}${d.rpm.rateSource === 'manual' ? ' (manual)' : ''}` : ' (sem cotação: informe a do dólar)';
+    const inUse = d.rpm.source === 'auto' ? `= <strong>${fmtBrl(d.rpm.value)}</strong> por mil páginas, em uso no resultado.` : d.rpm.source === 'manual' ? `Em uso: o valor manual (${fmtBrl(d.rpm.value)}).` : '';
+    return `AdSense: <strong>${money(a.rpm)}</strong> por mil páginas (${period})${conv} ${inUse} <span class="muted">Relatório sincronizado em ${synced}.</span>`;
+  })();
   const shareText = (v: number) => `${v}% dos leitores só com nativos · ${100 - v}% com AdSense`;
   const configCard = `<form method="POST" action="/admin/settings/native">
       <section class="card">
@@ -2805,12 +2825,23 @@ function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): stri
             <small class="field__help">Posição desmarcada fica sem anúncio para o grupo nativo. As posições do meio da página só existem onde a aba AdSense tem o bloco ligado; âncora e vinheta aparecem sempre. “Faixa” mostra 728x90 no computador e 320x100 no celular.</small>
           </div>
 
+          <div class="field">
+            <label class="check"><input type="checkbox" name="rpmAuto" value="1" ${cfg.rpmAuto ? 'checked' : ''}> <span>Usar o RPM de página do AdSense automaticamente (API)</span></label>
+            <div class="nv-rpm-info">${rpmInfoHtml}</div>
+          </div>
           <div class="field-row">
             <div class="field">
-              <label for="nv-rpm">RPM de página do AdSense (R$ por mil páginas)</label>
-              <input type="number" id="nv-rpm" name="adsensePageRpm" min="0" step="0.01" value="${cfg.adsensePageRpm || ''}" placeholder="ex.: 11,00" inputmode="decimal">
-              <small class="field__help">AdSense → Relatórios → “RPM da página”, do total (blocos + âncora + vinheta), convertido para reais.</small>
+              <label for="nv-fx">Cotação do dólar (R$)</label>
+              <input type="number" id="nv-fx" name="usdBrl" min="0" step="0.0001" value="${cfg.usdBrl || ''}" placeholder="${d.rpm.rateSource === 'auto' && d.rpm.rate ? `automática: ${d.rpm.rate.toLocaleString('pt-BR', { maximumFractionDigits: 4 })}` : 'automática'}" inputmode="decimal">
+              <small class="field__help">Vazio = cotação do dia (atualizada a cada 6 h). O AdSense informa a receita em ${escapeHtml(d.rpm.auto?.currency ?? 'dólar')}.</small>
             </div>
+            <div class="field">
+              <label for="nv-rpm">RPM manual (R$ por mil páginas)</label>
+              <input type="number" id="nv-rpm" name="adsensePageRpm" min="0" step="0.01" value="${cfg.adsensePageRpm || ''}" placeholder="só se desligar o automático" inputmode="decimal">
+              <small class="field__help">Usado apenas com o automático desligado, ou enquanto o AdSense não tiver relatório.</small>
+            </div>
+          </div>
+          <div class="field-row">
             <div class="field">
               <label for="nv-vpc">Valor de um clique no banner (R$)</label>
               <input type="number" id="nv-vpc" name="valuePerClick" min="0" step="0.01" value="${cfg.valuePerClick || ''}" placeholder="deixe vazio se não souber" inputmode="decimal">
@@ -4470,13 +4501,27 @@ export function renderAdminAdSense(env: Env, view: import('./adsenseReports').Re
   const labels = ['Receita estimada', 'Visualizações de página', 'Impressões de anúncios', 'Cliques', 'RPM de página', 'CTR de página'];
   const stale = !!snapshot && Date.now() - snapshot.generatedAt > 2 * 60 * 60 * 1000;
   const next = view.guard?.nextAttemptAt ?? 0;
-  const disabled = !view.connected || next > Date.now();
+  // Botão manual: 5 min depois da última tentativa (o cron segue de hora em hora).
+  const lastAttempt = view.guard ? (view.guard.startedAt ?? view.guard.nextAttemptAt - SYNC_INTERVAL) : 0;
+  const manualAt = lastAttempt + MANUAL_GAP;
+  const disabled = !view.connected || manualAt > Date.now();
   const connect = view.configured ? `<form method="POST" action="/admin/adsense/connect" class="ads-report-form"><button class="btn btn--primary" type="submit">${view.connected ? 'Reconectar conta Google' : 'Conectar conta Google'}</button></form>` : '';
+  // Quebras por bloco e por formato (mesmos 30 dias).
+  const bLabels = ['Ganhos', 'Impressões', 'RPM de impressões', 'Visibilidade', 'Cliques'];
+  const bFormat = (value: number, index: number) => index === 0 || index === 2 ? money(value) : index === 3 ? percent(value) : numeric(value);
+  const breakdown = (title: string, keyLabels: string[], rows: import('./adsenseReports').BreakdownRow[] | undefined, keyCell: (keys: string[]) => string) => {
+    if (!rows) return '';
+    const total = rows.reduce((sum, r) => sum + Math.max(0, r.values[0]), 0);
+    return `<section class="card ads-report-state" aria-label="${escapeHtml(title)}">
+      <h2>${escapeHtml(title)}</h2>
+      ${rows.length ? `<div class="ads-report-table" tabindex="0" role="region" aria-label="${escapeHtml(title)}"><table class="ads-breakdown"><thead><tr>${keyLabels.map(l => `<th scope="col">${l}</th>`).join('')}${bLabels.map(l => `<th scope="col">${l}</th>`).join('')}<th scope="col">% da receita</th></tr></thead><tbody>${rows.map(r => `<tr>${keyCell(r.keys)}${r.values.map((v, i) => `<td>${bFormat(v, i)}</td>`).join('')}<td>${total > 0 ? percent(Math.max(0, r.values[0]) / total) : '—'}</td></tr>`).join('')}</tbody></table></div>` : '<p>Sem linhas para este site no período.</p>'}
+    </section>`;
+  };
   return adminShell(env, {
-    active: 'adsense', title: 'Receita do AdSense', bodyClass: 'ads-report-page',
-    subtitle: 'Desempenho dos anúncios do Capítulo de Hoje',
-    actions: '<a class="btn" href="/admin/settings">Configurar anúncios</a>',
+    active: 'settings', title: 'Monetização', bodyClass: 'ads-report-page',
+    subtitle: 'Receita do AdSense: desempenho do site direto da API do Google',
   }, `
+    ${monetizacaoTabs('relatorio')}
     <style>
       .ads-report-page .adm-main,.ads-report-page .adm-content{min-width:0}.ads-report-state{overflow-wrap:anywhere}
       .ads-report-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:24px 0}
@@ -4485,6 +4530,7 @@ export function renderAdminAdSense(env: Env, view: import('./adsenseReports').Re
       .ads-report-form button{min-height:44px;cursor:pointer}.ads-report-form button:disabled{cursor:wait;opacity:.6}.ads-report-form button:focus-visible{outline:3px solid currentColor;outline-offset:3px}
       .ads-report-table{overflow-x:auto}.ads-report-table table{width:100%;min-width:660px;border-collapse:collapse;font-variant-numeric:tabular-nums}
       .ads-report-table th,.ads-report-table td{text-align:right;padding:12px;border-bottom:1px solid var(--adm-border,#d1d5db)}.ads-report-table th:first-child,.ads-report-table td:first-child{text-align:left}
+      .ads-report-table th,.ads-report-table td{overflow-wrap:normal;white-space:nowrap;padding:10px 12px}.ads-report-table thead th{font-size:13px;vertical-align:bottom}.ads-report-table caption{text-align:left;padding:0 0 8px;overflow-wrap:normal}.ads-report-table table{min-width:0}
       .ads-report-note{border-left:4px solid currentColor;padding:12px 16px;margin:16px 0;line-height:1.6}.ads-report-chart{display:flex;align-items:end;gap:3px;height:120px;margin:16px 0}.ads-report-bar{flex:1;background:var(--adm-accent,#2563eb);min-width:2px;border-radius:3px 3px 0 0}
       @media(max-width:900px){.ads-report-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ads-report-kpi dd{font-size:24px}}
       @media(max-width:480px){.ads-report-grid{grid-template-columns:1fr}.ads-report-state{padding:16px}}
@@ -4496,7 +4542,7 @@ export function renderAdminAdSense(env: Env, view: import('./adsenseReports').Re
       <p>Acesso somente de leitura aos relatórios. A conexão não altera anúncios ou pagamentos.</p>
       ${!view.configured ? '<p class="ads-report-note">A integração ainda aguarda a configuração do cliente OAuth no servidor. Depois disso, o botão para conectar sua conta aparecerá aqui.</p>' : connect}
       ${view.error ? `<p role="alert" class="ads-report-note">${escapeHtml(view.error)}</p>` : ''}
-      ${view.connected ? `<div class="ads-report-actions"><form method="POST" action="/admin/adsense/sync" class="ads-report-form"><button class="btn" type="submit" ${disabled ? 'disabled' : ''}>Atualizar relatório</button></form><p>Atualização automática a cada hora.${next > Date.now() ? ` Próxima tentativa a partir de ${stamp(next)} (Brasília).` : ''}</p></div>` : ''}
+      ${view.connected ? `<div class="ads-report-actions"><form method="POST" action="/admin/adsense/sync" class="ads-report-form"><button class="btn" type="submit" ${disabled ? 'disabled' : ''}>Atualizar relatório</button></form><p>Automática a cada hora; manual a cada 5 minutos.${disabled && view.connected ? ` Próxima atualização manual a partir de ${stamp(manualAt)} (Brasília).` : ''}${next > Date.now() ? ` Próxima automática a partir de ${stamp(next)}.` : ''}</p></div>` : ''}
       ${view.guard?.status === 'error' ? `<p role="alert" class="ads-report-note">${escapeHtml(view.guard.error ?? 'A última sincronização falhou.')} ${snapshot ? 'Exibindo o último relatório válido.' : ''}</p>` : ''}
       ${view.guard?.status === 'syncing' ? '<p role="status">A última tentativa foi iniciada. Se ela não concluir, o agendamento tentará novamente após o intervalo de uma hora.</p>' : ''}
     </section>
@@ -4517,7 +4563,10 @@ export function renderAdminAdSense(env: Env, view: import('./adsenseReports').Re
           const max = Math.max(0.01, ...snapshot.rows.map(r => r.values[0]));
           return days.map(day => { const value = snapshot.rows.find(r => r.date === day)?.values[0] ?? 0; return `<span class="ads-report-bar" style="height:${Math.max(0, value) / max * 100}%" title="${date(day)}: ${escapeHtml(money(value))}"></span>`; }).join('');
         })()}</div><div class="ads-report-table" tabindex="0" role="region" aria-label="Tabela diária do AdSense"><table><caption>Valores diários informados pelo Google; dias sem linhas não foram retornados.</caption><thead><tr><th scope="col">Data</th>${labels.map(l => `<th scope="col">${l}</th>`).join('')}</tr></thead><tbody>${[...snapshot.rows].reverse().map(row => `<tr><th scope="row">${date(row.date)}</th>${row.values.map((value, i) => `<td>${format(value, i)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '<p>Nenhum dado retornado pelo AdSense para este site no período. Isso não significa falha de conexão.</p>'}
-      </section>` : view.connected ? '<section class="card ads-report-state"><h2>Aguardando o primeiro relatório</h2><p>O agendamento buscará os dados automaticamente. Você também pode usar Atualizar relatório quando disponível.</p></section>' : ''}
+      </section>
+      ${breakdown('Por bloco de anúncio', ['Bloco'], snapshot.byUnit, (k) => `<th scope="row">${escapeHtml(k[0] || '(sem nome)')}${k[1] ? `<div class="muted" style="font-weight:400;font-size:12px">${escapeHtml(k[1].split(':').pop() ?? '')}</div>` : ''}</th>`)}
+      ${breakdown('Por formato e posicionamento', ['Formato', 'Posicionamento'], snapshot.byFormat, (k) => `<th scope="row">${escapeHtml(k[0] || '—')}</th><td style="text-align:left">${escapeHtml(k[1] || '—')}</td>`)}
+      ${!snapshot.byUnit && !snapshot.byFormat ? '<p class="ads-report-note">As quebras por bloco e por formato aparecem a partir da próxima atualização.</p>' : ''}` : view.connected ? '<section class="card ads-report-state"><h2>Aguardando o primeiro relatório</h2><p>O agendamento buscará os dados automaticamente. Você também pode usar Atualizar relatório quando disponível.</p></section>' : ''}
     <script>document.querySelectorAll('.ads-report-form').forEach(function(form){form.addEventListener('submit',function(){var button=form.querySelector('button');button.disabled=true;button.textContent='Aguarde…';form.setAttribute('aria-busy','true');});});window.addEventListener('pageshow',function(event){if(event.persisted)window.location.reload();});</script>
   `);
 }

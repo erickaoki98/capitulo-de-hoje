@@ -7,6 +7,7 @@ import {
   mergeCreatives,
   MIX_PLACEMENTS,
   mixActive,
+  effectiveAdsenseRpm,
   nativeActive,
   parseBannerSnippets,
   parseNativeConfig,
@@ -283,4 +284,21 @@ test('ranking ajusta pela posição: quem caiu mais no texto não perde por isso
   assert.ok(v2.index > 1 && v1.index < 1);
   assert.equal(r.creatives[0].id, 'v2-30-segundos');
   assert.ok(v2.pBest > 0.95);
+});
+
+test('RPM do grupo AdSense: API convertida, cotação manual, fallback manual e nenhum', () => {
+  const auto = { rpm: 2, currency: 'USD', start: '2026-09-30', end: '2026-10-01', days: 2, sinceTest: true, generatedAt: 0 };
+  const base = parseNativeConfig('{}');
+  assert.equal(base.rpmAuto, true); // padrão: automático
+  let r = effectiveAdsenseRpm(base, auto, 5.2);
+  assert.equal(r.source, 'auto'); assert.ok(Math.abs(r.value - 10.4) < 1e-9); assert.equal(r.rateSource, 'auto');
+  r = effectiveAdsenseRpm({ ...base, usdBrl: 5 }, auto, 5.2);
+  assert.equal(r.value, 10); assert.equal(r.rateSource, 'manual');
+  r = effectiveAdsenseRpm({ ...base, adsensePageRpm: 11 }, auto, null); // sem cotação → manual
+  assert.equal(r.source, 'manual'); assert.equal(r.value, 11);
+  r = effectiveAdsenseRpm({ ...base, rpmAuto: false, adsensePageRpm: 9 }, auto, 5.2);
+  assert.equal(r.source, 'manual'); assert.equal(r.value, 9);
+  assert.equal(effectiveAdsenseRpm(base, { ...auto, currency: 'BRL' }, null).value, 2);
+  assert.equal(effectiveAdsenseRpm(base, null, 5.2).source, 'none');
+  assert.equal(parseNativeConfig(JSON.stringify({ rpmAuto: false, usdBrl: 999 })).usdBrl, 100);
 });

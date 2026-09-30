@@ -23,6 +23,8 @@
  * Este módulo não importa nada em runtime (só tipos) para rodar direto no `node --test`.
  */
 
+import type { PageRpm } from './adsenseReports.ts';
+
 // ============== Tipos e constantes ==============
 
 /** Tamanhos de criativo suportados. '16x9' = nativo 1200x675 (ou qualquer 16:9). */
@@ -90,8 +92,12 @@ export interface NativeConfig {
   testId: string;
   startedAt: number;
   /** RPM DE PÁGINA do AdSense (R$ por mil pageviews, somando blocos + âncora + vinheta),
-   *  digitado pelo admin a partir do relatório do AdSense. */
+   *  digitado pelo admin. Só é usado se `rpmAuto` estiver desligado ou sem relatório da API. */
   adsensePageRpm: number;
+  /** Usar o RPM de página que vem da API do AdSense (padrão). */
+  rpmAuto: boolean;
+  /** Cotação USD→BRL manual (0 = automática). */
+  usdBrl: number;
   /** Quanto vale um clique no banner nativo (R$) = conversão × lucro por venda. */
   valuePerClick: number;
   /** Última URL usada no importador. */
@@ -124,6 +130,8 @@ export const DEFAULT_NATIVE_CONFIG: NativeConfig = {
   testId: '',
   startedAt: 0,
   adsensePageRpm: 0,
+  rpmAuto: true,
+  usdBrl: 0,
   valuePerClick: 0,
   sourceUrl: '',
   placements: DEFAULT_NATIVE_PLACEMENTS,
@@ -242,6 +250,8 @@ export function parseNativeConfig(raw: string | null): NativeConfig {
     testId,
     startedAt: clampNum(parsed.startedAt, 0, 8.64e15, 0),
     adsensePageRpm: clampNum(parsed.adsensePageRpm, 0, 10_000, 0),
+    rpmAuto: parsed.rpmAuto !== false,
+    usdBrl: clampNum(parsed.usdBrl, 0, 100, 0),
     valuePerClick: clampNum(parsed.valuePerClick, 0, 10_000, 0),
     sourceUrl: safeHttpUrl(parsed.sourceUrl),
     placements,
@@ -277,6 +287,34 @@ export function nativeActive(cfg: NativeConfig | null | undefined): boolean {
  */
 export function mixActive(cfg: NativeConfig | null | undefined): boolean {
   return !!cfg && nativeActive(cfg);
+}
+
+// ============== RPM do AdSense usado na comparação ==============
+
+export interface EffectiveRpm {
+  /** R$ por mil páginas usado no relatório (0 = indisponível). */
+  value: number;
+  source: 'auto' | 'manual' | 'none';
+  /** Dados da API (mesmo quando o valor manual está em uso, para mostrar no painel). */
+  auto: PageRpm | null;
+  rate: number | null;
+  rateSource: 'same' | 'manual' | 'auto' | 'none';
+}
+
+/**
+ * Decide o RPM de página do grupo AdSense: o da API (convertido para R$) quando ligado e
+ * disponível; senão o valor manual; senão nenhum. Moeda diferente de BRL/USD cai no manual.
+ */
+export function effectiveAdsenseRpm(cfg: NativeConfig, auto: PageRpm | null, autoRate: number | null): EffectiveRpm {
+  if (cfg.rpmAuto && auto) {
+    if (auto.currency === 'BRL') return { value: auto.rpm, source: 'auto', auto, rate: 1, rateSource: 'same' };
+    const rate = cfg.usdBrl > 0 ? cfg.usdBrl : autoRate;
+    if (auto.currency === 'USD' && rate && rate > 0) {
+      return { value: auto.rpm * rate, source: 'auto', auto, rate, rateSource: cfg.usdBrl > 0 ? 'manual' : 'auto' };
+    }
+  }
+  if (cfg.adsensePageRpm > 0) return { value: cfg.adsensePageRpm, source: 'manual', auto, rate: null, rateSource: 'none' };
+  return { value: 0, source: 'none', auto, rate: autoRate, rateSource: autoRate ? 'auto' : 'none' };
 }
 
 // ============== Render público ==============
