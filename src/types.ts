@@ -8,6 +8,9 @@ export interface Env {
   ADMIN_USERNAME: string;
   ADMIN_PASSWORD: string;
   SESSION_SECRET: string;
+  ADSENSE_CLIENT_ID?: string;
+  ADSENSE_CLIENT_SECRET?: string;
+  ADSENSE_GOOGLE_EMAIL?: string;
 }
 
 export interface Post {

@@ -2017,7 +2017,7 @@ export function renderAdminPosts(
 }
 
 // ====== Admin: shell with sidebar nav ======
-type AdminSection = 'dashboard' | 'posts' | 'settings' | 'configuracoes' | 'analytics' | 'shopee' | 'api-keys' | 'cache' | 'users';
+type AdminSection = 'dashboard' | 'posts' | 'adsense' | 'settings' | 'configuracoes' | 'analytics' | 'shopee' | 'api-keys' | 'cache' | 'users';
 
 interface AdminShellOptions {
   active: AdminSection;
@@ -2033,6 +2033,7 @@ const ICONS: Record<AdminSection, string> = {
   dashboard: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>',
   posts:     '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>',
   analytics: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="3" y1="20" x2="21" y2="20"/></svg>',
+  adsense: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M3 20h18M5 16l5-5 4 3 6-9M15 5h5v5"/></svg>',
   settings:  '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg>',
   configuracoes: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>',
   'api-keys':'<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>',
@@ -2042,7 +2043,7 @@ const ICONS: Record<AdminSection, string> = {
 };
 
 // Sections restricted to admin role only
-const ADMIN_ONLY_SECTIONS: Set<AdminSection> = new Set(['configuracoes', 'api-keys', 'users']);
+const ADMIN_ONLY_SECTIONS: Set<AdminSection> = new Set(['configuracoes', 'api-keys', 'users', 'adsense']);
 
 function adminShell(env: Env, opts: AdminShellOptions, body: string): string {
   const { active, title, subtitle, actions = '', bodyClass = '', userRole = 'admin' } = opts;
@@ -2051,6 +2052,7 @@ function adminShell(env: Env, opts: AdminShellOptions, body: string): string {
     ['posts',     '/admin/posts', 'Posts'],
     ['analytics', '/admin/analytics', 'Analytics'],
     ['settings',  '/admin/settings', 'Monetização'],
+    ['adsense',  '/admin/adsense', 'Receita AdSense'],
     ['configuracoes', '/admin/configuracoes', 'Configurações'],
     ['users',     '/admin/users', 'Usuários'],
     ['api-keys',  '/admin/api-keys', 'API'],
@@ -2323,6 +2325,7 @@ export function renderAdminSettings(
     active: 'settings',
     title: 'Monetização',
     subtitle: 'Configure Google AdSense, placements e ferramentas de receita',
+    actions: '<a href="/admin/adsense" class="btn">Receita AdSense</a>',
   }, `
     ${monetizacaoTabs('adsense')}
     ${saved ? `<div class="alert alert--success"><span class="alert__icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></span><div><strong>Configurações salvas.</strong></div></div>` : ''}
@@ -4436,5 +4439,69 @@ export function renderAdminUsers(
       form.style.display = form.style.display === 'none' ? 'flex' : 'none';
     }
     </script>
+  `);
+}
+
+// ====== Admin: AdSense reports (authenticated snapshot, never fetches Google on GET) ======
+export function renderAdminAdSense(env: Env, view: import('./adsenseReports').ReportsView, message?: string): string {
+  const snapshot = view.snapshot;
+  const date = (value: string) => value.split('-').reverse().join('/');
+  const stamp = (value: number) => new Date(value).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' });
+  const numeric = (value: number) => value.toLocaleString('pt-BR');
+  const money = (value: number) => value.toLocaleString('pt-BR', { style: 'currency', currency: snapshot!.currency });
+  const percent = (value: number) => value.toLocaleString('pt-BR', { style: 'percent', maximumFractionDigits: 2 });
+  const format = (value: number, index: number) => index === 0 || index === 4 ? money(value) : index === 5 ? percent(value) : numeric(value);
+  const labels = ['Receita estimada', 'Visualizações de página', 'Impressões de anúncios', 'Cliques', 'RPM de página', 'CTR de página'];
+  const stale = !!snapshot && Date.now() - snapshot.generatedAt > 2 * 60 * 60 * 1000;
+  const next = view.guard?.nextAttemptAt ?? 0;
+  const disabled = !view.connected || next > Date.now();
+  const connect = view.configured ? `<form method="POST" action="/admin/adsense/connect" class="ads-report-form"><button class="btn btn--primary" type="submit">${view.connected ? 'Reconectar conta Google' : 'Conectar conta Google'}</button></form>` : '';
+  return adminShell(env, {
+    active: 'adsense', title: 'Receita do AdSense', bodyClass: 'ads-report-page',
+    subtitle: 'Desempenho dos anúncios do Capítulo de Hoje',
+    actions: '<a class="btn" href="/admin/settings">Configurar anúncios</a>',
+  }, `
+    <style>
+      .ads-report-page .adm-main,.ads-report-page .adm-content{min-width:0}.ads-report-state{overflow-wrap:anywhere}
+      .ads-report-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin:24px 0}
+      .ads-report-grid .ads-report-kpi{padding:20px;margin:0}.ads-report-kpi dt{font-size:14px}.ads-report-kpi dd{margin:10px 0 0;font-size:28px;font-weight:700;font-variant-numeric:tabular-nums}
+      .ads-report-state{padding:24px}.ads-report-state p{line-height:1.6}.ads-report-actions{margin-top:12px;display:flex;gap:12px;flex-wrap:wrap;align-items:center}.ads-report-form{margin:0}
+      .ads-report-form button{min-height:44px;cursor:pointer}.ads-report-form button:disabled{cursor:wait;opacity:.6}.ads-report-form button:focus-visible{outline:3px solid currentColor;outline-offset:3px}
+      .ads-report-table{overflow-x:auto}.ads-report-table table{width:100%;min-width:660px;border-collapse:collapse;font-variant-numeric:tabular-nums}
+      .ads-report-table th,.ads-report-table td{text-align:right;padding:12px;border-bottom:1px solid var(--adm-border,#d1d5db)}.ads-report-table th:first-child,.ads-report-table td:first-child{text-align:left}
+      .ads-report-note{border-left:4px solid currentColor;padding:12px 16px;margin:16px 0;line-height:1.6}.ads-report-chart{display:flex;align-items:end;gap:3px;height:120px;margin:16px 0}.ads-report-bar{flex:1;background:var(--adm-accent,#2563eb);min-width:2px;border-radius:3px 3px 0 0}
+      @media(max-width:900px){.ads-report-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.ads-report-kpi dd{font-size:24px}}
+      @media(max-width:480px){.ads-report-grid{grid-template-columns:1fr}.ads-report-state{padding:16px}}
+    </style>
+    ${message ? `<p role="status" class="ads-report-note">${escapeHtml(message)}</p>` : ''}
+    <section class="card ads-report-state" aria-labelledby="adsense-connection">
+      <h2 id="adsense-connection">${view.connected ? 'Conta conectada' : 'Conecte os relatórios do AdSense'}</h2>
+      <p>${escapeHtml(view.email || 'Conta Google ainda não definida')}${view.account ? ` · ${escapeHtml(view.account.replace('accounts/', ''))}` : ''}</p>
+      <p>Acesso somente de leitura aos relatórios. A conexão não altera anúncios ou pagamentos.</p>
+      ${!view.configured ? '<p class="ads-report-note">A integração ainda aguarda a configuração do cliente OAuth no servidor. Depois disso, o botão para conectar sua conta aparecerá aqui.</p>' : connect}
+      ${view.error ? `<p role="alert" class="ads-report-note">${escapeHtml(view.error)}</p>` : ''}
+      ${view.connected ? `<div class="ads-report-actions"><form method="POST" action="/admin/adsense/sync" class="ads-report-form"><button class="btn" type="submit" ${disabled ? 'disabled' : ''}>Atualizar relatório</button></form><p>Atualização automática a cada hora.${next > Date.now() ? ` Próxima tentativa a partir de ${stamp(next)} (Brasília).` : ''}</p></div>` : ''}
+      ${view.guard?.status === 'error' ? `<p role="alert" class="ads-report-note">${escapeHtml(view.guard.error ?? 'A última sincronização falhou.')} ${snapshot ? 'Exibindo o último relatório válido.' : ''}</p>` : ''}
+      ${view.guard?.status === 'syncing' ? '<p role="status">A última tentativa foi iniciada. Se ela não concluir, o agendamento tentará novamente após o intervalo de uma hora.</p>' : ''}
+    </section>
+    ${snapshot ? `
+      <section aria-label="Resumo do período">
+        <h2>${date(snapshot.start)} a ${date(snapshot.end)}</h2>
+        <p>30 dias completos · ${escapeHtml(snapshot.domain)} (inclui www) · Fuso ${escapeHtml(snapshot.timeZone)} · Moeda ${escapeHtml(snapshot.currency)}</p>
+        <p>Sincronizado em ${stamp(snapshot.generatedAt)} (Brasília). Valores estimados, sujeitos a ajustes do Google.</p>
+        ${stale ? '<p role="status" class="ads-report-note">Os dados estão desatualizados. Consulte o estado da sincronização acima.</p>' : ''}
+        ${snapshot.warnings.map(w => `<p class="ads-report-note">Aviso do Google: ${escapeHtml(w)}</p>`).join('')}
+        <dl class="ads-report-grid">${labels.map((label, i) => `<div class="card ads-report-kpi"><dt>${label}</dt><dd>${format(snapshot.totals[i], i)}</dd></div>`).join('')}</dl>
+        <p>RPM: receita por mil visualizações. CTR: proporção entre cliques e visualizações. São métricas do AdSense; podem diferir dos acessos registrados pelo site.</p>
+      </section>
+      <section class="card ads-report-state" aria-labelledby="adsense-daily">
+        <h2 id="adsense-daily">Receita por dia</h2>
+        ${snapshot.rows.length ? `<div class="ads-report-chart" aria-hidden="true">${(() => {
+          const days = Array.from({ length: 30 }, (_, i) => new Date(Date.parse(snapshot.start + 'T00:00:00Z') + i * 86400000).toISOString().slice(0, 10));
+          const max = Math.max(0.01, ...snapshot.rows.map(r => r.values[0]));
+          return days.map(day => { const value = snapshot.rows.find(r => r.date === day)?.values[0] ?? 0; return `<span class="ads-report-bar" style="height:${Math.max(0, value) / max * 100}%" title="${date(day)}: ${escapeHtml(money(value))}"></span>`; }).join('');
+        })()}</div><div class="ads-report-table" tabindex="0" role="region" aria-label="Tabela diária do AdSense"><table><caption>Valores diários informados pelo Google; dias sem linhas não foram retornados.</caption><thead><tr><th scope="col">Data</th>${labels.map(l => `<th scope="col">${l}</th>`).join('')}</tr></thead><tbody>${[...snapshot.rows].reverse().map(row => `<tr><th scope="row">${date(row.date)}</th>${row.values.map((value, i) => `<td>${format(value, i)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '<p>Nenhum dado retornado pelo AdSense para este site no período. Isso não significa falha de conexão.</p>'}
+      </section>` : view.connected ? '<section class="card ads-report-state"><h2>Aguardando o primeiro relatório</h2><p>O agendamento buscará os dados automaticamente. Você também pode usar Atualizar relatório quando disponível.</p></section>' : ''}
+    <script>document.querySelectorAll('.ads-report-form').forEach(function(form){form.addEventListener('submit',function(){var button=form.querySelector('button');button.disabled=true;button.textContent='Aguarde…';form.setAttribute('aria-busy','true');});});window.addEventListener('pageshow',function(event){if(event.persisted)window.location.reload();});</script>
   `);
 }

@@ -31,6 +31,7 @@
   ],
   "workers_dev": true,
   "vars": {
+    "ADSENSE_GOOGLE_EMAIL": "sergiooaokii@gmail.com",
     "SITE_TITLE": "Capítulo de Hoje",
     "SITE_DESCRIPTION": "Artigos e reflexões.",
     "CANONICAL_URL": "https://capitulodehoje.com.br"

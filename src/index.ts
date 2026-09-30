@@ -1,3 +1,5 @@
+import { handleAdSenseRoute } from './adsenseRoutes.ts';
+import { syncReports } from './adsenseReports.ts';
 import type { Env, Post, PostInput } from './types';
 import {
   listPosts, getPostBySlug, getPublicPostBySlug, getPostById,
@@ -20,7 +22,7 @@ import {
   renderHome, renderPost, render404, renderPrivacy, renderDocs,
   renderLogin, renderAdminDashboard, renderAdminPosts, renderAdminEditor,
   renderAdminSettings, renderAdminConfiguracoes, renderAdminAnalytics, renderAdminApiKeys,
-  renderAdminCache,
+  renderAdminCache, renderAdminAdSense,
   type SiteAdSettings, type SiteTypography, type NativePanelData,
 } from './render';
 import {
@@ -552,6 +554,10 @@ ${urls.join('\n')}
 
       // ===== Everything below requires auth =====
       const authed = await requireAuth(request, env.SESSION_SECRET);
+
+      if (pathname === '/admin/adsense' || pathname.startsWith('/admin/adsense/')) {
+        return handleAdSenseRoute(request, env, authed, (view, message) => renderAdminAdSense(env, view, message));
+      }
 
       // ===== Admin: new post (GET form) =====
       if (pathname === '/admin/new' && request.method === 'GET') {
@@ -1414,6 +1420,8 @@ ${urls.join('\n')}
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     // Reserva global de 30 min no R2; independente do cron de imagens e do tráfego.
     ctx.waitUntil(refreshRankingSnapshot(env.IMAGES, env.DB));
+    // AdSense reserves globally at most one attempt/hour; no D1 history scans.
+    ctx.waitUntil(syncReports(env));
     ctx.waitUntil((async () => {
       try {
         // batch maior pra aproveitar a janela do worker no cron (sem cap de IP)

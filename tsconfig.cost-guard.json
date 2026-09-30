@@ -2,6 +2,8 @@
   "extends": "./tsconfig.json",
   "include": [
     "src/rankingSnapshot.ts",
-    "src/publicCacheKey.ts"
+    "src/publicCacheKey.ts",
+    "src/adsenseReports.ts",
+    "src/adsenseRoutes.ts"
   ]
 }
