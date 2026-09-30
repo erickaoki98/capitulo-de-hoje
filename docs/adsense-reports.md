@@ -1,6 +1,6 @@
 # Relatórios AdSense no admin
 
-Branch de implementação: `codex/adsense-admin`, baseada em `origin/main` `a9d7716` e conciliada com a proteção D1 `f06ab95` (cherry-pick `9ea8bf9`). A pasta principal permanece intacta.
+Branch de implementação: `codex/adsense-admin`, baseada em `origin/main` `a9d7716` e conciliada com a proteção D1 `f06ab95` (cherry-pick `9ea8bf9`). Conciliada também com `origin/main` `d516b27` no merge `0e23491`. A pasta principal permanece intacta.
 
 ## Comportamento
 
@@ -20,7 +20,7 @@ Confirmado pelo navegador: `sergiooaokii@gmail.com`, conta `pub-9160979665550731
 4. Depois da publicação autorizada, abrir `/admin/adsense`, conectar e conceder `openid`, `email` e `adsense.readonly`. A identidade deve ser verificada e corresponder ao e-mail configurado. Acesso offline permite a atualização automática. A tela de consentimento Google deve permitir esse usuário; em modo de teste os tokens podem expirar em sete dias.
 5. Verificar o primeiro relatório, período, moeda e domínio antes de considerar sincronização concluída.
 
-Não há sincronização real validada enquanto credenciais, autorização OAuth e publicação não forem concluídas. A sessão Wrangler encontrada estava na conta `contato@megumitarot.com.br`, que não possui o Worker alvo. Não criar outro Worker nessa conta para contornar o problema.
+Publicação e configuração dos secrets concluídas na conta correta. A sincronização real ainda depende do login administrativo, consentimento Google e validação do primeiro relatório. Não usar a conta Megumi para este Worker.
 
 ## Segurança e armazenamento
 
@@ -36,12 +36,12 @@ Referências: [AdSense reports.generate](https://developers.google.com/adsense/m
 
 ## Validação desta implementação
 
-- 82 testes aprovados, incluindo OAuth/PKCE, identidade Google, CSRF, autenticação do Worker real, criptografia, concorrência, preservação de snapshots e proteção D1.
+- 83 testes aprovados, incluindo OAuth/PKCE, identidade Google, CSRF, autenticação do Worker real, criptografia, concorrência, preservação de snapshots e proteção D1.
 - `npm run check:deploy` e `npx wrangler deploy --dry-run` aprovados.
 - Prévia visual inspecionada em desktop e em 390 px; largura do documento e viewport iguais (390 px), sem vazamento horizontal da tabela.
-- `origin/main` continua em `a9d7716` após novo fetch e é ancestral desta branch.
+- `origin/main` verificada em `d516b27` e ancestral da branch publicada.
 - `ads.txt` de produção confirma `pub-9160979665550731`.
-- Retorno OAuth salvo após o usuário escolher A; o Google confirmou “Cliente OAuth salvo”. Nenhuma credencial Google nova foi criada e nenhum deploy foi executado.
+- Publicado o commit `0e23491`, versão Cloudflare `5d70be15-eba8-45d7-aeb0-832c044d02e3`. Home respondeu HTTP 200; `/admin/adsense` sem sessão respondeu 303 para `/admin`, com `private, no-store`.
 
 ## Integração anterior localizada
 
@@ -56,7 +56,7 @@ Projeto Google: `studious-rhythm-502316-s5`.
 Retorno exclusivo: `https://capitulodehoje.com.br/admin/adsense/callback`.
 O JSON foi baixado para Downloads, validado e protegido com permissão 0600. O segredo não está neste documento nem no Git. O cliente antigo permanece cadastrado; seus secrets e tokens no Supabase não foram alterados. A criação do cliente não equivale à emissão do refresh token: a autorização de leitura será concluída pelo painel após publicação.
 
-Cloudflare confirmada visualmente: conta `d04e2d9ebb41c4e77234cfb98939f36d` (Contatoeaoki@gmail.com), com domínio `capitulodehoje.com.br` e Worker `capitulo-de-hoje`. O terminal ainda precisa autenticar nessa conta; não usar a conta Megumi.
+Cloudflare confirmada visualmente: conta `d04e2d9ebb41c4e77234cfb98939f36d` (Contatoeaoki@gmail.com), com domínio `capitulodehoje.com.br` e Worker `capitulo-de-hoje`. Wrangler autenticado nessa conta após autorização explícita; ambos os secrets OAuth configurados e deploy concluído. Não usar a conta Megumi.
 
 ### Escopo exato proposto para publicação
 
