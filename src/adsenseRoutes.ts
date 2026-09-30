@@ -13,7 +13,7 @@ interface OAuthState { nonce: string; verifier: string; session: string; expires
 export async function handleAdSenseRoute(request: Request, env: Env, authed: boolean, render: (view: ReportsView, message?: string) => string): Promise<Response> {
   if (!authed) return redirect('/admin');
   const url = new URL(request.url);
-  const show = async (message?: string, status = 200) => new Response(render(await reportsView(env), message), { status, headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' } });
+  const show = async (message?: string, status = 200) => new Response(render(await reportsView(env), message), { status, headers: { ...headers, 'Referrer-Policy': 'same-origin', 'Content-Type': 'text/html; charset=utf-8' } });
   // Strict Origin check complements the admin cookie and protects all mutations.
   if (request.method === 'POST' && request.headers.get('Origin') !== url.origin) return new Response('Origem inválida.', { status: 403, headers });
   if (url.pathname === PATH && request.method === 'GET') {
