@@ -4,14 +4,42 @@ import type { ShopeeApiProduct } from './shopee';
 import type { UserRole } from './auth';
 import { renderMarkdown, readingTime, stripBrokenImageFigures } from './markdown';
 import {
-  type AdConfig, renderAdSenseScript, renderAdUnit, injectInContentAds,
+  type AdConfig, type AdPlacementConfig, renderAdSenseScript, renderAdUnit, renderAdIns, injectInContentAds,
 } from './adsense';
 import { isValidGaMeasurementId } from './configuracoes.ts';
+import {
+  type NativeConfig, type MixPlacement, type MixReport, type SlotFormat,
+  MIX_PLACEMENTS, NATIVE_FORMATS, PLACEMENT_LABELS, SLOT_FORMATS, SLOT_FORMAT_LABELS,
+  MIN_IMPS_PER_CREATIVE, WIN_PROBABILITY,
+  mixPlacementOn, nativeActive, renderMixRuntime, renderMixSlot, runnableCreatives, slotImages,
+} from './nativeAds.ts';
 
 export interface SiteAdSettings {
   publisherId: string;       // ca-pub-XXX
   autoAds: boolean;
   config: AdConfig;
+  native?: NativeConfig;     // teste banners nativos × AdSense (src/nativeAds.ts)
+}
+
+/**
+ * Unidade AdSense de uma posição. Se o teste nativo × AdSense estiver ligado nessa
+ * posição, vira slot misto (o navegador sorteia nativo ou AdSense); senão sai EXATAMENTE
+ * o HTML de sempre (renderAdUnit com push inline).
+ */
+function adUnitOrMix(
+  native: NativeConfig | undefined, placement: MixPlacement,
+  wrap: (unit: string) => string,
+  publisherId: string, slotId: string, format: AdPlacementConfig['format'],
+): string {
+  if (mixPlacementOn(native, placement)) {
+    return renderMixSlot(placement, wrap(renderAdIns(publisherId, slotId, format)));
+  }
+  return wrap(renderAdUnit(publisherId, slotId, format));
+}
+
+/** Runtime do teste só entra no <head> se a página tiver algum slot misto. */
+function mixRuntimeFor(native: NativeConfig | undefined, html: string): string {
+  return native && html.includes('class="cdh-mix ') ? renderMixRuntime(native) : '';
 }
 
 export interface SiteTypography {
@@ -502,7 +530,7 @@ export function renderHome(
 
   const pubId = ads?.publisherId;
   const betweenAd = (pubId && ads?.config.betweenCards.enabled && ads.config.betweenCards.slotId)
-    ? `<article class="post-card post-card--ad">${renderAdUnit(pubId, ads.config.betweenCards.slotId, ads.config.betweenCards.format)}</article>`
+    ? `<article class="post-card post-card--ad">${adUnitOrMix(ads.native, 'betweenCards', (u) => u, pubId, ads.config.betweenCards.slotId, ads.config.betweenCards.format)}</article>`
     : '';
   const everyN = ads?.config.betweenCards.everyNCards ?? 6;
 
@@ -534,9 +562,11 @@ export function renderHome(
       </div>
       <section class="posts-grid">${cards}</section>`;
 
-  const adsHead = (pubId && ads) ? renderAdSenseScript(pubId, ads.autoAds) : '';
   const stickyAd = (pubId && ads?.config.stickyFooter.enabled && ads.config.stickyFooter.slotId)
-    ? `<div class="ad-sticky-footer">${renderAdUnit(pubId, ads.config.stickyFooter.slotId, ads.config.stickyFooter.format)}</div>`
+    ? `<div class="ad-sticky-footer">${adUnitOrMix(ads.native, 'stickyFooter', (u) => u, pubId, ads.config.stickyFooter.slotId, ads.config.stickyFooter.format)}</div>`
+    : '';
+  const adsHead = (pubId && ads)
+    ? renderAdSenseScript(pubId, ads.autoAds) + mixRuntimeFor(ads.native, body + stickyAd)
     : '';
 
   return layout(
@@ -713,6 +743,7 @@ function planAndInjectBlocks(
   extraAdSlots: import('./adsense').InContentExtraSlot[] = [],
   publisherIdForExtras?: string,
   promoHtml: string | null = null,
+  native?: NativeConfig,
 ): string {
   const { totalP, h2Positions } = analyzeContentStructure(html);
   if (totalP < 4) return html; // conteúdo muito curto
@@ -722,9 +753,9 @@ function planAndInjectBlocks(
   // quadrado/banner gigante que quebra a leitura — o AdSense recomenda fluid
   // in-article para in-content. Forçamos aqui independentemente do que estiver
   // salvo na config, evitando inserção errada.
-  const adHtml = adConfig
-    ? `<div class="ad-inarticle">${renderAdUnit(adConfig.publisherId, adConfig.slotId, 'in-article')}</div>`
-    : '';
+  const inArticle = (publisherId: string, slotId: string) =>
+    adUnitOrMix(native, 'inContent', (u) => `<div class="ad-inarticle">${u}</div>`, publisherId, slotId, 'in-article');
+  const adHtml = adConfig ? inArticle(adConfig.publisherId, adConfig.slotId) : '';
 
   // Slots fixos extras (após parágrafo N)
   const pubForExtras = publisherIdForExtras ?? adConfig?.publisherId ?? '';
@@ -841,7 +872,7 @@ function planAndInjectBlocks(
     if (shopeeOccupied.has(pos) || extraOccupied.has(pos)) continue;
 
     // Extras também são in-content → força in-article (ver guard acima).
-    const xHtml = `<div class="ad-inarticle">${renderAdUnit(pubForExtras, x.slotId, 'in-article')}</div>`;
+    const xHtml = inArticle(pubForExtras, x.slotId);
     extraBlocks.push({ html: xHtml, afterParagraph: pos });
     extraOccupied.add(pos);
   }
@@ -1090,7 +1121,7 @@ export function renderPost(
     ? { publisherId: pubId, slotId: ads.config.inContent.slotId, format: ads.config.inContent.format, everyN: ads.config.inContent.everyNParagraphs ?? 4 }
     : null;
   const extraSlots = (pubId && ads?.config.inContentExtra) ? ads.config.inContentExtra : [];
-  html = planAndInjectBlocks(html, adPlan, shopeeConfig ?? null, 2, extraSlots, pubId, null);
+  html = planAndInjectBlocks(html, adPlan, shopeeConfig ?? null, 2, extraSlots, pubId, null, ads?.native);
 
   // "Em Alta" (top 24h): aparece ao FIM de cada seção — ou seja, logo antes de
   // cada H2 (exceto o primeiro). Repete o bloco em cada transição de subtítulo.
@@ -1109,7 +1140,7 @@ export function renderPost(
     if (!pubId || !ads) return '';
     const p = ads.config[key] as import('./adsense').AdPlacementConfig | undefined;
     if (!p?.enabled || !p.slotId) return '';
-    return `<aside class="ad-slot ${wrapperClass}">${renderAdUnit(pubId, p.slotId, p.format)}</aside>`;
+    return adUnitOrMix(ads.native, key, (u) => `<aside class="ad-slot ${wrapperClass}">${u}</aside>`, pubId, p.slotId, p.format);
   };
 
   // Related posts
@@ -1255,9 +1286,11 @@ ${adIf('bottomOfPage', 'ad-slot--bottom')}
     ? (post.hero_image.startsWith('http') ? post.hero_image : `${siteOrigin}${post.hero_image}`)
     : undefined;
 
-  const adsHead = (pubId && ads) ? renderAdSenseScript(pubId, ads.autoAds) : '';
   const stickyAd = (pubId && ads?.config.stickyFooter.enabled && ads.config.stickyFooter.slotId)
-    ? `<div class="ad-sticky-footer">${renderAdUnit(pubId, ads.config.stickyFooter.slotId, ads.config.stickyFooter.format)}</div>`
+    ? `<div class="ad-sticky-footer">${adUnitOrMix(ads.native, 'stickyFooter', (u) => u, pubId, ads.config.stickyFooter.slotId, ads.config.stickyFooter.format)}</div>`
+    : '';
+  const adsHead = (pubId && ads)
+    ? renderAdSenseScript(pubId, ads.autoAds) + mixRuntimeFor(ads.native, body + stickyAd)
     : '';
 
   return layout(
@@ -2096,6 +2129,22 @@ function adminShell(env: Env, opts: AdminShellOptions, body: string): string {
 }
 
 // ====== Admin: Settings ======
+export interface NativePanelData {
+  config: NativeConfig;
+  report: MixReport;
+  range: 'all' | '7' | '1';
+  flash?: 'saved' | 'reset' | null;
+  imported?: { added: number; updated: number; skipped: number; copied: number; failed: number } | null;
+  importError?: string;
+}
+
+function monetizacaoTabs(active: 'adsense' | 'nativos'): string {
+  return `<nav class="filter-pills nv-tabs" aria-label="Seções de monetização">
+    <a href="/admin/settings" class="pill ${active === 'adsense' ? 'is-active' : ''}">AdSense</a>
+    <a href="/admin/settings?tab=nativos" class="pill ${active === 'nativos' ? 'is-active' : ''}">Nativos e teste A/B</a>
+  </nav>`;
+}
+
 export function renderAdminSettings(
   env: Env, request: Request,
   data: {
@@ -2104,10 +2153,20 @@ export function renderAdminSettings(
     adConfig: AdConfig;
     saved?: boolean;
     error?: string;
+    tab?: string;
+    native?: NativePanelData;
   },
 ): string {
   void request;
   const { publisherId, autoAds, adConfig, saved, error } = data;
+
+  if (data.tab === 'nativos' && data.native) {
+    return adminShell(env, {
+      active: 'settings',
+      title: 'Monetização',
+      subtitle: 'Banners nativos × AdSense: split de tráfego e teste A/B entre banners',
+    }, monetizacaoTabs('nativos') + renderNativePanel(data.native, publisherId.length >= 10));
+  }
 
   type SinglePlacementKey = Exclude<keyof AdConfig, 'inContentExtra'>;
   const placements: Array<{
@@ -2258,6 +2317,7 @@ export function renderAdminSettings(
     title: 'Monetização',
     subtitle: 'Configure Google AdSense, placements e ferramentas de receita',
   }, `
+    ${monetizacaoTabs('adsense')}
     ${saved ? `<div class="alert alert--success"><span class="alert__icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg></span><div><strong>Configurações salvas.</strong></div></div>` : ''}
     ${error ? `<div class="alert alert--error"><span class="alert__icon"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span><div>${escapeHtml(error)}</div></div>` : ''}
 
@@ -2445,6 +2505,360 @@ export function renderAdminSettings(
       });
     </script>
   `);
+}
+
+// ====== Admin: Monetização → Nativos e teste A/B ======
+const fmtInt = (n: number) => Math.round(n).toLocaleString('pt-BR');
+const fmtPct = (p: number, digits = 2) => `${(p * 100).toLocaleString('pt-BR', { minimumFractionDigits: digits, maximumFractionDigits: digits })}%`;
+const fmtBrl = (n: number) => `R$ ${n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const fmtChance = (p: number) => p >= 0.995 ? '>99%' : p > 0 && p < 0.01 ? '<1%' : `${Math.round(p * 100)}%`;
+
+function renderNativePanel(d: NativePanelData, adsenseConfigured: boolean): string {
+  const { config: cfg, report: r } = d;
+  const e = r.economics;
+  const running = nativeActive(cfg);
+  const runnable = runnableCreatives(cfg);
+  const activeCount = cfg.creatives.filter((c) => c.active).length;
+  const since = cfg.startedAt ? new Date(cfg.startedAt).toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo' }) : '';
+  const okIcon = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 11-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>';
+  const warnIcon = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>';
+  const infoIcon = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>';
+  const alert = (kind: 'success' | 'error' | 'info', icon: string, html: string) =>
+    `<div class="alert alert--${kind}"><span class="alert__icon">${icon}</span><div>${html}</div></div>`;
+
+  // ---------- Avisos ----------
+  const flashes: string[] = [];
+  if (d.flash === 'saved') flashes.push(alert('success', okIcon, '<strong>Configurações salvas.</strong> O cache do site foi limpo; as páginas novas já usam o novo split.'));
+  if (d.flash === 'reset') flashes.push(alert('success', okIcon, '<strong>Novo teste iniciado.</strong> A contagem recomeçou do zero (os dados antigos continuam guardados, só não entram mais no resultado).'));
+  if (d.imported) {
+    const im = d.imported;
+    flashes.push(alert('success', okIcon, `<strong>Importação concluída.</strong> ${im.added} criativo(s) novo(s), ${im.updated} atualizado(s), ${im.copied} imagem(ns) copiada(s) para o R2${im.failed ? ` · ${im.failed} imagem(ns) não baixaram e continuam apontando para o site de origem` : ''}${im.skipped ? ` · ${im.skipped} banner(s) ignorado(s) (tamanho não suportado)` : ''}.`));
+  }
+  if (d.importError) flashes.push(alert('error', warnIcon, escapeHtml(d.importError)));
+  if (!adsenseConfigured) flashes.push(alert('info', infoIcon, 'O teste usa as posições do AdSense. Configure o <strong>Publisher ID</strong> e os slots na aba AdSense para os banners nativos aparecerem.'));
+
+  // ---------- Status ----------
+  const statusStrip = `<section class="status-strip">
+      <div class="status-strip__item ${running ? 'is-on' : 'is-off'}">
+        <span class="status-strip__dot"></span>
+        <div><strong>Teste</strong><small>${running ? `Rodando desde ${since}` : cfg.enabled ? 'Ligado, mas sem banner rodável' : 'Desligado'}</small></div>
+      </div>
+      <div class="status-strip__item is-info">
+        <span class="status-strip__dot"></span>
+        <div><strong>Split</strong><small>${cfg.share}% nativo · ${100 - cfg.share}% AdSense</small></div>
+      </div>
+      <div class="status-strip__item is-info">
+        <span class="status-strip__dot"></span>
+        <div><strong>Banners</strong><small>${runnable.length} rodando de ${cfg.creatives.length} importados</small></div>
+      </div>
+    </section>`;
+
+  // ---------- Veredito ----------
+  const verdict: string[] = [];
+  if (r.nativeImps === 0) {
+    verdict.push(running
+      ? 'Coletando dados: ainda não há impressões de banner nativo neste teste.'
+      : 'O teste está desligado. Importe os banners, ligue o teste e escolha o split abaixo.');
+  } else {
+    if (e.lift !== null && e.nativeRpm !== null) {
+      const pct = Math.abs(e.lift * 100).toLocaleString('pt-BR', { maximumFractionDigits: 0 });
+      const clear = e.nativeRpmRange !== null && (e.nativeRpmRange.low > e.adsenseRpm || e.nativeRpmRange.high < e.adsenseRpm);
+      verdict.push(`${e.lift >= 0 ? `O nativo rende <strong>${pct}% mais</strong>` : `O nativo rende <strong>${pct}% menos</strong>`} que o AdSense por impressão: RPM estimado de ${fmtBrl(e.nativeRpm)} contra ${fmtBrl(e.adsenseRpm)}. ${clear ? 'A diferença já está fora da margem de erro.' : 'Ainda está dentro da margem de erro, então deixe rodar mais.'}`);
+    } else if (e.adsenseRpm <= 0) {
+      verdict.push('Informe o <strong>RPM do AdSense</strong> abaixo para comparar os dois em reais.');
+    }
+    if (e.breakEvenCpc !== null) {
+      verdict.push(`Com o CTR atual (${fmtPct(r.nativeCtr)}), o nativo empata com o AdSense quando cada clique vale <strong>${fmtBrl(e.breakEvenCpc)}</strong>. ${e.valuePerClick > 0 ? `Você informou ${fmtBrl(e.valuePerClick)} por clique.` : 'Se um clique vale mais que isso para a loja, o nativo ganha.'}`);
+    }
+    const leader = r.creatives[0];
+    if (r.winner) {
+      verdict.push(`<strong>${escapeHtml(r.winner.label)}</strong> é o melhor banner: ${fmtChance(r.winner.pBest)} de chance de ter o maior CTR (${fmtPct(r.winner.ctr)}).${e.bestRpm !== null && e.adsenseRpm > 0 ? ` Rodando só ele, o RPM nativo seria ${fmtBrl(e.bestRpm)} (${e.bestRpm >= e.adsenseRpm ? '+' : '−'}${Math.abs((e.bestRpm / e.adsenseRpm - 1) * 100).toFixed(0)}% vs AdSense).` : ''}`);
+    } else if (leader && leader.pBest > 0) {
+      verdict.push(`Líder até agora: <strong>${escapeHtml(leader.label)}</strong>, com ${fmtChance(leader.pBest)} de chance de ser o melhor. Ainda sem vencedor: o sistema declara um quando todos os banners têm ${fmtInt(MIN_IMPS_PER_CREATIVE)}+ impressões e um deles passa de ${Math.round(WIN_PROBABILITY * 100)}% de chance.`);
+    }
+  }
+
+  const rangeLabel = (k: NativePanelData['range'], label: string) =>
+    `<a href="/admin/settings?tab=nativos${k === 'all' ? '' : `&range=${k}`}" class="pill ${d.range === k ? 'is-active' : ''}">${label}</a>`;
+  const lift = e.lift;
+  const kpis = `<section class="kpi-grid kpi-grid--4">
+      <div class="kpi-card">
+        <div class="kpi-card__head"><span class="kpi-card__label">Impressões AdSense</span></div>
+        <div class="kpi-card__value">${fmtInt(r.adsenseImps)}</div>
+        <div class="kpi-card__hint">${e.adsenseRevenue !== null ? `≈ ${fmtBrl(e.adsenseRevenue)} estimados` : 'só conta anúncio preenchido'}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-card__head"><span class="kpi-card__label">Impressões nativo</span></div>
+        <div class="kpi-card__value">${fmtInt(r.nativeImps)}</div>
+        <div class="kpi-card__hint">${r.adsenseImps + r.nativeImps > 0 ? `${fmtPct(r.nativeImps / (r.adsenseImps + r.nativeImps), 0)} do total medido` : 'banner apareceu na tela'}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-card__head"><span class="kpi-card__label">Cliques nativo · CTR</span></div>
+        <div class="kpi-card__value">${fmtInt(r.nativeClicks)} <span class="nv-kpi-sub">${fmtPct(r.nativeCtr)}</span></div>
+        <div class="kpi-card__hint">${r.nativeImps > 0 ? `margem: ${fmtPct(r.nativeCtrCi.low)} a ${fmtPct(r.nativeCtrCi.high)}` : '—'}</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-card__head"><span class="kpi-card__label">RPM nativo × AdSense</span></div>
+        <div class="kpi-card__value">${e.nativeRpm !== null ? fmtBrl(e.nativeRpm) : '—'}</div>
+        <div class="kpi-card__hint">${lift !== null
+          ? `<span class="kpi-card__trend kpi-card__trend--${lift > 0.005 ? 'up' : lift < -0.005 ? 'down' : 'flat'}">${lift >= 0 ? '↑ +' : '↓ −'}${Math.abs(lift * 100).toFixed(0)}%</span> vs ${fmtBrl(e.adsenseRpm)}`
+          : 'informe RPM e valor por clique'}</div>
+      </div>
+    </section>`;
+
+  const resultsCard = `<section class="card">
+      <header class="card__header" style="gap:1rem;flex-wrap:wrap">
+        <div style="flex:1;min-width:220px">
+          <h2 class="card__title">Resultado: nativo × AdSense</h2>
+          <p class="card__desc">Receita por impressão nas mesmas posições. Impressão = unidade apareceu na tela.</p>
+        </div>
+        <div class="filter-pills">
+          ${rangeLabel('all', since ? `Desde ${since}` : 'Tudo')}
+          ${rangeLabel('7', '7 dias')}
+          ${rangeLabel('1', 'Hoje')}
+        </div>
+      </header>
+      <div class="card__body">
+        ${kpis}
+        <ul class="nv-verdict">${verdict.map((v) => `<li>${v}</li>`).join('')}</ul>
+      </div>
+    </section>`;
+
+  // ---------- Ranking de banners ----------
+  const statusBadge = (c: MixReport['creatives'][number]) => {
+    if (r.winner && r.winner.id === c.id) return '<span class="badge badge--success">Vencedor</span>';
+    if (!c.active) return '<span class="badge">Pausado</span>';
+    if (c.imps < 100) return '<span class="badge">Coletando</span>';
+    if (r.enoughData && c.pBest < 0.01) return '<span class="badge badge--draft">Perdendo</span>';
+    return '<span class="badge">No páreo</span>';
+  };
+  const maxP = Math.max(0.0001, ...r.creatives.map((c) => c.pBest));
+  const rankingRows = r.creatives.length === 0
+    ? `<tr><td colspan="7" class="empty-state">Nenhum banner importado ainda. Use “Importar banners” abaixo.</td></tr>`
+    : r.creatives.map((c) => `
+        <tr>
+          <td>
+            <div class="nv-banner">
+              ${c.thumb ? `<img class="nv-thumb" src="${escapeHtml(c.thumb)}" alt="" loading="lazy" decoding="async">` : '<span class="nv-thumb nv-thumb--empty"></span>'}
+              <div><strong>${escapeHtml(c.label)}</strong><div class="muted">${escapeHtml(c.alt.replace(/^Publicidade[^:]*:\s*/i, ''))}</div></div>
+            </div>
+          </td>
+          <td class="num">${fmtInt(c.imps)}</td>
+          <td class="num">${fmtInt(c.clicks)}</td>
+          <td class="num nowrap">${c.imps > 0 ? `${fmtPct(c.ctr)}<div class="muted">${fmtPct(c.ci.low)}–${fmtPct(c.ci.high)}</div>` : '—'}</td>
+          <td style="min-width:130px">
+            <div class="views-bar"><span class="views-bar__fill" style="width:${(c.pBest / maxP * 100).toFixed(1)}%"></span><strong>${c.imps >= 100 ? fmtChance(c.pBest) : '—'}</strong></div>
+          </td>
+          <td class="num nowrap">${c.rpm !== null && c.imps > 0 ? fmtBrl(c.rpm) : '—'}</td>
+          <td>${statusBadge(c)}</td>
+        </tr>`).join('');
+  const rankingCard = `<section class="card">
+      <header class="card__header">
+        <div>
+          <h2 class="card__title">Qual banner ganha</h2>
+          <p class="card__desc">Cada visitante vê sempre o mesmo banner, sorteado entre os ativos. “Chance de ser o melhor” compara o CTR real provável de cada um (entra no ranking a partir de 100 impressões).</p>
+        </div>
+      </header>
+      <div class="nv-table-wrap">
+        <table class="data-table">
+          <thead><tr><th>Banner</th><th class="num">Impressões</th><th class="num">Cliques</th><th class="num">CTR</th><th>Chance de ser o melhor</th><th class="num">RPM est.</th><th>Status</th></tr></thead>
+          <tbody>${rankingRows}</tbody>
+        </table>
+      </div>
+    </section>`;
+
+  // ---------- Quebras: posição e formato ----------
+  const placementRows = r.byPlacement.length === 0
+    ? '<tr><td colspan="5" class="empty-state">Sem dados ainda.</td></tr>'
+    : r.byPlacement.map((p) => `<tr>
+        <td>${escapeHtml(PLACEMENT_LABELS[p.placement as MixPlacement] ?? p.placement)}</td>
+        <td class="num">${fmtInt(p.adsenseImps)}</td>
+        <td class="num">${fmtInt(p.nativeImps)}</td>
+        <td class="num">${fmtInt(p.clicks)}</td>
+        <td class="num">${p.nativeImps > 0 ? fmtPct(p.ctr) : '—'}</td>
+      </tr>`).join('');
+  const formatRows = r.byFormat.length === 0
+    ? '<tr><td colspan="4" class="empty-state">Sem dados ainda.</td></tr>'
+    : r.byFormat.map((f) => `<tr>
+        <td>${escapeHtml(f.format === '16x9' ? 'Nativo 16:9' : f.format)}</td>
+        <td class="num">${fmtInt(f.imps)}</td>
+        <td class="num">${fmtInt(f.clicks)}</td>
+        <td class="num">${f.imps > 0 ? fmtPct(f.ctr) : '—'}</td>
+      </tr>`).join('');
+  const breakdownCard = `<section class="card">
+      <header class="card__header"><div><h2 class="card__title">Por posição e por formato</h2><p class="card__desc">Onde o banner nativo funciona melhor, e em qual tamanho.</p></div></header>
+      <div class="nv-split">
+        <div class="nv-table-wrap"><table class="data-table">
+          <thead><tr><th>Posição</th><th class="num">Impr. AdSense</th><th class="num">Impr. nativo</th><th class="num">Cliques</th><th class="num">CTR</th></tr></thead>
+          <tbody>${placementRows}</tbody>
+        </table></div>
+        <div class="nv-table-wrap"><table class="data-table">
+          <thead><tr><th>Formato</th><th class="num">Impressões</th><th class="num">Cliques</th><th class="num">CTR</th></tr></thead>
+          <tbody>${formatRows}</tbody>
+        </table></div>
+      </div>
+    </section>`;
+
+  // ---------- Configuração ----------
+  const formatAvailable = (fmt: SlotFormat) => cfg.creatives.filter((c) => c.active && slotImages(c, fmt).length > 0).length;
+  const placementCfgRows = MIX_PLACEMENTS.map((k) => {
+    const pl = cfg.placements[k];
+    const avail = formatAvailable(pl.format);
+    const warn = pl.on && cfg.creatives.length > 0 && avail === 0
+      ? `<small class="nv-warn">Nenhum banner ativo tem esse tamanho: aqui só roda AdSense.</small>` : '';
+    return `<div class="nv-place-row">
+        <label class="check"><input type="checkbox" name="pl.on.${k}" value="1" ${pl.on ? 'checked' : ''}> <span>${escapeHtml(PLACEMENT_LABELS[k])}</span></label>
+        <select name="pl.format.${k}" aria-label="Formato do banner em ${escapeHtml(PLACEMENT_LABELS[k])}">
+          ${SLOT_FORMATS.map((f) => `<option value="${f}" ${pl.format === f ? 'selected' : ''}>${escapeHtml(SLOT_FORMAT_LABELS[f])}</option>`).join('')}
+        </select>
+        ${warn}
+      </div>`;
+  }).join('');
+
+  const creativeRows = cfg.creatives.length === 0
+    ? '<p class="muted">Nenhum banner ainda. Importe abaixo.</p>'
+    : cfg.creatives.map((c) => {
+      const thumb = (c.images['16x9'] ?? c.images['300x250'] ?? c.images['320x100'] ?? c.images['728x90'] ?? c.images['320x50'])?.src ?? '';
+      const chips = NATIVE_FORMATS.map((f) => `<span class="nv-chip ${c.images[f] ? 'is-on' : ''}" title="${c.images[f] ? 'Tem' : 'Não tem'} ${f}">${f === '16x9' ? '16:9' : f}</span>`).join('');
+      return `<div class="nv-creative">
+          <label class="check"><input type="checkbox" name="cr.active.${escapeHtml(c.id)}" value="1" ${c.active ? 'checked' : ''} aria-label="Ativar ${escapeHtml(c.label)}"></label>
+          ${thumb ? `<img class="nv-thumb" src="${escapeHtml(thumb)}" alt="" loading="lazy" decoding="async">` : '<span class="nv-thumb nv-thumb--empty"></span>'}
+          <div class="nv-creative__text">
+            <strong>${escapeHtml(c.label)}</strong>
+            <div class="muted">${escapeHtml(c.alt.replace(/^Publicidade[^:]*:\s*/i, ''))}</div>
+            <div class="nv-chips">${chips}</div>
+          </div>
+          <label class="check nv-creative__del"><input type="checkbox" name="cr.remove.${escapeHtml(c.id)}" value="1"> <span>remover</span></label>
+          <input type="hidden" name="cr.ids" value="${escapeHtml(c.id)}">
+        </div>`;
+    }).join('');
+
+  const configCard = `<form method="POST" action="/admin/settings/native">
+      <section class="card">
+        <header class="card__header card__header--icon">
+          <span class="card__header-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg></span>
+          <div>
+            <h2 class="card__title">Configuração do teste</h2>
+            <p class="card__desc">Quanto do tráfego vai para os banners nativos, em quais posições e com quais banners.</p>
+          </div>
+        </header>
+        <div class="card__body">
+          <div class="placement-card ${cfg.enabled ? 'is-on' : ''}" id="nv-enabled-card">
+            <header class="placement-card__header">
+              <div class="placement-card__heading">
+                <h3>Teste ligado</h3>
+                <p>Desligado, o site volta a mostrar só AdSense, com o mesmo HTML de antes.</p>
+              </div>
+              <label class="toggle">
+                <input type="checkbox" name="enabled" value="1" aria-label="Teste ligado" ${cfg.enabled ? 'checked' : ''}>
+                <span class="toggle__track"><span class="toggle__thumb"></span></span>
+              </label>
+            </header>
+          </div>
+
+          <div class="field">
+            <label for="nv-share">Percentual para banners nativos</label>
+            <div class="nv-share">
+              <input type="range" id="nv-share" min="0" max="100" step="5" value="${cfg.share}" oninput="this.form.share.value=this.value;document.getElementById('nv-share-out').textContent=this.value+'% nativo · '+(100-this.value)+'% AdSense'">
+              <input type="number" name="share" min="0" max="100" step="1" value="${cfg.share}" aria-label="Percentual nativo" oninput="var v=Math.max(0,Math.min(100,+this.value||0));document.getElementById('nv-share').value=v;document.getElementById('nv-share-out').textContent=v+'% nativo · '+(100-v)+'% AdSense'">
+            </div>
+            <small class="field__help"><strong id="nv-share-out">${cfg.share}% nativo · ${100 - cfg.share}% AdSense</strong>. Cada posição participante sorteia na hora: nativo com essa chance, senão AdSense. Para comparar rápido sem arriscar receita, 20–30% é um bom começo.</small>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="nv-max">Máximo de banners nativos por página</label>
+              <input type="number" id="nv-max" name="maxPerPage" min="1" max="10" value="${cfg.maxPerPage}">
+              <small class="field__help">Evita a mesma marca repetida 5 vezes no mesmo artigo. O que passar do limite fica com o AdSense.</small>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Posições e formato do banner</label>
+            <div class="nv-places">${placementCfgRows}</div>
+            <small class="field__help">Só participam posições que já estão ligadas na aba AdSense. “Faixa” mostra 728x90 no computador e 320x100 no celular.</small>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="nv-rpm">RPM do AdSense (R$ por mil impressões)</label>
+              <input type="number" id="nv-rpm" name="adsenseRpm" min="0" step="0.01" value="${cfg.adsenseRpm || ''}" placeholder="ex.: 4,50" inputmode="decimal">
+              <small class="field__help">AdSense → Relatórios → “RPM de impressões” do mesmo período (não o RPM de página).</small>
+            </div>
+            <div class="field">
+              <label for="nv-vpc">Valor de um clique no banner (R$)</label>
+              <input type="number" id="nv-vpc" name="valuePerClick" min="0" step="0.01" value="${cfg.valuePerClick || ''}" placeholder="ex.: 1,20" inputmode="decimal">
+              <small class="field__help">= taxa de conversão × lucro por venda. Ex.: 2% × R$ 60 = R$ 1,20. Confira na loja pelos pedidos com <code>utm_source=capitulodehoje</code>.</small>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Banners no teste</label>
+            <div class="nv-creatives">${creativeRows}</div>
+            <small class="field__help">Desmarque para pausar um banner que está perdendo. Os dados dele continuam no ranking.</small>
+          </div>
+        </div>
+      </section>
+      <div class="sticky-actions">
+        <button type="submit" class="btn btn--primary btn--lg">Salvar teste</button>
+      </div>
+    </form>`;
+
+  // ---------- Importar ----------
+  const importCard = `<section class="card">
+      <header class="card__header card__header--icon">
+        <span class="card__header-icon"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span>
+        <div>
+          <h2 class="card__title">Importar banners</h2>
+          <p class="card__desc">Lê uma página de banners (como a da Toda Fase) ou os códigos <code>&lt;a&gt;&lt;img&gt;&lt;/a&gt;</code> colados, e copia as imagens para o R2 do site (carregam rápido e não dependem do outro site).</p>
+        </div>
+      </header>
+      <div class="card__body">
+        <form method="POST" action="/admin/settings/native/import">
+          <div class="field">
+            <label for="nv-url">URL da página de banners</label>
+            <input type="url" id="nv-url" name="url" value="${escapeHtml(cfg.sourceUrl)}" placeholder="https://todafase.com/banners">
+          </div>
+          <div class="field">
+            <label for="nv-snippets">…ou cole os códigos dos banners</label>
+            <textarea id="nv-snippets" name="snippets" rows="4" placeholder='&lt;a href="https://…"&gt;&lt;img src="https://…/banner-300x250.jpg" width="300" height="250" alt="…"&gt;&lt;/a&gt;'></textarea>
+            <small class="field__help">Tamanhos aceitos: 300x250, 320x100, 728x90, 320x50 e 16:9 (ex.: 1200x675). Banners com o mesmo nome de arquivo viram um só criativo. Reimportar atualiza sem apagar nada.</small>
+          </div>
+          <button type="submit" class="btn btn--ghost">Importar banners</button>
+        </form>
+      </div>
+    </section>`;
+
+  const resetCard = `<section class="card">
+      <header class="card__header">
+        <div>
+          <h2 class="card__title">Começar um teste novo</h2>
+          <p class="card__desc">Zera a contagem, por exemplo depois de trocar os banners. Os visitantes são sorteados de novo. Os números antigos não são apagados, só saem do resultado.</p>
+        </div>
+      </header>
+      <div class="card__body">
+        <form method="POST" action="/admin/settings/native/reset" onsubmit="return confirm('Começar um teste novo? O resultado atual deixa de aparecer aqui.')">
+          <button type="submit" class="btn btn--danger">Zerar contagem e começar teste novo</button>
+        </form>
+      </div>
+    </section>`;
+
+  return `
+    ${flashes.join('')}
+    ${statusStrip}
+    ${resultsCard}
+    ${rankingCard}
+    ${breakdownCard}
+    ${configCard}
+    ${importCard}
+    ${resetCard}
+    <script>
+      (function(){
+        var card = document.getElementById('nv-enabled-card');
+        var cb = card && card.querySelector('input[type="checkbox"]');
+        if (cb) cb.addEventListener('change', function(){ card.classList.toggle('is-on', cb.checked); });
+      })();
+    </script>`;
 }
 
 // ====== Admin: Configurações ======

@@ -4,6 +4,7 @@ import type {
   Job, JobInput,
   OutboundClickKind,
 } from './types';
+import type { MixEventRow, MixStatRow } from './nativeAds.ts';
 import { normalizeCategoryKey, publicPostVisibilitySql } from './archive.ts';
 
 const PUBLIC_POST_VISIBILITY_SQL = publicPostVisibilitySql('p');
@@ -272,6 +273,17 @@ export async function setSetting(db: D1Database, key: string, value: string): Pr
     `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
   ).bind(key, value, Date.now()).run();
+}
+
+/** Várias chaves numa única consulta (evita N idas ao D1 no caminho quente). */
+export async function getSettingsByKeys(db: D1Database, keys: string[]): Promise<Record<string, string>> {
+  if (keys.length === 0) return {};
+  const { results } = await db.prepare(
+    `SELECT key, value FROM settings WHERE key IN (${keys.map(() => '?').join(', ')})`,
+  ).bind(...keys).all<{ key: string; value: string }>();
+  const out: Record<string, string> = {};
+  for (const r of results ?? []) out[r.key] = r.value;
+  return out;
 }
 
 export async function getAllSettings(db: D1Database): Promise<Record<string, string>> {
@@ -717,6 +729,63 @@ export async function abTestResults(
     impressions: r.impressions ?? 0,
     clicks: r.clicks ?? 0,
   }));
+}
+
+// ============== BANNERS NATIVOS × ADSENSE (teste de mix) ==============
+
+const AD_MIX_TABLE_SQL = `CREATE TABLE IF NOT EXISTS ad_mix_events (
+  test TEXT NOT NULL,
+  bucket TEXT NOT NULL,
+  placement TEXT NOT NULL,
+  source TEXT NOT NULL,
+  creative TEXT NOT NULL DEFAULT '',
+  format TEXT NOT NULL DEFAULT '',
+  event TEXT NOT NULL,
+  count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (test, bucket, placement, source, creative, format, event)
+)`;
+
+/**
+ * Soma um lote de eventos (já validado) no dia atual. 1 batch = 1 ida ao D1.
+ * A tabela é criada sob demanda na 1ª escrita (deploy não roda migrations).
+ */
+export async function recordAdMixEvents(
+  db: D1Database, test: string, rows: MixEventRow[],
+): Promise<void> {
+  if (rows.length === 0) return;
+  const bucket = currentDayBucket();
+  const stmt = db.prepare(
+    `INSERT INTO ad_mix_events (test, bucket, placement, source, creative, format, event, count)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(test, bucket, placement, source, creative, format, event)
+     DO UPDATE SET count = count + excluded.count`,
+  );
+  const batch = rows.map((r) => stmt.bind(test, bucket, r.placement, r.source, r.creative, r.format, r.event, r.count));
+  try {
+    await db.batch(batch);
+  } catch (e) {
+    if (!/no such table/i.test(String(e))) throw e;
+    await db.prepare(AD_MIX_TABLE_SQL).run();
+    await db.batch(batch);
+  }
+}
+
+/** Eventos agregados de um teste (desde `sinceDay`, 'YYYY-MM-DD'). Tabela ausente = sem dados. */
+export async function adMixStats(
+  db: D1Database, test: string, sinceDay = '0000-00-00',
+): Promise<MixStatRow[]> {
+  try {
+    const { results } = await db.prepare(
+      `SELECT placement, source, creative, format, event, SUM(count) AS count
+       FROM ad_mix_events
+       WHERE test = ? AND bucket >= ?
+       GROUP BY placement, source, creative, format, event`,
+    ).bind(test, sinceDay).all<MixStatRow>();
+    return results ?? [];
+  } catch (e) {
+    if (/no such table/i.test(String(e))) return [];
+    throw e;
+  }
 }
 
 // ============== ACTIVE VISITORS (contador ao vivo) ==============

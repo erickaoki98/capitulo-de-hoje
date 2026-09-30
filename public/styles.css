@@ -2827,6 +2827,68 @@ ins.adsbygoogle[data-ad-status="unfill-optimized"] .google-aiuf {
 }
 
 /* ==========================================================
+   45a. Banners nativos (teste nativo × AdSense — src/nativeAds.ts)
+   O slot misto (.cdh-mix) guarda o AdSense num <template>; o navegador sorteia
+   e, se der nativo, põe um <a class="cdh-spot"><img></a> no lugar. Classes SEM
+   "ad"/"banner" no nome de propósito: filtros de adblock escondem por classe, e
+   o banner próprio não deve sumir junto com o AdSense.
+   ========================================================== */
+.cdh-mix { display: block; }
+.cdh-mix.is-native { text-align: center; margin: 1.5rem auto; line-height: 0; }
+.cdh-mix--beforePost.is-native   { margin: 0 auto 1.5rem; }
+.cdh-mix--topOfContent.is-native { margin: 1.5rem auto 2rem; }
+.cdh-mix--afterContent.is-native { margin: 1.5rem auto 0; }
+.cdh-mix--bottomOfPage.is-native { margin: 2rem auto; }
+.cdh-mix--betweenCards.is-native,
+.cdh-mix--stickyFooter.is-native { margin: 0; }
+.cdh-spot {
+  display: inline-block;
+  max-width: 100%;
+  border-radius: 10px;
+  overflow: hidden;
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.cdh-spot img,
+.prose .cdh-spot img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0;
+  border-radius: 0;
+}
+.cdh-spot--16x9 { display: block; }
+.cdh-spot--16x9 img { width: 100%; }
+.cdh-spot:focus-visible { outline: 2px solid var(--link-hover, #2563eb); outline-offset: 3px; }
+/* Card de anúncio da home: sem a moldura tracejada quando o banner é próprio */
+.post-card--ad:has(.cdh-mix.is-native) {
+  padding: 0;
+  min-height: 0;
+  border-color: transparent;
+  background: transparent;
+}
+/* O fix de slots vazios (.post-card--ad > ins, :has(> ins…)) só enxerga o <ins> como
+   filho direto do card; no slot misto ele fica dentro do .cdh-mix. Mesmas regras aqui:
+   largura cheia (senão o AdSense aborta com availableWidth=0) e colapso se vier vazio. */
+.post-card--ad > .cdh-mix { width: 100%; }
+.post-card--ad:has(> .cdh-mix > ins.adsbygoogle[data-ad-status="unfilled"]),
+.post-card--ad:has(> .cdh-mix > ins.adsbygoogle[data-ad-status="unfill-optimized"]):not(:has(iframe, .google-aiuf > *)) {
+  display: none;
+}
+/* Banner próprio no celular: fica na coluna da lista (o full-bleed é só para o AdSense). */
+@media (max-width: 620px) {
+  .post-card--ad:has(.cdh-mix.is-native) {
+    width: auto;
+    margin-left: 0;
+    padding: 1rem 0;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    overflow: hidden;
+  }
+}
+.ad-sticky-footer .cdh-mix.is-native { display: flex; justify-content: center; }
+
+/* ==========================================================
    45b. Trending box (Em Alta) — in-content
    ========================================================== */
 .trending-box {
@@ -3368,4 +3430,87 @@ body.adm-page details summary { cursor: pointer; }
   /* Pílula de categoria do card já usa color-mix sobre --link-hover (adapta sozinha) */
 }
 
-
+/* ==========================================================
+   Admin — Monetização → Nativos e teste A/B
+   ========================================================== */
+.nv-tabs { margin-bottom: 16px; }
+/* A coluna principal do admin é `1fr` (min-width:auto): uma tabela larga alargava a
+   página toda. Nas telas de Monetização ela encolhe e as tabelas rolam dentro do card. */
+.adm-main:has(.nv-tabs) { min-width: 0; }
+.nv-table-wrap .data-table th,
+.nv-table-wrap .data-table td { padding: 12px 14px; }
+.nv-table-wrap .data-table th:first-child,
+.nv-table-wrap .data-table td:first-child { padding-left: 28px; }
+.nv-table-wrap .views-bar { min-width: 96px; }
+.nv-kpi-sub { font-size: 14px; font-weight: 600; color: var(--adm-text-muted); }
+.nv-verdict {
+  margin: 20px 0 0;
+  padding: 16px 20px 16px 36px;
+  background: var(--adm-muted-bg);
+  border-radius: var(--adm-radius-sm);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--adm-text);
+}
+.nv-verdict li + li { margin-top: 6px; }
+.nv-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; max-width: 100%; }
+.nv-table-wrap .data-table { min-width: 560px; }
+.nv-banner { display: flex; align-items: center; gap: 12px; min-width: 220px; max-width: 360px; }
+.nv-banner strong { font-size: 13px; }
+.nv-banner .muted { font-size: 12px; line-height: 1.35; }
+.nv-thumb {
+  width: 96px; height: 54px; flex-shrink: 0;
+  object-fit: cover;
+  border-radius: 6px;
+  background: var(--adm-muted-bg);
+  border: 1px solid var(--adm-border);
+}
+.nv-thumb--empty { display: inline-block; }
+.nv-split { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 16px; padding: 0 28px 28px; }
+.nv-split > * { min-width: 0; }
+@media (max-width: 1200px) { .nv-split { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 640px) { .nv-split { padding: 0 16px 16px; } }
+.nv-share { display: flex; align-items: center; gap: 12px; }
+.nv-share input[type="range"] { flex: 1; accent-color: var(--adm-accent); min-height: 32px; }
+body.adm-page .nv-share input[type="number"] { width: 84px; }
+.nv-places { display: grid; gap: 8px; }
+.nv-place-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(200px, 260px);
+  align-items: center;
+  gap: 8px 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--adm-border);
+  border-radius: var(--adm-radius-sm);
+}
+.nv-place-row .nv-warn { grid-column: 1 / -1; color: var(--adm-warning-fg); font-size: 12px; }
+@media (max-width: 640px) { .nv-place-row { grid-template-columns: 1fr; } }
+.nv-creatives { display: grid; gap: 8px; }
+.nv-creative {
+  display: grid;
+  grid-template-columns: auto 96px 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--adm-border);
+  border-radius: var(--adm-radius-sm);
+}
+.nv-creative__text { min-width: 0; }
+.nv-creative__text strong { font-size: 13px; }
+.nv-creative__text .muted { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nv-creative__del span { color: var(--adm-text-muted); font-size: 12px; }
+@media (max-width: 640px) {
+  .nv-creative { grid-template-columns: auto 72px 1fr; }
+  .nv-creative .nv-thumb { width: 72px; height: 40px; }
+  .nv-creative__del { grid-column: 2 / -1; }
+}
+.nv-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.nv-chip {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.02em;
+  padding: 1px 6px; border-radius: 999px;
+  background: var(--adm-muted-bg); color: var(--adm-text-muted);
+  opacity: 0.55; text-decoration: line-through;
+}
+.nv-chip.is-on { background: var(--adm-success-bg); color: var(--adm-success); opacity: 1; text-decoration: none; }
+.nv-place-row .check span,
+.nv-creative .check span { text-transform: none; letter-spacing: 0; font-weight: 500; }

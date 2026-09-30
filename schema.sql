@@ -126,3 +126,17 @@ CREATE TABLE IF NOT EXISTS outbound_clicks (
   PRIMARY KEY (bucket, kind, target_id)
 );
 CREATE INDEX IF NOT EXISTS idx_oc_kind_bucket ON outbound_clicks(kind, bucket DESC);
+
+-- ============== BANNERS NATIVOS × ADSENSE (teste A/B) ==============
+-- Ver migrations/0007-ad-mix-events.sql. Também é criada sob demanda pelo Worker.
+CREATE TABLE IF NOT EXISTS ad_mix_events (
+  test TEXT NOT NULL,
+  bucket TEXT NOT NULL,
+  placement TEXT NOT NULL,
+  source TEXT NOT NULL,
+  creative TEXT NOT NULL DEFAULT '',
+  format TEXT NOT NULL DEFAULT '',
+  event TEXT NOT NULL,
+  count INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (test, bucket, placement, source, creative, format, event)
+);

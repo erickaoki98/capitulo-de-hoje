@@ -14,13 +14,14 @@ import {
   countPublishedPosts, countPostsSummary, listPostsForSitemap,
   isCategoryArchived, listArchivedCategoryKeys,
   ensureActiveVisitorsTable, recordHeartbeat, countActiveVisitors, cleanupStaleVisitors,
+  getSettingsByKeys, recordAdMixEvents, adMixStats,
 } from './db';
 import {
   renderHome, renderPost, render404, renderPrivacy, renderDocs,
   renderLogin, renderAdminDashboard, renderAdminPosts, renderAdminEditor,
   renderAdminSettings, renderAdminConfiguracoes, renderAdminAnalytics, renderAdminApiKeys,
   renderAdminCache,
-  type SiteAdSettings, type SiteTypography,
+  type SiteAdSettings, type SiteTypography, type NativePanelData,
 } from './render';
 import {
   readCache, writeCache, bumpCacheVersion, cacheStatus, getCacheVersion,
@@ -45,6 +46,12 @@ import {
   isValidGaMeasurementId, resolveGaIdUpdate, normalizeAuthorName, normalizeAuthorBio,
   sanitizeAvatarUrl, sniffImageType, normalizeConfigTab,
 } from './configuracoes.ts';
+import {
+  type NativeConfig, type MixPlacement, type SlotFormat,
+  MIX_PLACEMENTS, SLOT_FORMATS,
+  parseNativeConfig, newTestId, sanitizeEventBatch, buildMixReport,
+  parseBannerSnippets, mergeCreatives, safeHttpUrl, nativeActive, runtimeConfig,
+} from './nativeAds.ts';
 
 const HTML_HEADERS = {
   'Content-Type': 'text/html; charset=utf-8',
@@ -757,12 +764,120 @@ ${urls.join('\n')}
       if (pathname === '/admin/settings' && request.method === 'GET') {
         if (!authed) return redirectToLogin();
         const settings = await getAllSettings(env.DB);
+        const tab = url.searchParams.get('tab') === 'nativos' ? 'nativos' : 'adsense';
+        let native: NativePanelData | undefined;
+        if (tab === 'nativos') {
+          const cfg = parseNativeConfig(settings['native.config'] ?? null);
+          const rangeParam = url.searchParams.get('range');
+          const range: NativePanelData['range'] = rangeParam === '7' ? '7' : rangeParam === '1' ? '1' : 'all';
+          const sinceDay = range === 'all'
+            ? undefined
+            : new Date(Date.now() - (range === '7' ? 6 : 0) * 86400_000).toISOString().slice(0, 10);
+          const rows = cfg.testId ? await adMixStats(env.DB, cfg.testId, sinceDay) : [];
+          const imp = (url.searchParams.get('imp') ?? '').split('.').map(Number);
+          native = {
+            config: cfg,
+            report: buildMixReport(rows, cfg),
+            range,
+            flash: url.searchParams.get('saved') === '1' ? 'saved' : url.searchParams.get('reset') === '1' ? 'reset' : null,
+            imported: imp.length === 5 && imp.every(Number.isFinite)
+              ? { added: imp[0], updated: imp[1], skipped: imp[2], copied: imp[3], failed: imp[4] } : null,
+            importError: NATIVE_IMPORT_ERRORS[url.searchParams.get('err') ?? ''],
+          };
+        }
         return new Response(renderAdminSettings(env, request, {
           publisherId: settings['adsense.publisher_id'] ?? '',
           autoAds: settings['adsense.auto_ads'] === '1',
           adConfig: parseAdConfig(settings['adsense.placements'] ?? null),
-          saved: url.searchParams.get('saved') === '1',
+          saved: tab === 'adsense' && url.searchParams.get('saved') === '1',
+          tab,
+          native,
         }), { headers: NO_CACHE_HEADERS });
+      }
+
+      // ============= Admin: Monetização → banners nativos × AdSense =============
+      if (pathname === '/admin/settings/native' && request.method === 'POST') {
+        if (!authed) return redirectToLogin();
+        const form = await request.formData();
+        const cur = parseNativeConfig(await getSetting(env.DB, 'native.config'));
+        const placements = { ...cur.placements };
+        for (const k of MIX_PLACEMENTS) {
+          const fmt = String(form.get(`pl.format.${k}`) ?? '');
+          placements[k] = {
+            on: form.get(`pl.on.${k}`) === '1',
+            format: (SLOT_FORMATS as string[]).includes(fmt) ? fmt as SlotFormat : cur.placements[k].format,
+          };
+        }
+        const listed = new Set(form.getAll('cr.ids').map(String));
+        const creatives = cur.creatives
+          .filter((c) => !(listed.has(c.id) && form.get(`cr.remove.${c.id}`) === '1'))
+          .map((c) => listed.has(c.id) ? { ...c, active: form.get(`cr.active.${c.id}`) === '1' } : c);
+        const enabled = form.get('enabled') === '1';
+        const now = Date.now();
+        const next = parseNativeConfig(JSON.stringify({
+          ...cur,
+          enabled,
+          share: Number(form.get('share')),
+          maxPerPage: Number(form.get('maxPerPage')),
+          adsenseRpm: Number(String(form.get('adsenseRpm') ?? '').replace(',', '.')) || 0,
+          valuePerClick: Number(String(form.get('valuePerClick') ?? '').replace(',', '.')) || 0,
+          placements: placements as Record<MixPlacement, { on: boolean; format: SlotFormat }>,
+          creatives,
+          // 1ª vez que liga: nasce o teste.
+          testId: cur.testId || (enabled ? newTestId(now) : ''),
+          startedAt: cur.testId ? cur.startedAt : (enabled ? now : 0),
+        }));
+        await saveNativeConfig(env, cur, next);
+        return new Response(null, { status: 303, headers: { Location: '/admin/settings?tab=nativos&saved=1' } });
+      }
+
+      if (pathname === '/admin/settings/native/import' && request.method === 'POST') {
+        if (!authed) return redirectToLogin();
+        const form = await request.formData();
+        const sourceUrl = safeHttpUrl(String(form.get('url') ?? ''));
+        const pasted = String(form.get('snippets') ?? '').trim();
+        const fail = (code: keyof typeof NATIVE_IMPORT_ERRORS) =>
+          new Response(null, { status: 303, headers: { Location: `/admin/settings?tab=nativos&err=${code}` } });
+        let html = pasted;
+        if (!html) {
+          if (!sourceUrl) return fail('url');
+          try {
+            const res = await fetchWithTimeout(sourceUrl, 15_000);
+            if (!res.ok) return fail('fetch');
+            html = (await res.text()).slice(0, 2_000_000);
+          } catch {
+            return fail('fetch');
+          }
+        }
+        const { banners, skipped } = parseBannerSnippets(html, sourceUrl || canonicalUrl(env, url));
+        if (banners.length === 0) return fail('empty');
+        // Copia as imagens para o R2 (servidas por /img/ com cache longo e WebP).
+        const srcMap = new Map<string, string>();
+        let copied = 0;
+        let failed = 0;
+        const sources = [...new Set(banners.map((b) => b.src))];
+        for (let i = 0; i < sources.length; i += 6) {
+          await Promise.all(sources.slice(i, i + 6).map(async (src) => {
+            const local = await copyBannerToR2(env.IMAGES, src);
+            if (local) { srcMap.set(src, local); copied++; } else failed++;
+          }));
+        }
+        const cur = parseNativeConfig(await getSetting(env.DB, 'native.config'));
+        const merged = mergeCreatives(cur.creatives, banners, srcMap);
+        const next = parseNativeConfig(JSON.stringify({
+          ...cur, creatives: merged.creatives, sourceUrl: sourceUrl || cur.sourceUrl,
+        }));
+        await saveNativeConfig(env, cur, next);
+        const imp = [merged.added, merged.updated, skipped, copied, failed].join('.');
+        return new Response(null, { status: 303, headers: { Location: `/admin/settings?tab=nativos&imp=${imp}` } });
+      }
+
+      if (pathname === '/admin/settings/native/reset' && request.method === 'POST') {
+        if (!authed) return redirectToLogin();
+        const cur = parseNativeConfig(await getSetting(env.DB, 'native.config'));
+        const now = Date.now();
+        await saveNativeConfig(env, cur, { ...cur, testId: newTestId(now), startedAt: now });
+        return new Response(null, { status: 303, headers: { Location: '/admin/settings?tab=nativos&reset=1' } });
       }
 
       if (pathname === '/admin/settings' && request.method === 'POST') {
@@ -987,6 +1102,27 @@ ${urls.join('\n')}
           }
         } catch { /* ignora corpo malformado */ }
         return new Response('ok', { headers: { 'Access-Control-Allow-Origin': '*' } });
+      }
+
+      // ===== Eventos do teste banners nativos × AdSense (público, sem auth) =====
+      // 1 envio por página (sendBeacon em lote). Validado contra a config atual:
+      // teste/criativo/posição desconhecidos são descartados. Nunca falha para o cliente.
+      if (pathname === '/api/ev' && request.method === 'POST') {
+        const site = request.headers.get('Sec-Fetch-Site');
+        if (!site || site === 'same-origin') {
+          try {
+            const text = await request.text();
+            if (text.length <= 8192) {
+              const cfg = await loadNativeConfigCached(env);
+              const rows = sanitizeEventBatch(JSON.parse(text), cfg);
+              if (rows.length > 0) {
+                ctx.waitUntil(recordAdMixEvents(env.DB, cfg.testId, rows)
+                  .catch((e) => console.error('[ad-mix] falha ao gravar eventos:', e)));
+              }
+            }
+          } catch { /* corpo malformado */ }
+        }
+        return new Response(null, { status: 204, headers: { 'Cache-Control': 'no-store' } });
       }
 
       // ===== Contagem de visitantes ao vivo (admin, session auth) =====
@@ -1396,17 +1532,89 @@ function canonicalUrl(env: Env, url: URL): string {
 
 /** Carrega configurações de AdSense do D1, ou retorna undefined se não configurado. */
 async function loadAdSettings(env: Env): Promise<SiteAdSettings | undefined> {
-  const [pubId, autoAds, placements] = await Promise.all([
-    getSetting(env.DB, 'adsense.publisher_id'),
-    getSetting(env.DB, 'adsense.auto_ads'),
-    getSetting(env.DB, 'adsense.placements'),
+  // 1 consulta só (era 1 por chave) — isto roda em todo cache miss de página pública.
+  const s = await getSettingsByKeys(env.DB, [
+    'adsense.publisher_id', 'adsense.auto_ads', 'adsense.placements', 'native.config',
   ]);
+  const pubId = s['adsense.publisher_id'];
   if (!pubId || pubId.length < 8) return undefined;
   return {
     publisherId: pubId,
-    autoAds: autoAds === '1',
-    config: parseAdConfig(placements),
+    autoAds: s['adsense.auto_ads'] === '1',
+    config: parseAdConfig(s['adsense.placements'] ?? null),
+    native: parseNativeConfig(s['native.config'] ?? null),
   };
+}
+
+// ===== Banners nativos × AdSense =====
+
+const NATIVE_IMPORT_ERRORS: Record<string, string> = {
+  url: 'Informe a URL da página de banners ou cole os códigos.',
+  fetch: 'Não consegui abrir a página de banners. Confira a URL (precisa ser pública) e tente de novo.',
+  empty: 'Não achei nenhum banner <a><img></a> em tamanho suportado (300x250, 320x100, 728x90, 320x50 ou 16:9).',
+};
+
+/** Config nativa com cache por isolate (60s) — usada pelo /api/ev, que é chamado muito. */
+let nativeCfgCache: { value: NativeConfig; expiresAt: number } | null = null;
+async function loadNativeConfigCached(env: Env): Promise<NativeConfig> {
+  const now = Date.now();
+  if (nativeCfgCache && nativeCfgCache.expiresAt > now) return nativeCfgCache.value;
+  const value = parseNativeConfig(await getSetting(env.DB, 'native.config'));
+  nativeCfgCache = { value, expiresAt: now + 60_000 };
+  return value;
+}
+
+/**
+ * Salva a config e só limpa o cache público se o que a página pública usa mudou
+ * (bump de cache = todas as páginas regeneram = pico de leitura no D1).
+ */
+async function saveNativeConfig(env: Env, before: NativeConfig, after: NativeConfig): Promise<void> {
+  await setSetting(env.DB, 'native.config', JSON.stringify(after));
+  nativeCfgCache = null;
+  const publicShape = (c: NativeConfig) => (nativeActive(c) ? JSON.stringify(runtimeConfig(c)) : '');
+  if (publicShape(before) !== publicShape(after)) await bumpCacheVersion(env);
+}
+
+async function fetchWithTimeout(target: string, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(target, {
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; CapituloDeHoje-Banners/1.0)' },
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Copia um banner para o R2 com nome pelo HASH DO CONTEÚDO (nv-<hash>.<ext>): se o banner
+ * mudar na origem, reimportar gera outro arquivo (o /img/ é cacheado como immutable).
+ * Retorna '/img/<arquivo>' ou null (aí o criativo continua apontando para a origem).
+ */
+async function copyBannerToR2(bucket: R2Bucket, src: string): Promise<string | null> {
+  try {
+    const res = await fetchWithTimeout(src, 15_000);
+    if (!res.ok) return null;
+    const type = (res.headers.get('Content-Type') ?? '').split(';')[0].trim().toLowerCase();
+    const ext = ({ 'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif' } as Record<string, string>)[type];
+    if (!ext) return null;
+    const buf = await res.arrayBuffer();
+    if (buf.byteLength === 0 || buf.byteLength > 5 * 1024 * 1024) return null;
+    const hash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', buf)))
+      .map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 20);
+    const key = `nv-${hash}.${ext}`;
+    if (!(await bucket.head(key))) {
+      await bucket.put(key, buf, {
+        httpMetadata: { contentType: type, cacheControl: 'public, max-age=31536000, immutable' },
+        customMetadata: { 'source-url': src.slice(0, 1024) },
+      });
+    }
+    return `/img/${key}`;
+  } catch {
+    return null;
+  }
 }
 
 /**

@@ -101,21 +101,36 @@ export function renderAdUnit(
   layout?: string,
   lazy = true,
 ): string {
-  const id = publisherId.startsWith('ca-pub-') ? publisherId : `ca-pub-${publisherId}`;
-  const isInArticle = format === 'in-article';
+  void lazy;
   // Padrão oficial do AdSense: cada <ins> seguido de UM push({}) inline.
   // É exatamente o código que o Google gera. O adsbygoogle.js cuida de
   // lazy-load (não busca below-fold até o leitor chegar perto), viewability e
   // colapso de slots sem fill. NÃO ter push centralizado/custom no layout()
   // garante 1 push por slot (sem double-push / TagError) e máximo fill rate.
+  return `${renderAdIns(publisherId, slotId, format, layout)}
+<script>(adsbygoogle = window.adsbygoogle || []).push({});</script>`;
+}
+
+/**
+ * Só o <ins> do AdSense, SEM o push inline. Uso exclusivo do slot misto
+ * (nativo × AdSense, ver src/nativeAds.ts): o <ins> vai num <template> e o runtime
+ * faz exatamente 1 push quando o sorteio escolhe o AdSense.
+ */
+export function renderAdIns(
+  publisherId: string,
+  slotId: string,
+  format: AdPlacementConfig['format'] = 'auto',
+  layout?: string,
+): string {
+  const id = publisherId.startsWith('ca-pub-') ? publisherId : `ca-pub-${publisherId}`;
+  const isInArticle = format === 'in-article';
   return `<ins class="adsbygoogle"
   style="display:block${isInArticle ? '; text-align:center' : ''}"
   data-ad-client="${escapeAttr(id)}"
   data-ad-slot="${escapeAttr(slotId)}"
   ${isInArticle ? 'data-ad-layout="in-article" data-ad-format="fluid"' : `data-ad-format="${escapeAttr(format ?? 'auto')}"`}
   ${layout ? `data-ad-layout="${escapeAttr(layout)}"` : ''}
-  data-full-width-responsive="true"></ins>
-<script>(adsbygoogle = window.adsbygoogle || []).push({});</script>`;
+  data-full-width-responsive="true"></ins>`;
 }
 
 function escapeAttr(s: string): string {
