@@ -1,3 +1,4 @@
+import { cachedImageResponse } from './imageCache.ts';
 import { handleAdSenseRoute } from './adsenseRoutes.ts';
 import { syncReports, reportsView, pageRpm, nextDayIn } from './adsenseReports.ts';
 import { usdBrl } from './fx.ts';
@@ -11,12 +12,12 @@ import {
   createPostsBatch, upsertRedirectsBatch, existingSlugs,
   getSetting, setSetting, getAllSettings,
   recordPageview, topPostsByViews, topPublicPostsByViews,
-  getPostsBySlugList, getPublicPostsBySlugList, viewsForPath, totalViewsByPath,
+  getPostsBySlugList, getPublicPostsBySlugList, viewsForPath, viewsForPaths, totalViewsByPath,
   pageviewsSummary, pageviewsByDay,
   listApiKeys, insertApiKey, findApiKeyByHash, touchApiKey, deleteApiKey,
   countPublishedPosts, countPostsSummary, listPostsForSitemap,
   isCategoryArchived, listArchivedCategoryKeys,
-  ensureActiveVisitorsTable, recordHeartbeat, countActiveVisitors, cleanupStaleVisitors,
+  recordHeartbeat, countActiveVisitors, cleanupStaleVisitors,
   getSettingsByKeys, recordAdMixEvents, adMixStats,
 } from './db';
 import {
@@ -146,88 +147,90 @@ export default {
         if (!key || key.includes('/') || key.includes('..')) {
           return new Response('Not found', { status: 404 });
         }
-        const ifNoneMatch = request.headers.get('If-None-Match');
-        const acceptsWebp = (request.headers.get('Accept') || '').includes('image/webp');
-        const noOpt = url.searchParams.get('orig') === '1';
-        const isPng = /\.png$/i.test(key);
-        // Chave do derivado otimizado no R2. Versão 3 (_opt3) força regeneração dos
-        // derivados: a v2 gerava WebP lossless (~1MB em fotos); a v3 também tenta
-        // JPEG q80 para PNGs opacos, escolhendo o menor (heroes ~1MB → ~150KB).
-        // Bump de versão = não-destrutivo; os _opt2 antigos viram órfãos inofensivos.
-        const optKey = `_opt3/${key}.webp`;
+        return cachedImageResponse(request, ctx, async () => {
+          const ifNoneMatch = request.headers.get('If-None-Match');
+          const acceptsWebp = (request.headers.get('Accept') || '').includes('image/webp');
+          const noOpt = url.searchParams.get('orig') === '1';
+          const isPng = /\.png$/i.test(key);
+          // Chave do derivado otimizado no R2. Versão 3 (_opt3) força regeneração dos
+          // derivados: a v2 gerava WebP lossless (~1MB em fotos); a v3 também tenta
+          // JPEG q80 para PNGs opacos, escolhendo o menor (heroes ~1MB → ~150KB).
+          // Bump de versão = não-destrutivo; os _opt2 antigos viram órfãos inofensivos.
+          const optKey = `_opt3/${key}.webp`;
 
-        if (request.method === 'HEAD') {
-          const meta = await env.IMAGES.head(key);
-          if (!meta) return new Response(null, { status: 404 });
-          const h = new Headers();
-          meta.writeHttpMetadata(h);
-          h.set('etag', meta.httpEtag);
-          h.set('Cache-Control', 'public, max-age=31536000, immutable');
-          h.set('Content-Length', String(meta.size));
-          if (ifNoneMatch === meta.httpEtag) return new Response(null, { status: 304, headers: h });
-          return new Response(null, { status: 200, headers: h });
-        }
-
-        // 1) Browser moderno (WebP) e não pediu original explicitamente:
-        //    tenta servir o derivado otimizado já cacheado no R2.
-        if (acceptsWebp && !noOpt) {
-          const cachedOpt = await env.IMAGES.get(optKey);
-          if (cachedOpt) {
+          if (request.method === 'HEAD') {
+            const meta = await env.IMAGES.head(key);
+            if (!meta) return new Response(null, { status: 404 });
             const h = new Headers();
-            cachedOpt.writeHttpMetadata(h);
-            h.set('etag', cachedOpt.httpEtag);
+            meta.writeHttpMetadata(h);
+            h.set('etag', meta.httpEtag);
+            h.set('Cache-Control', 'public, max-age=31536000, immutable');
+            h.set('Content-Length', String(meta.size));
+            if (ifNoneMatch === meta.httpEtag) return new Response(null, { status: 304, headers: h });
+            return new Response(null, { status: 200, headers: h });
+          }
+
+          // 1) Browser moderno (WebP) e não pediu original explicitamente:
+          //    tenta servir o derivado otimizado já cacheado no R2.
+          if (acceptsWebp && !noOpt) {
+            const cachedOpt = await env.IMAGES.get(optKey);
+            if (cachedOpt) {
+              const h = new Headers();
+              cachedOpt.writeHttpMetadata(h);
+              h.set('etag', cachedOpt.httpEtag);
+              h.set('Cache-Control', 'public, max-age=31536000, immutable');
+              h.set('Vary', 'Accept');
+              h.set('X-Image-Opt', 'hit');
+              if (ifNoneMatch === cachedOpt.httpEtag) return new Response(null, { status: 304, headers: h });
+              return new Response(cachedOpt.body, { headers: h });
+            }
+          }
+
+          // 2) Carrega a original.
+          const obj = await env.IMAGES.get(key);
+          if (!obj) return new Response('Not found', { status: 404 });
+
+          // 3) Se elegível, otimiza on-the-fly, guarda o derivado no R2 e serve.
+          //    IMPORTANTE: ler obj.arrayBuffer() consome obj.body — por isso, se a
+          //    otimização não compensar, servimos `buf` (bytes já lidos), NUNCA obj.body.
+          if (acceptsWebp && !noOpt && shouldOptimize(key, obj.size, acceptsWebp)) {
+            const buf = await obj.arrayBuffer();
+            let opt: ReturnType<typeof optimizeImage> = null;
+            try { opt = optimizeImage(buf, isPng); } catch { opt = null; }
+            if (opt) {
+              ctx.waitUntil(
+                env.IMAGES.put(optKey, opt.bytes, {
+                  httpMetadata: { contentType: opt.contentType, cacheControl: 'public, max-age=31536000, immutable' },
+                }).catch(() => {}),
+              );
+              const h = new Headers();
+              h.set('Content-Type', opt.contentType);
+              h.set('Cache-Control', 'public, max-age=31536000, immutable');
+              h.set('Vary', 'Accept');
+              h.set('X-Image-Opt', 'miss');
+              return new Response(opt.bytes, { headers: h });
+            }
+            // Otimização não compensou/falhou → serve os bytes originais já lidos.
+            const h = new Headers();
+            obj.writeHttpMetadata(h);
+            h.set('etag', obj.httpEtag);
             h.set('Cache-Control', 'public, max-age=31536000, immutable');
             h.set('Vary', 'Accept');
-            h.set('X-Image-Opt', 'hit');
-            if (ifNoneMatch === cachedOpt.httpEtag) return new Response(null, { status: 304, headers: h });
-            return new Response(cachedOpt.body, { headers: h });
+            h.set('X-Image-Opt', 'skip');
+            return new Response(buf, { headers: h });
           }
-        }
 
-        // 2) Carrega a original.
-        const obj = await env.IMAGES.get(key);
-        if (!obj) return new Response('Not found', { status: 404 });
-
-        // 3) Se elegível, otimiza on-the-fly, guarda o derivado no R2 e serve.
-        //    IMPORTANTE: ler obj.arrayBuffer() consome obj.body — por isso, se a
-        //    otimização não compensar, servimos `buf` (bytes já lidos), NUNCA obj.body.
-        if (acceptsWebp && !noOpt && shouldOptimize(key, obj.size, acceptsWebp)) {
-          const buf = await obj.arrayBuffer();
-          let opt: ReturnType<typeof optimizeImage> = null;
-          try { opt = optimizeImage(buf, isPng); } catch { opt = null; }
-          if (opt) {
-            ctx.waitUntil(
-              env.IMAGES.put(optKey, opt.bytes, {
-                httpMetadata: { contentType: opt.contentType, cacheControl: 'public, max-age=31536000, immutable' },
-              }).catch(() => {}),
-            );
-            const h = new Headers();
-            h.set('Content-Type', opt.contentType);
-            h.set('Cache-Control', 'public, max-age=31536000, immutable');
-            h.set('Vary', 'Accept');
-            h.set('X-Image-Opt', 'miss');
-            return new Response(opt.bytes, { headers: h });
+          // 4) Não elegível (SVG/GIF/pequena/sem webp): serve a original (stream intacto).
+          const headers = new Headers();
+          obj.writeHttpMetadata(headers);
+          headers.set('etag', obj.httpEtag);
+          headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+          headers.set('Vary', 'Accept');
+          if (ifNoneMatch === obj.httpEtag) {
+            return new Response(null, { status: 304, headers });
           }
-          // Otimização não compensou/falhou → serve os bytes originais já lidos.
-          const h = new Headers();
-          obj.writeHttpMetadata(h);
-          h.set('etag', obj.httpEtag);
-          h.set('Cache-Control', 'public, max-age=31536000, immutable');
-          h.set('Vary', 'Accept');
-          h.set('X-Image-Opt', 'skip');
-          return new Response(buf, { headers: h });
-        }
-
-        // 4) Não elegível (SVG/GIF/pequena/sem webp): serve a original (stream intacto).
-        const headers = new Headers();
-        obj.writeHttpMetadata(headers);
-        headers.set('etag', obj.httpEtag);
-        headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-        headers.set('Vary', 'Accept');
-        if (ifNoneMatch === obj.httpEtag) {
-          return new Response(null, { status: 304, headers });
-        }
-        return new Response(obj.body, { headers });
+          return new Response(obj.body, { headers });
+        });
       }
 
       // ===== Public: home =====
@@ -479,7 +482,6 @@ ${urls.join('\n')}
           return new Response(renderLogin(env, request), { headers: NO_CACHE_HEADERS });
         }
         // Carrega dados pro dashboard em paralelo
-        await ensureActiveVisitorsTable(env.DB);
         const [recent, postCounts, summary24h, top24h, activeNow] = await Promise.all([
           listPosts(env.DB, { includeDrafts: true, limit: 6 }),
           // Contagem via SQL (não derivar de uma lista limitada — travava em 500).
@@ -1032,7 +1034,6 @@ ${urls.join('\n')}
       // ============= Admin: Analytics =============
       if (pathname === '/admin/analytics' && request.method === 'GET') {
         if (!authed) return redirectToLogin();
-        await ensureActiveVisitorsTable(env.DB);
         const [s24, s7d, s30d, daily, activeNow] = await Promise.all([
           pageviewsSummary(env.DB, 24),
           pageviewsSummary(env.DB, 24 * 7),
@@ -1119,9 +1120,7 @@ ${urls.join('\n')}
           const vid = typeof body.vid === 'string' ? body.vid.slice(0, 64) : '';
           const p = typeof body.path === 'string' ? body.path.slice(0, 256) : '/';
           if (vid) {
-            ctx.waitUntil(ensureActiveVisitorsTable(env.DB).then(() =>
-              recordHeartbeat(env.DB, vid, p),
-            ).catch(() => {}));
+            ctx.waitUntil(recordHeartbeat(env.DB, vid, p).catch(() => {}));
           }
         } catch { /* ignora corpo malformado */ }
         return new Response('ok', { headers: { 'Access-Control-Allow-Origin': '*' } });
@@ -1152,7 +1151,6 @@ ${urls.join('\n')}
       if (pathname === '/api/active-visitors' && request.method === 'GET') {
         const authedApi = await requireAuth(request, env.SESSION_SECRET);
         if (!authedApi) return json({ error: 'Unauthorized' }, 401);
-        await ensureActiveVisitorsTable(env.DB);
         const count = await countActiveVisitors(env.DB);
         ctx.waitUntil(cleanupStaleVisitors(env.DB).catch(() => {}));
         return new Response(JSON.stringify({ active: count }), {
@@ -1239,15 +1237,11 @@ ${urls.join('\n')}
           const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? 20)));
           const includeViews = url.searchParams.get('views') === '1';
           const items = await listPosts(env.DB, { includeDrafts: false, limit });
-          // se views=1, busca contadores em paralelo
+          // se views=1, agrupa os contadores em uma consulta indexada.
           let viewsMap: Map<string, number> | null = null;
           if (includeViews) {
-            viewsMap = new Map();
-            const promises = items.map(async (p) => {
-              const v = await viewsForPath(env.DB, '/' + p.slug, 24);
-              viewsMap!.set(p.slug, v);
-            });
-            await Promise.all(promises);
+            const byPath = await viewsForPaths(env.DB, items.map(p => '/' + p.slug), 24);
+            viewsMap = new Map(items.map(p => [p.slug, byPath.get('/' + p.slug) ?? 0]));
           }
           return new Response(JSON.stringify({
             count: items.length,

@@ -379,6 +379,22 @@ export async function viewsForPath(db: D1Database, path: string, hours: number):
   return row?.views ?? 0;
 }
 
+/** Same time window as viewsForPath, with at most 100 paths per indexed query. */
+export async function viewsForPaths(db: D1Database, paths: string[], hours: number): Promise<Map<string, number>> {
+  const unique = [...new Set(paths)];
+  const views = new Map<string, number>(unique.map(path => [path, 0]));
+  const since = new Date(Date.now() - hours * 3600_000).toISOString().slice(0, 13);
+  for (let offset = 0; offset < unique.length; offset += 100) {
+    const batch = unique.slice(offset, offset + 100);
+    const { results } = await db.prepare(
+      `SELECT path, SUM(count) AS views FROM pageviews_hourly
+       WHERE path IN (${batch.map(() => '?').join(',')}) AND bucket >= ? GROUP BY path`,
+    ).bind(...batch, since).all<{ path: string; views: number }>();
+    for (const row of results ?? []) views.set(row.path, row.views ?? 0);
+  }
+  return views;
+}
+
 /** Total de views (todas as horas) por path. Uma única query → Map path → views.
  *  Usado na lista do admin pra mostrar as views de cada artigo sem N queries. */
 export async function totalViewsByPath(db: D1Database): Promise<Map<string, number>> {
@@ -790,33 +806,58 @@ export async function adMixStats(
 
 // ============== ACTIVE VISITORS (contador ao vivo) ==============
 
+// Bootstrap only after a real missing-table error; never DDL on every heartbeat.
+// Coalesce concurrent recovery and back off failures within this isolate.
+const activeVisitorBootstrap = new WeakMap<D1Database, { promise: Promise<void>; retryAt: number }>();
+
 export async function ensureActiveVisitorsTable(db: D1Database): Promise<void> {
-  await db.prepare(
-    `CREATE TABLE IF NOT EXISTS active_visitors (
-       visitor_id TEXT PRIMARY KEY,
-       path TEXT NOT NULL DEFAULT '/',
-       last_seen INTEGER NOT NULL
-     )`,
-  ).run();
+  const existing = activeVisitorBootstrap.get(db);
+  if (existing && existing.retryAt > Date.now()) return existing.promise;
+  const entry = { promise: Promise.resolve(), retryAt: Infinity };
+  entry.promise = (async () => {
+    await db.prepare(
+      `CREATE TABLE IF NOT EXISTS active_visitors (
+         visitor_id TEXT PRIMARY KEY,
+         path TEXT NOT NULL DEFAULT '/',
+         last_seen INTEGER NOT NULL
+       )`,
+    ).run();
+    await db.prepare('CREATE INDEX IF NOT EXISTS idx_active_visitors_last_seen ON active_visitors(last_seen)').run();
+  })().catch((error) => {
+    entry.retryAt = Date.now() + 60_000;
+    throw error;
+  });
+  activeVisitorBootstrap.set(db, entry);
+  return entry.promise;
+}
+
+async function withActiveVisitors<T>(db: D1Database, operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (!/no such table:\s*(?:main\.)?active_visitors\b/i.test(String(error))) throw error;
+    await ensureActiveVisitorsTable(db);
+    return operation(); // One recovery attempt; unrelated errors are not retried.
+  }
 }
 
 export async function recordHeartbeat(db: D1Database, visitorId: string, path: string): Promise<void> {
   const now = Date.now();
-  await db.prepare(
+  await withActiveVisitors(db, () => db.prepare(
     `INSERT INTO active_visitors (visitor_id, path, last_seen) VALUES (?, ?, ?)
      ON CONFLICT(visitor_id) DO UPDATE SET path = excluded.path, last_seen = excluded.last_seen`,
-  ).bind(visitorId, path, now).run();
+  ).bind(visitorId, path, now).run());
 }
 
 export async function countActiveVisitors(db: D1Database, windowMs = 300_000): Promise<number> {
   const since = Date.now() - windowMs;
-  const row = await db.prepare(
+  const row = await withActiveVisitors(db, () => db.prepare(
     'SELECT COUNT(*) AS n FROM active_visitors WHERE last_seen >= ?',
-  ).bind(since).first<{ n: number }>();
+  ).bind(since).first<{ n: number }>());
   return row?.n ?? 0;
 }
 
 export async function cleanupStaleVisitors(db: D1Database, windowMs = 300_000): Promise<void> {
   const since = Date.now() - windowMs;
-  await db.prepare('DELETE FROM active_visitors WHERE last_seen < ?').bind(since).run();
+  await withActiveVisitors(db, () => db.prepare('DELETE FROM active_visitors WHERE last_seen < ?').bind(since).run());
 }

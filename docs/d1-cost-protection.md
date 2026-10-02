@@ -57,3 +57,55 @@ Após confirmação: atualizar/verificar a base remota, repetir checagem se houv
 O JSON interno no R2 informa `status` (`ready`, `refreshing` ou `blocked`), `nextAttemptAt` e `snapshot.generatedAt`. Logs de falhas usam `[d1-ranking-guard]`. Não apagar o objeto de controle para forçar atualizações repetidas: a reserva é a proteção contra recorrência.
 
 A rotina não cria alertas de cobrança na conta nem automações de mensagens. Para desfazer uma mudança funcional, preservar o produtor limitado e a proibição de consultas de ranking por visitante; rollback para uma versão anterior ao guard remove esta proteção.
+
+## Auditoria e otimizações de custo — 01/10/2026
+
+Preparadas na branch `codex/otimizar-custos`, em checkout isolado de `origin/main`
+(`7af39db61cad7783b87ff9927f2aeafbe78a5938`). Ainda não publicadas.
+
+### Evidência operacional
+
+Painel da conta, verificado nesta conversa:
+
+- Fatura de 11/09: US$ 220,66; ciclo de consumo 11/08–10/09 com US$ 194,91 de leituras D1 excedentes (219,91 bilhões de linhas).
+- Ciclo 11/09–10/10: US$ 12,95 de consumo observado; projeção do painel de US$ 17,66. Valores de consumo, não a fatura final com mensalidades e ajustes.
+- D1 no ciclo atual: 1,98 bilhão de leituras e 21,61 milhões de gravações, sem excedente. Últimas 24 horas: aproximadamente 5,14 milhões de linhas lidas.
+- Consumo pago atual: requisições Workers US$ 6,60; operações R2 classe B US$ 3,60; armazenamento R2 US$ 2,25; CPU Workers US$ 0,50.
+- Os custos são da conta inteira, que também possui buckets da Megumi; não atribuir todo o R2 ao blog.
+- A consulta protegida de ranking, com `INDEXED BY idx_ph_bucket_path_count` e `LIMIT` na entrada, aparece em execução. O antigo excedente não está se repetindo nos dados observados.
+- `CREATE TABLE IF NOT EXISTS active_visitors` apareceu aproximadamente 304 mil vezes em 24 horas. Isso é DDL redundante, não evidência de erro "table does not exist". O custo D1 é medido por linhas, não simplesmente pelo número de chamadas; remover DDL reduz trabalho e latência, sem promessa de economia de US$ 194,91.
+
+Versão de produção confirmada pela API somente leitura: `217890af-be45-4cf1-963d-3e6a1fdfd382`, publicada em 30/09/2026 às 02:51 UTC (29/09 às 23:51 BRT). O JavaScript dessa versão foi comparado ao bundle da base `7af39db`: conteúdo idêntico após normalizar apenas comentários de caminhos de arquivos e referência de sourcemap. O WASM tem o mesmo nome com hash. Metadados dos bindings conferidos. A proposta acrescenta somente as alterações de custo abaixo.
+
+### Alterações preparadas
+
+1. **Contador ao vivo:** escrita e leitura usam diretamente a tabela. Bootstrap acontece somente após erro específico de ausência de `active_visitors`, compartilhado entre chamadas concorrentes. Recuperação cria também o índice `last_seen`; erro de bootstrap recebe espera de 60 segundos por isolate. Outros erros não disparam criação nem retry. Preservados frequência do heartbeat, janela de visitantes, contagem e limpeza existentes. Não exige migration no banco atual.
+2. **Imagens:** `/img/` usa Cache API por ponto de presença antes de consultar R2. Originais e imagens negociadas para WebP têm chaves distintas; `orig=1` mantém original. URLs de campanha compartilham cache. HEAD conserva metadados do original; Range não é armazenado; 304, erros e respostas parciais não contaminam cache. Falha de cache continua servindo pelo caminho existente. Cache de borda dura até um dia; cache do navegador mantém o contrato anterior de nomes imutáveis. Se uma imagem precisar mudar, usar novo nome, como já exige o cache existente de um ano.
+3. **API autenticada:** `/api/posts?views=1` agrupa as visualizações dos artigos em uma consulta por até 100 paths, mantendo a janela e os totais. Lista vazia não consulta contadores; listas maiores são divididas em lotes. Contratos de `/api/posts/top?hours=...` preservados.
+
+### Economia e desempenho
+
+- Caminho normal do heartbeat: uma escrita, eliminando a ida adicional para DDL. Teste com 1.000 heartbeats preservou todas as contagens e executou zero DDL.
+- Imagens repetidas: teste com 100 pedidos realizou um carregamento da origem. A economia real depende da taxa de acerto por PoP, tamanho máximo cacheável, tráfego e disponibilidade de cache. A Cache API evita leituras R2 e processamento repetido; **não elimina a cobrança da invocação do Worker**. Não interpretar os US$ 3,60 do R2 da conta como economia garantida do blog.
+- Listagem com visualizações: até 100 consultas de contadores passam a uma. Teste SQLite confirmou uso do índice por path/janela, ausência de varredura completa, totais e zeros preservados.
+- Nenhum snapshot de ranking é calculado por visitante. Reservas, limites e testes da proteção anterior permanecem ativos.
+
+### Outros pontos avaliados
+
+- Rankings e sincronização AdSense já possuem reservas globais de frequência; não ampliar crons/retries.
+- Migração de imagens já dispensa varreduras de progresso a cada minuto. Reduzir o cron pode atrasar imagens novas; manter a frequência atual neste escopo.
+- Configuração HTML possui cache de 30 segundos; aumentá-lo atrasaria mudanças administrativas. Mantido.
+- APIs/admin autenticados ainda agregam históricos e podem ter custo se usados intensamente. Consolidar relatórios com snapshots é uma possível etapa posterior, exigindo definir a tolerância a dados atrasados. A listagem de visualizações foi otimizada sem alterar sua atualização.
+- Arquivos R2 derivados antigos (`_opt2`) podem ocupar espaço; não apagar sem inventário de referências e identificação do bucket. O armazenamento de toda a conta é pequeno em dinheiro comparado ao incidente D1.
+- Limites de CPU, alteração de telemetria, redução de heartbeat, expiração de histórico e bloqueio de bots não foram adotados sem evidência específica: podem afetar imagens, diagnóstico, precisão ou leitores legítimos. As alterações deste escopo removem trabalho duplicado.
+- Proteção de aplicação e alertas não equivalem a teto financeiro da conta. Uso malicioso, APIs autenticadas e outros produtos ainda podem gerar cobrança.
+
+### Verificação e escopo para publicar
+
+108 testes aprovados; `npm run check:deploy` (incluindo os novos módulos e `db.ts` na verificação TypeScript) e `wrangler deploy --dry-run` aprovados. Testes incluem fetch real do Worker, concorrência de recuperação de tabela, backoff, Cache API indisponível, variantes de imagem, 304, HEAD, Range, consultas SQLite e preservação das proteções de ranking.
+
+Alvo de publicação: Worker `capitulo-de-hoje`, domínio `capitulodehoje.com.br`, DB `e8eae0e1-be0a-4fc6-8429-4ab9f072a544`, bucket `capitulo-de-hoje-images`. Branch `codex/otimizar-custos`. Sem execução de migration, exclusão de arquivos R2 ou alteração de assinatura.
+
+Escopo de nove arquivos: `src/db.ts`, `src/index.ts`, `src/imageCache.ts`, `src/activeVisitors.test.mjs`, `src/imageCache.test.mjs`, `src/viewsBatch.test.mjs`, `src/workerSafety.test.mjs`, `tsconfig.cost-guard.json`, `docs/d1-cost-protection.md`.
+
+Antes de publicar, atualizar `origin/main` novamente, confirmar ancestralidade e verificar que a versão ativa ainda é a revisada (ou reconciliar mudanças posteriores), além da confirmação contextual do usuário. Depois da publicação, verificar heartbeat, GET de imagem, cache HIT, HEAD, artigo e estado do ranking. A economia financeira só pode ser medida após tráfego real; a fatura histórica permanece devida até eventual ajuste da Cloudflare.

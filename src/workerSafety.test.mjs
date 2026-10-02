@@ -54,3 +54,64 @@ test('Wrangler e CI exigem proteção antes de publicar',async()=>{
   assert.match(pkg.scripts.test,/src\/\*\.test\.mjs/);
   assert.match(pkg.scripts['test:d1-protection'],/workerSafety\.test\.mjs/);
 });
+
+test('fetch real: heartbeats preserve writes without CREATE TABLE per request', async () => {
+  const queries = [];
+  const DB = { prepare(sql) {
+    queries.push(sql);
+    return { bind() { return this; }, async run() { return { success: true }; } };
+  } };
+  for (let i = 0; i < 100; i++) {
+    const tasks = [];
+    const response = await worker.fetch(new Request('https://example.com/api/heartbeat', {
+      method: 'POST', body: JSON.stringify({ vid: `visitor-${i}`, path: '/artigo' }),
+    }), { DB, SESSION_SECRET: 'test' }, { waitUntil(p) { tasks.push(p); } });
+    assert.equal(response.status, 200);
+    await Promise.all(tasks);
+  }
+  assert.equal(queries.filter(sql => /INSERT INTO active_visitors/.test(sql)).length, 100);
+  assert.equal(queries.filter(sql => /CREATE TABLE/.test(sql)).length, 0);
+});
+
+test('fetch real: cached images avoid R2 reads, HEAD still uses original metadata', async () => {
+  const previous = globalThis.caches;
+  const entries = new Map();
+  globalThis.caches = { default: {
+    async match(request) { return entries.get(request.url)?.clone(); },
+    async put(request, response) { entries.set(request.url, response.clone()); },
+  } };
+  let gets = 0, heads = 0;
+  const IMAGES = {
+    async get(key) {
+      gets++;
+      assert.equal(key, 'photo.svg');
+      return {
+        body: 'svg-bytes', size: 9, httpEtag: '"original"',
+        writeHttpMetadata(h) { h.set('Content-Type', 'image/svg+xml'); },
+      };
+    },
+    async head(key) {
+      heads++;
+      return {
+        size: 9, httpEtag: '"original"',
+        writeHttpMetadata(h) { h.set('Content-Type', 'image/svg+xml'); },
+      };
+    },
+  };
+  const env = { IMAGES, SESSION_SECRET: 'test' };
+  try {
+    for (let i = 0; i < 20; i++) {
+      const tasks = [];
+      const response = await worker.fetch(new Request(`https://example.com/img/photo.svg?utm_source=${i}`), env, { waitUntil(p) { tasks.push(p); } });
+      assert.equal(response.status, 200);
+      assert.equal(await response.text(), 'svg-bytes');
+      await Promise.all(tasks);
+    }
+    assert.equal(gets, 1);
+    const response = await worker.fetch(new Request('https://example.com/img/photo.svg', { method: 'HEAD' }), env, { waitUntil() {} });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('Content-Length'), '9');
+    assert.equal(await response.text(), '');
+    assert.equal(heads, 1);
+  } finally { globalThis.caches = previous; }
+});
