@@ -61,7 +61,7 @@ A rotina não cria alertas de cobrança na conta nem automações de mensagens. 
 ## Auditoria e otimizações de custo — 01/10/2026
 
 Preparadas na branch `codex/otimizar-custos`, em checkout isolado de `origin/main`
-(`7af39db61cad7783b87ff9927f2aeafbe78a5938`). Ainda não publicadas.
+(`7af39db61cad7783b87ff9927f2aeafbe78a5938`). Publicação autorizada pelo usuário em 01/10/2026 e concluída às 21:18 BRT.
 
 ### Evidência operacional
 
@@ -109,3 +109,15 @@ Alvo de publicação: Worker `capitulo-de-hoje`, domínio `capitulodehoje.com.br
 Escopo de nove arquivos: `src/db.ts`, `src/index.ts`, `src/imageCache.ts`, `src/activeVisitors.test.mjs`, `src/imageCache.test.mjs`, `src/viewsBatch.test.mjs`, `src/workerSafety.test.mjs`, `tsconfig.cost-guard.json`, `docs/d1-cost-protection.md`.
 
 Antes de publicar, atualizar `origin/main` novamente, confirmar ancestralidade e verificar que a versão ativa ainda é a revisada (ou reconciliar mudanças posteriores), além da confirmação contextual do usuário. Depois da publicação, verificar heartbeat, GET de imagem, cache HIT, HEAD, artigo e estado do ranking. A economia financeira só pode ser medida após tráfego real; a fatura histórica permanece devida até eventual ajuste da Cloudflare.
+
+
+### Publicação concluída e verificação operacional
+
+- Código commitado e enviado em `7c47d0a` na branch `codex/otimizar-custos`. Base remota e versão anterior permaneciam as mesmas da revisão; nenhuma reconciliação adicional foi necessária.
+- Worker publicado com mensagem identificando o commit; versão `0d3b3097-c217-47b7-8338-6885e95f84bb`. A API de deployments confirmou 100% do tráfego nesta versão.
+- Os 108 testes, TypeScript e dry-run passaram novamente antes da publicação. O custom build repetiu a proteção durante o deploy.
+- Home e artigo público retornaram HTTP 200. Endpoint de heartbeat retornou HTTP 200 com `ok`; a gravação interna não foi consultada separadamente, pois o token local não tem acesso D1.
+- GET de imagem original e variante negociada: HTTP 200 e `X-Image-Cache: HIT`. HEAD: HTTP 200, Content-Length correto. If-None-Match: HTTP 304 com cache HIT. O logo testado mantém PNG porque sua otimização não compensa; o comportamento existente foi preservado.
+- Nenhuma migration foi executada e nenhum arquivo foi excluído do R2. Proteção de ranking preservada e testada.
+- A leitura do JSON interno pelo Wrangler foi recusada por falta de permissão R2 no token. Pelo Chrome autenticado, o objeto de controle foi confirmado como existente, 19,18 kB, modificado em 01/10 às 21:12:08 BRT. O painel não oferece preview e a tentativa de download não retornou arquivo ao controle do navegador; portanto `status` e `snapshot.generatedAt` não foram lidos nesta publicação. A reserva de 30 minutos não foi apagada nem forçada.
+- A economia financeira será mensurável somente após tráfego real no novo código; os testes comprovam a redução de operações repetidas, não um valor monetário garantido.
