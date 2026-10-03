@@ -2757,60 +2757,6 @@ body:has(.post__hero-wrap) .site-header {
   min-height: 200px;
   contain: layout style;
 }
-/* O card é flex centralizado: sem largura explícita o <ins> (vazio até o
-   AdSense preencher) encolhe para 0px e o AdSense aborta com
-   "TagError: No slot size for availableWidth=0" — o anúncio entre cards da
-   home NUNCA carregava. width:100% dá ao slot a largura útil do card. */
-.post-card--ad > ins.adsbygoogle { width: 100%; }
-/* No celular o AdSense estica o anúncio para a largura da TELA (full-width
-   responsive, margem negativa). Dentro do card (overflow:hidden) as bordas do
-   criativo — inclusive o ícone AdChoices — seriam cortadas. Mesma técnica
-   full-bleed do .ad-inarticle: o card ocupa a tela toda e nada é recortado. */
-@media (max-width: 620px) {
-  .post-card--ad {
-    width: 100vw;
-    margin-left: calc(-50vw + 50%);
-    padding: 1rem 0;
-    border: none;
-    border-bottom: 1px solid var(--border);
-    overflow: visible;
-  }
-}
-
-/* ===== Slots sem anúncio: colapsar em vez de deixar caixa vazia =====
-   - `unfilled`: CSS oficial do Google (support.google.com/adsense/answer/10762946).
-   - `unfill-optimized`: com "Preencher anúncios vazios na página" ligado na conta
-     AdSense, o slot sem anúncio vira `unfill-optimized` e, se estiver na tela
-     (ex.: "Antes do título"), o AdSense MANTÉM a caixa reservada (375px no
-     celular) sem nada dentro — era o espaço vazio acima do título do post.
-     Só colapsamos quando nada foi renderizado (sem iframe e com o container
-     .google-aiuf vazio). Se o AdSense colocar algo depois, a regra deixa de
-     casar e o slot reaparece sozinho. Anúncio preenchido nunca é afetado.
-   - O wrapper também some, para não sobrar a margem do slot.
-   Regras separadas: navegador sem :has() descartaria a regra inteira. */
-ins.adsbygoogle[data-ad-status="unfilled"] { display: none !important; }
-ins.adsbygoogle[data-ad-status="unfill-optimized"]:not(:has(iframe, .google-aiuf > *)) {
-  display: none !important;
-}
-:is(.ad-slot, .ad-inarticle, .post-card--ad):has(> ins.adsbygoogle[data-ad-status="unfilled"]),
-:is(.ad-slot, .ad-inarticle, .post-card--ad):has(> ins.adsbygoogle[data-ad-status="unfill-optimized"]):not(:has(iframe, .google-aiuf > *)) {
-  display: none;
-}
-/* Quando o AdSense PREENCHE o slot otimizado (ex.: botão "Descobrir mais" /
-   .goog-rtopics, ~28px), ele continua travando a caixa em 375px acima da dobra
-   — um botão perdido no meio de um bloco vazio. Abaixo da dobra o próprio
-   AdSense já usa height:auto; aqui fazemos o mesmo no slot da tela inicial.
-   O .google-aiuf traz `height:375px !important` inline (inalcançável por CSS),
-   então limitamos com max-height:max-content: a caixa fica do tamanho do
-   conteúdo, que continua visível (só some o vazio). Com iframe dentro,
-   max-content = altura do iframe → nada é cortado. */
-ins.adsbygoogle[data-ad-status="unfill-optimized"],
-ins.adsbygoogle[data-ad-status="unfill-optimized"] > div {
-  height: auto !important;
-}
-ins.adsbygoogle[data-ad-status="unfill-optimized"] .google-aiuf {
-  max-height: max-content !important;
-}
 /* Sticky footer: z-index abaixo do cookie-consent (9999) */
 .ad-sticky-footer {
   position: fixed; bottom: 0; left: 0; right: 0;
