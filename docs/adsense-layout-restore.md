@@ -55,7 +55,7 @@ O algoritmo de posição já é equivalente ao anterior quando o teste está des
 - 110 testes aprovados e TypeScript da proteção aprovado em `npm run check:deploy`.
 - `wrangler deploy --dry-run` aprovado, incluindo nova execução obrigatória dos testes pelo build guard.
 
-Reversão autorizada pelo usuário em 02/10/2026; publicação em andamento. Não há promessa de recuperar um valor de receita: isso precisa ser observado após a restauração com tráfego real.
+Reversão autorizada pelo usuário e publicada em 02/10/2026 às 21:07 BRT. Não há promessa de recuperar um valor de receita: isso precisa ser observado após a restauração com tráfego real.
 
 ## Escopo para confirmação de produção
 
@@ -67,3 +67,12 @@ Alvo: Worker `capitulo-de-hoje`, domínio `capitulodehoje.com.br`, ambiente prod
 - `docs/adsense-layout-restore.md`
 
 Após confirmação: verificar novamente main e versão ativa, commitar e enviar somente esses arquivos nesta branch, publicar do worktree protegido e verificar artigo/home. Sem merge automático na main e sem alterações de configurações de produção ou migrations. Se a versão ativa mudar, reconciliar antes do deploy. A confirmação contextual é obrigatória pelo AGENTS.md.
+
+## Publicação concluída
+
+- Commit `232099c` enviado na branch `codex/restaurar-adsense`. Main permaneceu em `7af39db`, ancestral confirmado.
+- Publicado no Worker `capitulo-de-hoje` às 21:07 BRT de 02/10; versão `fc56ae4f-7d2a-4f06-9c5d-9ae88f0f3320`, 100% do tráfego confirmado pela API de deployments.
+- 110 testes, TypeScript e dry-run aprovados novamente; o build guard repetiu os testes durante a publicação.
+- A primeira conferência encontrou HTML antigo em cache com URL imutável do CSS anterior. A limpeza gradual pelo painel `/admin/cache` foi concluída às 21:08:57 BRT, incrementando somente `cache.version` para `1781471533` e o registro da limpeza. Nenhuma configuração de anúncios foi alterada.
+- Depois da limpeza, artigo e home carregaram `/styles.css?v=1790986071142`. As regras removidas não aparecem no CSS carregado. Artigo com 11 unidades manuais; home com 9; ambos sem `.cdh-mix`.
+- Sem migrations, alterações em campanhas Google ou rollback das proteções D1 e otimizações de custo. Receita após a restauração ainda não foi medida.
