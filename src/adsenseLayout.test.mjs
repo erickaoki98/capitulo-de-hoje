@@ -39,8 +39,10 @@ test('AdSense com teste desligado: mesma quantidade, ordem, posições, formatos
     assert.equal((html.match(/pagead2\.googlesyndication\.com\/pagead\/js\/adsbygoogle\.js/g) || []).length, 1);
   }
 });
-test('CSS público de AdSense idêntico ao anterior a 29/09', async () => {
+test('CSS histórico preservado, exceto pela correção de largura dos cards', async () => {
   const css = await readFile(new URL('../public/styles.css', import.meta.url), 'utf8');
   const section = css.slice(css.indexOf('/* ==========================================================\n   45. Ad slots'), css.indexOf('/* ==========================================================\n   45a. Banners'));
-  assert.equal(createHash('sha256').update(section).digest('hex'), expected.cssSha256);
+  const widthFix = '/* O ins vazio encolhe no card flex: largura zero impede o AdSense de carregar. */\n.post-card--ad > ins.adsbygoogle { width: 100%; }\n';
+  assert.equal(section.split(widthFix).length, 2, 'Correção de largura deve aparecer exatamente uma vez');
+  assert.equal(createHash('sha256').update(section.replace(widthFix, '')).digest('hex'), expected.cssSha256);
 });

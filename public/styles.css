@@ -2757,6 +2757,8 @@ body:has(.post__hero-wrap) .site-header {
   min-height: 200px;
   contain: layout style;
 }
+/* O ins vazio encolhe no card flex: largura zero impede o AdSense de carregar. */
+.post-card--ad > ins.adsbygoogle { width: 100%; }
 /* Sticky footer: z-index abaixo do cookie-consent (9999) */
 .ad-sticky-footer {
   position: fixed; bottom: 0; left: 0; right: 0;
