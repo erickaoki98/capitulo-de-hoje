@@ -15,6 +15,7 @@ import { getSetting, setSetting } from './db';
 import { publicCacheKeyUrl } from './publicCacheKey.ts';
 
 const VERSION_CACHE_TTL_MS = 30_000; // bypass DB nessa janela (per-isolate)
+const renderVersions = new WeakMap<Request, string>();
 let cachedVersion: { value: string; expiresAt: number } | null = null;
 
 export async function getCacheVersion(env: Env): Promise<string> {
@@ -55,6 +56,7 @@ function cacheKeyFor(request: Request, version: string): Request {
 export async function readCache(env: Env, request: Request): Promise<Response | null> {
   if (request.method !== 'GET') return null;
   const version = await getCacheVersion(env);
+  renderVersions.set(request, version);
   const key = cacheKeyFor(request, version);
   const cache = caches.default;
   // Cache fora do ar é MISS; rankings nunca são recalculados pelo leitor.
@@ -85,7 +87,7 @@ export function writeCache(
 
   ctx.waitUntil((async () => {
     try {
-      const version = await getCacheVersion(env);
+      const version = renderVersions.get(request) ?? await getCacheVersion(env);
       const key = cacheKeyFor(request, version);
       // Garante Cache-Control + Cache-Tag pra observability
       const newHeaders = new Headers(cloned.headers);

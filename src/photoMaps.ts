@@ -32,7 +32,7 @@ export async function loadPhotoSettings(env:Env,postId?:number){
   return {config:parsePhotoConfig(data['photo.experiment']??null),maps:postId?await loadAutomaticPhotoMaps(env,postId):parsePhotoMaps(data['photo.maps']??null)};
 }
 // Same quoted-attribute tokenization as section recommendations; raw/inert text is skipped.
-const PHOTO_TOKEN=/<!--[\s\S]*?(?:-->|$)|<(script|style|textarea|title|xmp|iframe|noscript)\b(?:[^>"']|"[^"]*"|'[^']*')*>[\s\S]*?(?:<\/\1\s*>|$)|<\/?([a-z][\w:-]*)\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
+const PHOTO_TOKEN=/<!--[\s\S]*?(?:-->|$)|<(script|style|textarea|title|xmp|iframe|noscript|svg|math)\b(?:[^>"']|"[^"]*"|'[^']*')*>[\s\S]*?(?:<\/\1\s*>|$)|<\/?([a-z][\w:-]*)\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
 const PHOTO_VOID=/^(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)$/;
 const PHOTO_EXCLUDED=new Set(['section-rec','ad-slot','ad-inarticle','cdh-mix','cdh-spot','shopee-inline','shopee-card']);
 export function articlePhotoSources(content:string):string[] {
