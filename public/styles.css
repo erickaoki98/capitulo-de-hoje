@@ -3567,7 +3567,7 @@ body.adm-page .nv-share input[type="number"] { width: 84px; }
 .nv-place-row .check span,
 .nv-creative .check span { text-transform: none; letter-spacing: 0; font-weight: 500; }
 
-/* Related article at the end of each section — photo left, full text height. */
+/* Related article — typography floors and inheritance: see docs/ux.md. */
 .section-rec {
   --rec-accent: #b72e28;
   --rec-ink: #16223b;
@@ -3624,12 +3624,13 @@ body.adm-page .nv-share input[type="number"] { width: 84px; }
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 11px;
+  font-size: max(16px, .875rem);
   font-weight: 800;
   line-height: 1.5;
   letter-spacing: .07em;
   text-transform: uppercase;
   color: var(--rec-accent);
+  overflow-wrap: anywhere;
 }
 .section-rec__flame { display: block; flex: 0 0 18px; width: 18px; height: 24px; }
 .prose strong.section-rec__title {
@@ -3638,10 +3639,11 @@ body.adm-page .nv-share input[type="number"] { width: 84px; }
   background: none;
   box-shadow: none;
   padding: 0;
-  font-size: 18px;
+  font-size: max(22px, 1em);
   font-weight: 750;
-  line-height: 1.35;
-  letter-spacing: -.02em;
+  line-height: 1.5;
+  letter-spacing: normal;
+  overflow-wrap: anywhere;
   color: var(--rec-ink);
 }
 .prose .section-rec__highlight {
@@ -3656,7 +3658,7 @@ body.adm-page .nv-share input[type="number"] { width: 84px; }
 .prose .section-rec__highlight--dark { background: #171314; }
 .section-rec__novela {
   display: block;
-  font-size: 11px;
+  font-size: max(16px, .875rem);
   font-weight: 550;
   line-height: 1.5;
   color: #6d5960;
@@ -3692,9 +3694,6 @@ body.adm-page .nv-share input[type="number"] { width: 84px; }
   .section-rec { margin: 27px 0 32px; border-radius: 10px; }
   .prose .section-rec__link { gap: 13px; padding: 13px 12px; }
   .section-rec__photo { flex-basis: 94px; min-height: 136px; }
-  .prose strong.section-rec__title { font-size: 16px; line-height: 1.32; }
-  .section-rec__eyebrow { font-size: 10px; }
-  .section-rec__novela { font-size: 11px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .section-rec__image { transition: none; }
