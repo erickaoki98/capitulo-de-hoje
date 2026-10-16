@@ -1,4 +1,4 @@
-import {startPhotoBackfill,discoverPhotoPosts,runPhotoAI,photoAIView,enqueuePhotoPost} from './photoAI.ts';
+import {startPhotoBackfill,discoverPhotoPosts,runPhotoAI,runScheduledPhotoAI,photoAIView,enqueuePhotoPost} from './photoAI.ts';
 import {parsePhotoConfig} from './photoExperiment.ts';
 import { handleAdSenseRoute } from './adsenseRoutes.ts';
 import { handlePhotoRoute } from './photoRoutes.ts';
@@ -1463,7 +1463,7 @@ ${urls.join('\n')}
     // AdSense reserves globally at most one attempt/hour; no D1 history scans.
     ctx.waitUntil(syncReports(env));
     ctx.waitUntil(syncPhotoReports(env));
-    ctx.waitUntil(discoverPhotoPosts(env).then(()=>runPhotoAI(env)).catch(()=>console.error('[photo-ai] scheduled error')));
+    ctx.waitUntil(discoverPhotoPosts(env).then(()=>runScheduledPhotoAI(env)).catch(()=>console.error('[photo-ai] scheduled error')));
     ctx.waitUntil((async () => {
       try {
         // batch maior pra aproveitar a janela do worker no cron (sem cap de IP)
