@@ -39,7 +39,7 @@ export function photoPanelBody(data:PhotoPanelData,message?:string):string {
     ${snapshot?.warnings.map(w=>`<div class="photo-note">${escape(w)}</div>`).join('')||''}
     <section class="photo-card"><h2>Foto estática × recortes animados</h2>
       <form class="photo-filters" method="GET" action="/admin/teste-fotos"><label>Anúncios${select('anuncios',adArm,[['','Todos os grupos'],['adsense','Somente AdSense'],['nativo','Somente nativos'],['(not set)','Sem grupo de anúncios']])}</label><label>Aparelho${select('aparelho',device,[['','Todos'],['mobile','Celular'],['desktop','Computador'],['tablet','Tablet']])}</label><button type="submit">Aplicar filtros</button></form>
-      <p class="photo-muted">${snapshot?`Período: ${escape(snapshot.start)} a ${escape(snapshot.end)} · Atualizado em ${stamp(snapshot.generatedAt)}.`:'Aguardando início do teste e coleta. Os acessos anteriores sem grupo A/B ficam fora da comparação.'}</p>
+      <p class="photo-muted">${snapshot?`Período: ${escape(snapshot.start)} a ${escape(snapshot.end)} · Atualizado em ${stamp(snapshot.generatedAt)}.`:`${!started?'Aguardando início do teste e coleta.':!reports.connected?'Aguardando conexão de leitura com o Analytics para exibir os resultados.':'Aguardando a primeira coleta de resultados.'} Os acessos anteriores sem grupo A/B ficam fora da comparação.`}</p>
       <div class="photo-table-wrap"><table><thead><tr><th scope="col">Métrica</th><th scope="col">A · Foto estática</th><th scope="col">B · Recortes animados</th></tr></thead><tbody>
       ${row('Visualizações',values(t=>n(t.views)))}
       ${row('Sessões',values(t=>n(t.sessions)))}
