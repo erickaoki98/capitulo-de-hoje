@@ -1,7 +1,9 @@
+import {startPhotoBackfill,discoverPhotoPosts,runPhotoAI,photoAIView,enqueuePhotoPost} from './photoAI.ts';
+import {parsePhotoConfig} from './photoExperiment.ts';
 import { handleAdSenseRoute } from './adsenseRoutes.ts';
 import { handlePhotoRoute } from './photoRoutes.ts';
 import { loadPhotoSettings } from './photoMaps.ts';
-import { syncPhotoReports } from './photoReports.ts';
+import { syncPhotoReports, photoReportsView } from './photoReports.ts';
 import { syncReports, reportsView, pageRpm, nextDayIn } from './adsenseReports.ts';
 import { usdBrl } from './fx.ts';
 import type { Env, Post, PostInput } from './types';
@@ -602,7 +604,8 @@ ${urls.join('\n')}
           });
         }
         try {
-          await createPost(env.DB, input);
+          const id=await createPost(env.DB, input);
+          ctx.waitUntil(enqueuePhotoPost(env,{...input,id}).then(()=>runPhotoAI(env)).catch(()=>console.error('[photo-ai] enqueue failed')));
         } catch (e) {
           if (isArchivedCategoryError(e)) {
             return new Response(renderAdminEditor(
@@ -648,6 +651,7 @@ ${urls.join('\n')}
           });
         }
         await updatePost(env.DB, id, input);
+        ctx.waitUntil(enqueuePhotoPost(env,{...input,id}).then(()=>runPhotoAI(env)).catch(()=>console.error('[photo-ai] enqueue failed')));
         return new Response(null, { status: 303, headers: { Location: '/admin' } });
       }
 
@@ -1181,6 +1185,17 @@ ${urls.join('\n')}
         if (!apiKey) return json({ error: 'Invalid or revoked API key' }, 401);
         ctx.waitUntil(touchApiKey(env.DB, apiKey.id).catch(() => {}));
 
+        // Authenticated operational endpoints: queue state is persisted before any paid work.
+        if(pathname==='/api/photo-ai/report-status'&&request.method==='GET')return json({experiment:parsePhotoConfig(await getSetting(env.DB,'photo.experiment')),reports:await photoReportsView(env)});
+        if(pathname==='/api/photo-ai/sync-reports'&&request.method==='POST')return json({status:await syncPhotoReports(env),reports:await photoReportsView(env)});
+        if(pathname==='/api/photo-ai/status'&&request.method==='GET')return json(await photoAIView(env));
+        if(pathname==='/api/photo-ai/backfill'&&request.method==='POST')return json(await startPhotoBackfill(env));
+        if(pathname==='/api/photo-ai/run'&&request.method==='POST')return json(await runPhotoAI(env));
+        if(pathname==='/api/photo-ai/start-test'&&request.method==='POST'){
+          const current=parsePhotoConfig(await getSetting(env.DB,'photo.experiment'));
+          const next={...current,enabled:true,share:50,startedAt:current.startedAt||Date.now()};
+          await setSetting(env.DB,'photo.experiment',JSON.stringify(next));await bumpCacheVersion(env);return json(next);
+        }
         const siteOrigin = `${url.protocol}//${url.host}`;
         // CORS headers para uso em browsers
         const corsHeaders = {
@@ -1340,6 +1355,7 @@ ${urls.join('\n')}
             }), { status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
             throw e; // erro real (não-duplicado) → deixa o catch global responder 500
           }
+          ctx.waitUntil(enqueuePhotoPost(env,{id,slug,title,content,draft}).then(()=>runPhotoAI(env)).catch(e=>console.error('[photo-ai] enqueue failed')));
           return new Response(JSON.stringify({
             id, slug, url: `${siteOrigin}/${slug}`,
           }), { status: 201, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
@@ -1381,7 +1397,7 @@ ${urls.join('\n')}
               loadTypography(env),
               loadGaId(env), // PROTEÇÃO ANALYTICS: gaId precisa chegar no render (ver loadGaId)
               loadCookieBanner(env),
-              loadPhotoSettings(env),
+              loadPhotoSettings(env,post.id),
             ]);
             const { topViews, top24h } = rankingsForArticle(sharedRankings, pathname);
             const slugs = topViews.map((v) => v.path.replace(/^\//, ''));
@@ -1447,6 +1463,7 @@ ${urls.join('\n')}
     // AdSense reserves globally at most one attempt/hour; no D1 history scans.
     ctx.waitUntil(syncReports(env));
     ctx.waitUntil(syncPhotoReports(env));
+    ctx.waitUntil(discoverPhotoPosts(env).then(()=>runPhotoAI(env)).catch(()=>console.error('[photo-ai] scheduled error')));
     ctx.waitUntil((async () => {
       try {
         // batch maior pra aproveitar a janela do worker no cron (sem cap de IP)
@@ -1514,6 +1531,7 @@ async function runImageMigrationBatch(
       : post.hero_image;
     if (newContent !== post.content || newHero !== post.hero_image) {
       await updatePostContent(env.DB, post.id, newContent, newHero);
+      await enqueuePhotoPost(env,{...post,content:newContent}).catch(()=>{});
     }
     const urls = [
       ...(post.hero_image && /^https?:\/\//.test(post.hero_image) ? [post.hero_image] : []),

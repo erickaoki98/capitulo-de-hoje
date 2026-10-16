@@ -42,9 +42,16 @@ export function renderPhotoScript(config: PhotoExperimentConfig): string {
   return `<style>
 .cdh-photo-motion{display:block;position:relative;overflow:hidden;aspect-ratio:1;width:100%;border-radius:8px;isolation:isolate}
 .cdh-photo-motion>img.cdh-photo-original{position:absolute!important;inset:0!important;width:100%!important;height:100%!important;opacity:0!important;pointer-events:none;animation:none!important;transform:none!important}
-.cdh-photo-motion>img.cdh-photo-layer{position:absolute!important;max-width:none!important;max-height:none!important;min-height:0!important;margin:0!important;object-fit:fill!important;border-radius:0!important;animation:none!important;transform:none!important;pointer-events:none;transition:opacity 180ms ease}
-.cdh-photo-pause{position:absolute;right:8px;bottom:8px;z-index:2;min-width:44px;min-height:44px;padding:8px 12px;border:1px solid #fff8;border-radius:8px;background:#151515e8;color:#fff;font:600 13px/1.3 system-ui;cursor:pointer}
+.cdh-photo-motion img.cdh-photo-layer{position:absolute!important;max-width:none!important;max-height:none!important;min-height:0!important;margin:0!important;object-fit:fill!important;border-radius:0!important;animation:none!important;transform:none!important;pointer-events:none;transition:none!important}
+.cdh-photo-surface,.cdh-photo-effect{position:absolute;inset:0;display:block;pointer-events:none;transform-origin:50% 50%}
+.cdh-photo-surface{z-index:0}
+.cdh-photo-effect{z-index:1;opacity:0}
+.cdh-photo-red{filter:grayscale(1) sepia(1) saturate(9) hue-rotate(310deg);mix-blend-mode:screen;clip-path:inset(20% 0 57% 0)}
+.cdh-photo-cyan{filter:grayscale(1) sepia(1) saturate(7) hue-rotate(130deg);mix-blend-mode:screen;clip-path:inset(62% 0 20% 0)}
+.cdh-photo-slice{clip-path:inset(43% 0 44% 0)}
+.cdh-photo-lines{background:repeating-linear-gradient(0deg,transparent 0 3px,#091b2d66 3px 4px)}
+.cdh-photo-pause{position:absolute;right:8px;bottom:8px;z-index:2;min-width:44px;min-height:44px;padding:8px 12px;border:1px solid #fff8;border-radius:8px;background:#151515e8;color:#fff;font:600 max(16px,1rem)/1.5 system-ui;cursor:pointer}
 .cdh-photo-pause:focus-visible{outline:3px solid #fff;outline-offset:-5px}
-@media(prefers-reduced-motion:reduce){.cdh-photo-motion>img.cdh-photo-layer{transition:none}}
-</style><script>if(window.cdhPhotoVariant==='motion'&&!window.matchMedia('(prefers-reduced-motion: reduce)').matches){var s=document.createElement('script');s.type='module';s.src='/photo-motion.js?v=20261016-1';document.body.appendChild(s);}</script>`;
+@media(prefers-reduced-motion:reduce){.cdh-photo-motion .cdh-photo-surface,.cdh-photo-motion .cdh-photo-effect{display:none!important}.cdh-photo-motion>img.cdh-photo-original{opacity:1!important}}
+</style><script>if(window.cdhPhotoVariant==='motion'&&!window.matchMedia('(prefers-reduced-motion: reduce)').matches){var s=document.createElement('script');s.type='module';s.src='/photo-motion.js?v=20261016-2';document.body.appendChild(s);}</script>`;
 }

@@ -1,3 +1,4 @@
+import {photoAIView} from './photoAI.ts';
 import type { Env } from './types';
 import { getSetting, setSetting } from './db';
 import { getSessionFromRequest } from './auth';
@@ -6,10 +7,10 @@ import { callbackUrl, digest, randomToken, seal } from './adsenseReports.ts';
 import { parsePhotoConfig, type PhotoExperimentConfig } from './photoExperiment.ts';
 import { ANALYTICS_SCOPE, photoReportsConfigured, photoReportsView, syncPhotoReports, type PhotoReportsView } from './photoReports.ts';
 
-import { approvedExample, parsePhotoMaps, parseShots, validSource, type PhotoMaps } from './photoMaps.ts';
+import { parsePhotoMaps, parseShots, validSource, type PhotoMaps } from './photoMaps.ts';
 
 export const PHOTO_PANEL_PATH = '/admin/teste-fotos';
-export interface PhotoPanelData { config: PhotoExperimentConfig; maps: PhotoMaps; reports: PhotoReportsView; adArm: string; device: string }
+export interface PhotoPanelData { ai?: {enabled:boolean;totalArticles:number;totalImages:number;queued:number;processing:number;ready:number;static:number;failed:number;estimatedCostUsd:number;lastUpdated:number;error?:string}; config: PhotoExperimentConfig; maps: PhotoMaps; reports: PhotoReportsView; adArm: string; device: string }
 const headers = { 'Cache-Control':'private, no-store', 'Referrer-Policy':'same-origin', 'X-Content-Type-Options':'nosniff', 'X-Frame-Options':'SAMEORIGIN' };
 const redirect = (location: string, extra: Record<string,string> = {}) => new Response(null,{status:303,headers:{...headers,Location:location,...extra}});
 
@@ -20,12 +21,12 @@ export async function handlePhotoRoute(request: Request, env: Env, authed: boole
   if(url.pathname===PHOTO_PANEL_PATH && request.method==='GET') {
     const [raw,rawMaps,publisher,reports]=await Promise.all([getSetting(env.DB,'photo.experiment'),getSetting(env.DB,'photo.maps'),getSetting(env.DB,'adsense.publisher_id'),photoReportsView(env)]);
     const publisherId=normalizePublisher(publisher);
-    if(reports.snapshot?.publisherId!==publisherId) reports.snapshot=null;
+    if(reports.snapshot && reports.snapshot.publisherId!==publisherId) reports.snapshot={...reports.snapshot,revenueLinked:false,revenueStatus:'link_unverified',rows:reports.snapshot.rows.map(row=>({...row,revenue:null})),warnings:[...reports.snapshot.warnings,'O Publisher ID mudou. O engajamento foi preservado; a receita precisa de nova verificação.']};
     if(reports.readiness?.publisherId!==publisherId) reports.readiness=null;
     const config=parsePhotoConfig(raw);
     if(reports.snapshot?.testId!==config.id) reports.snapshot=null;
-    const messages: Record<string,string>={saved:'Configuração salva.',map_saved:'Mapa de enquadramentos aprovado e salvo.',map_locked:'Pause o teste antes de revisar os enquadramentos.',not_ready:'Conecte o Analytics e verifique o vínculo de receita antes de iniciar o teste.',ready:'Métricas atualizadas.',limited:'Aguarde antes de atualizar novamente.',error:'A atualização falhou. O último relatório válido foi preservado.',not_connected:'Conecte o Analytics para atualizar.',connected:'Analytics conectado para leitura. Atualize as métricas.',oauth_error:'A conexão não foi concluída. Use uma conta com acesso de leitura ao Analytics do Capítulo de Hoje.'};
-    const data:PhotoPanelData={config,maps:parsePhotoMaps(rawMaps),reports,adArm:['adsense','nativo','(not set)'].includes(url.searchParams.get('anuncios')||'')?url.searchParams.get('anuncios')!:'',device:['mobile','desktop','tablet'].includes(url.searchParams.get('aparelho')||'')?url.searchParams.get('aparelho')!:''};
+    const messages: Record<string,string>={saved:'Configuração salva.',map_saved:'Mapa de enquadramentos aprovado e salvo.',map_locked:'Pause o teste antes de revisar os enquadramentos.',ready:'Métricas atualizadas.',limited:'Aguarde antes de atualizar novamente.',error:'A atualização falhou. O último relatório válido foi preservado.',not_connected:'Conecte o Analytics para atualizar.',connected:'Analytics conectado para leitura. Atualize as métricas.',oauth_error:'A conexão não foi concluída. Use uma conta com acesso de leitura ao Analytics do Capítulo de Hoje.'};
+    const data:PhotoPanelData={config,ai:await photoAIView(env),maps:parsePhotoMaps(rawMaps),reports,adArm:['adsense','nativo','(not set)'].includes(url.searchParams.get('anuncios')||'')?url.searchParams.get('anuncios')!:'',device:['mobile','desktop','tablet'].includes(url.searchParams.get('aparelho')||'')?url.searchParams.get('aparelho')!:''};
     return new Response(render(data,messages[url.searchParams.get('status')||'']),{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
   }
   if(url.pathname===PHOTO_PANEL_PATH+'/config' && request.method==='POST') {
@@ -33,11 +34,6 @@ export async function handlePhotoRoute(request: Request, env: Env, authed: boole
     if(!['start','pause'].includes(String(form.get('action')))) return new Response('Ação inválida.',{status:400,headers});
     const current=parsePhotoConfig(await getSetting(env.DB,'photo.experiment'));
     const enabled=form.get('action')==='start';
-    if(enabled&&!current.enabled){
-      const [reports,publisher]=await Promise.all([photoReportsView(env),getSetting(env.DB,'adsense.publisher_id')]);
-      if(!canStartPhotoTest(reports,publisher))return redirect(PHOTO_PANEL_PATH+'?status=not_ready');
-      if(!Object.keys(parsePhotoMaps(await getSetting(env.DB,'photo.maps'))).length)await setSetting(env.DB,'photo.maps',JSON.stringify(approvedExample()));
-    }
     // One experiment population: pause/resume never resets assignment or start date.
     const next:PhotoExperimentConfig={...current,enabled,startedAt:current.startedAt||(enabled?Date.now():0),share:50};
     if(current.enabled!==next.enabled || current.startedAt!==next.startedAt) {
@@ -73,6 +69,3 @@ export async function handlePhotoRoute(request: Request, env: Env, authed: boole
 }
 
 export const normalizePublisher=(value:string|null|undefined)=>/^((?:ca-)?pub-)([0-9]{16})$/.test(value||'')?'ca-pub-'+value!.split('-').at(-1):'';
-export function canStartPhotoTest(reports:PhotoReportsView,publisher:string|null):boolean {
- const r=reports.readiness;return !!(reports.connected&&reports.guard?.status!=='error'&&r?.revenueLinked&&r.publisherId===normalizePublisher(publisher)&&r.checkedAt<=Date.now()&&Date.now()-r.checkedAt<=7200000);
-}

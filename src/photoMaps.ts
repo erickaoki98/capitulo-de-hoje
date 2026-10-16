@@ -19,24 +19,24 @@ export function parseShots(value:unknown):PhotoShot[]|null {
   return shots;
 }
 export function parsePhotoMaps(raw:string|null):PhotoMaps {
-  const maps:PhotoMaps={};if(!raw||raw.length>65536)return maps;
-  try{const data=JSON.parse(raw);for(const [source,map] of Object.entries(data).slice(0,100)){
+  const maps:PhotoMaps={};if(!raw||raw.length>1048576)return maps;
+  try{const data=JSON.parse(raw);for(const [source,map] of Object.entries(data).slice(0,2000)){
     const m=map as PhotoMap,shots=parseShots(m?.shots);
     if(validSource(source)&&shots&&Number.isFinite(m.reviewedAt)&&m.reviewedAt>0)maps[source]={shots,reviewedAt:m.reviewedAt};
   }}catch{}return maps;
 }
 /** Two exact settings keys; never touches historical pageview tables. */
-export async function loadPhotoSettings(env:Env){
+export async function loadPhotoSettings(env:Env,postId?:number){
   const rows=await env.DB.prepare("SELECT key,value FROM settings WHERE key IN ('photo.experiment','photo.maps')").all<{key:string;value:string}>();
   const data=Object.fromEntries((rows.results||[]).map(r=>[r.key,r.value]));
-  return {config:parsePhotoConfig(data['photo.experiment']??null),maps:parsePhotoMaps(data['photo.maps']??null)};
+  return {config:parsePhotoConfig(data['photo.experiment']??null),maps:postId?await loadAutomaticPhotoMaps(env,postId):parsePhotoMaps(data['photo.maps']??null)};
 }
 // Same quoted-attribute tokenization as section recommendations; raw/inert text is skipped.
 const PHOTO_TOKEN=/<!--[\s\S]*?(?:-->|$)|<(script|style|textarea|title|xmp|iframe|noscript)\b(?:[^>"']|"[^"]*"|'[^']*')*>[\s\S]*?(?:<\/\1\s*>|$)|<\/?([a-z][\w:-]*)\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi;
 const PHOTO_VOID=/^(area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)$/;
 const PHOTO_EXCLUDED=new Set(['section-rec','ad-slot','ad-inarticle','cdh-mix','cdh-spot','shopee-inline','shopee-card']);
-export function articlePhotoMaps(content:string,maps:PhotoMaps):PhotoMaps {
-  const selected:PhotoMaps={},stack:Array<{tag:string;excluded:boolean}>=[];
+export function articlePhotoSources(content:string):string[] {
+  const selected:Record<string,true>={},stack:Array<{tag:string;excluded:boolean}>=[];
   for(const token of content.matchAll(PHOTO_TOKEN)){
     if(!token[2])continue;
     const tag=token[2].toLowerCase(),closing=token[0][1]==='/';
@@ -54,11 +54,14 @@ export function articlePhotoMaps(content:string,maps:PhotoMaps):PhotoMaps {
     const classes=attrs.get('class')||'';
     const excluded=!!stack.at(-1)?.excluded||['a','template','svg','math'].includes(tag)||attrs.has('data-related-card')||attrs.has('data-product-id')||classes.includes('&')||classes.split(/\s+/).some(value=>PHOTO_EXCLUDED.has(value));
     if(tag==='img'&&!excluded){
-      const src=attrs.get('src')||'';if(validSource(src)&&maps[src])selected[src]=maps[src];
-      if(Object.keys(selected).length>=8)break;
+      const src=attrs.get('src')||'';if(validSource(src))selected[src]=true;
+
     }
     if(!PHOTO_VOID.test(tag)){stack.push({tag,excluded});if(stack.length>256)break;}
   }
-  return selected;
+  return Object.keys(selected);
 }
+export function articlePhotoMaps(content:string,maps:PhotoMaps):PhotoMaps{return Object.fromEntries(articlePhotoSources(content).filter(source=>maps[source]).map(source=>[source,maps[source]]));}
+export const PHOTO_AI_ROOT="_internal/photo-ai-v3/";
+export async function loadAutomaticPhotoMaps(env:Env,postId:number):Promise<PhotoMaps>{try{const object=await env.IMAGES.get(PHOTO_AI_ROOT+"articles/"+postId+".json");if(!object)return {};const post=await object.json<{maps?:PhotoMaps}>();return parsePhotoMaps(JSON.stringify(post.maps||{}));}catch{return {};}}
 export const photoMapsJSON=(maps:PhotoMaps)=>JSON.stringify(maps).replace(/</g,'\\u003c');

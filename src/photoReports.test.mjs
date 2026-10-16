@@ -143,7 +143,7 @@ test('GA revenue role restriction stays null even with verified AdSense link; en
   assert.equal(api.parsePhotoReport(raw,{start:'2026-10-02',end:'2026-10-15'},true).rows[0].revenue,null);
   const e=env();await connected(e);
   await withFetch(google({report:raw}),async()=>{
-    assert.equal(await api.syncPhotoReports(e,now),'ready');const {snapshot}=await api.photoReportsView(e);assert.equal(snapshot.revenueLinked,false);assert.equal(snapshot.revenueStatus,'revenue_restricted');assert.equal(snapshot.rows[0].views,100);assert.equal(snapshot.rows[0].revenue,null);assert.match(snapshot.warnings.join(' '),/permiss|restri/);
+    assert.equal(await api.syncPhotoReports(e,now),'ready');const {snapshot,readiness}=await api.photoReportsView(e);assert.equal(readiness.revenueLinked,false);assert.equal(readiness.revenueStatus,'revenue_restricted');assert.equal(snapshot.revenueLinked,false);assert.equal(snapshot.revenueStatus,'revenue_restricted');assert.equal(snapshot.rows[0].views,100);assert.equal(snapshot.rows[0].revenue,null);assert.match(snapshot.warnings.join(' '),/permiss|restri/);
   });
 });
 
@@ -157,14 +157,30 @@ test('first connection stores independently bound private publisher readiness wi
 test('readiness can be checked before first start and is bounded by the same reservation',async()=>{
   const e=env({'photo.experiment':JSON.stringify({...config,enabled:false,startedAt:0})});await connected(e,false);let calls=0;
   await withFetch(async(url,init)=>{calls++;assert.ok(!String(url).includes(':runReport'));return google()(url,init);},async()=>{
-    assert.equal(await api.syncPhotoReports(e,now,{manual:true}),'ready');const view=await api.photoReportsView(e);assert.deepEqual(view.readiness,{checkedAt:now,revenueLinked:true,validFrom:now,publisherId:'ca-pub-9160979665550731'});assert.equal(view.snapshot,null);assert.equal(await api.syncPhotoReports(e,now+1,{manual:true}),'limited');assert.equal(calls,2);
+    assert.equal(await api.syncPhotoReports(e,now,{manual:true}),'ready');const view=await api.photoReportsView(e);assert.deepEqual(view.readiness,{checkedAt:now,revenueLinked:true,validFrom:now,publisherId:'ca-pub-9160979665550731',revenueStatus:'verified'});assert.equal(view.snapshot,null);assert.equal(await api.syncPhotoReports(e,now+1,{manual:true}),'limited');assert.equal(calls,2);
   });
 });
-test('newly verified link excludes prelink zero days and collection warmup before reporting revenue',async()=>{
-  const e=env();await connected(e,false);let reports=0;let query;
-  await withFetch(async(url,init)=>{if(String(url).includes(':runReport')){reports++;query=JSON.parse(init.body);}return google({report:rawReport([['20261018','static','adsense','mobile',100,10,6,120,0]])})(url,init);},async()=>{
-    assert.equal(await api.syncPhotoReports(e,now),'ready');assert.equal(reports,0);assert.equal((await api.photoReportsView(e)).snapshot,null);
-    const later=now+3*86400000;assert.equal(await api.syncPhotoReports(e,later),'ready');assert.equal(reports,1);assert.deepEqual(query.dateRanges,[{startDate:'2026-10-18',endDate:'2026-10-18'}]);const {snapshot}=await api.photoReportsView(e);assert.equal(snapshot.revenueValidFrom,now);assert.equal(snapshot.rows[0].revenue,0);assert.ok(snapshot.warnings.some(w=>/período.*reduz|vínculo.*confirm|coleta/.test(w)));
+test('newly verified link retains engagement since start and excludes only unsafe revenue dates',async()=>{
+  const e=env();await connected(e,false);let query;
+  await withFetch(async(url,init)=>{if(String(url).includes(':runReport'))query=JSON.parse(init.body);return google()(url,init);},async()=>{
+    assert.equal(await api.syncPhotoReports(e,now),'ready');
+    assert.deepEqual(query.dateRanges,[{startDate:'2026-10-02',endDate:'2026-10-15'}]);
+    const {snapshot}=await api.photoReportsView(e);assert.equal(snapshot.rows[0].views,100);assert.equal(snapshot.rows[0].revenue,null);assert.equal(snapshot.revenueValidFrom,now);
+  });
+  const later=now+3*86400000;
+  await withFetch(google({report:rawReport([['20261015','static','adsense','mobile',100,10,6,120,9],['20261018','static','adsense','mobile',50,5,3,60,2]])}),async()=>{
+    assert.equal(await api.syncPhotoReports(e,later),'ready');const {snapshot}=await api.photoReportsView(e);
+    assert.equal(snapshot.start,'2026-10-02');assert.equal(snapshot.rows[0].revenue,null);assert.equal(snapshot.rows[1].revenue,2);assert.match(snapshot.warnings.join(' '),/engajamento.*início|receita.*dias/i);
+  });
+});
+test('temporary link verification failure preserves the safe monetary era without dropping engagement',async()=>{
+  const e=env();await connected(e);let linkFail=false;let query;
+  await withFetch(async(url,init)=>{if(String(url).includes(':runReport'))query=JSON.parse(init.body);return google({linkFail})(url,init);},async()=>{
+    assert.equal(await api.syncPhotoReports(e,now),'ready');const initial=(await api.photoReportsView(e)).readiness.validFrom;
+    linkFail=true;assert.equal(await api.syncPhotoReports(e,now+api.PHOTO_SYNC_INTERVAL),'ready');
+    let view=await api.photoReportsView(e);assert.equal(view.readiness.revenueLinked,false);assert.equal(view.readiness.validFrom,initial);assert.equal(view.snapshot.rows[0].views,100);assert.equal(view.snapshot.rows[0].revenue,null);
+    linkFail=false;assert.equal(await api.syncPhotoReports(e,now+2*api.PHOTO_SYNC_INTERVAL),'ready');
+    view=await api.photoReportsView(e);assert.equal(view.readiness.validFrom,initial);assert.equal(view.snapshot.rows[0].revenue,1.5);assert.deepEqual(query.dateRanges,[{startDate:'2026-10-02',endDate:'2026-10-15'}]);
   });
 });
 test('lost link immediately hides cached money; recovered link starts a new safe revenue era',async()=>{
@@ -173,7 +189,7 @@ test('lost link immediately hides cached money; recovered link starts a new safe
     assert.equal(await api.syncPhotoReports(e,now),'ready');assert.equal((await api.photoReportsView(e)).snapshot.rows[0].revenue,1.5);
     linked=false;const pausedConfig=JSON.stringify({...config,enabled:false});const originalPrepare=e.DB.prepare;e.DB.prepare=function(sql){const original=originalPrepare(sql);const bind=original.bind;original.bind=function(...keys){const q=bind.apply(this,keys);return {...q,async all(){const result=await q.all();result.results=result.results.map(r=>r.key==='photo.experiment'?{...r,value:pausedConfig}:r);return result;}};};return original;};
     assert.equal(await api.syncPhotoReports(e,now+api.PHOTO_SYNC_INTERVAL),'ready');let view=await api.photoReportsView(e);assert.equal(view.readiness.revenueLinked,false);assert.equal(view.snapshot.rows[0].revenue,null);assert.equal(view.snapshot.revenueLinked,false);
-    linked=true;const recoveredAt=now+2*api.PHOTO_SYNC_INTERVAL;assert.equal(await api.syncPhotoReports(e,recoveredAt),'ready');view=await api.photoReportsView(e);assert.equal(view.readiness.validFrom,recoveredAt);assert.equal(view.snapshot.rows[0].revenue,null);assert.equal(view.snapshot.revenueLinked,false);
+    linked=true;const recoveredAt=now+2*api.PHOTO_SYNC_INTERVAL;assert.equal(await api.syncPhotoReports(e,recoveredAt),'ready');view=await api.photoReportsView(e);assert.equal(view.readiness.validFrom,recoveredAt);assert.equal(view.snapshot.rows[0].revenue,null);assert.equal(view.snapshot.revenueLinked,true);
   });
 });
 

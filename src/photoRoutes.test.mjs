@@ -36,10 +36,10 @@ test('visual map rejects external sources and out-of-bounds crops without writin
   const res=await worker.fetch(new Request('https://example.com/admin/teste-fotos/map',{method:'POST',headers:{Cookie:`session=${session}`,Origin:'https://example.com'},body:new URLSearchParams({source:'https://evil.example/picture.jpg',shots:JSON.stringify([{x:.9,y:0,size:.5,label:'Rosto'},{x:0,y:0,size:.5,label:'Interação'}])})}),env,context);
   assert.equal(res.status,400);assert.equal(settings.size,0);
 });
-test('test cannot start while revenue linkage is not verified',async()=>{
+test('test starts without Google or revenue linkage and never inserts a manual map',async()=>{
   const {env,settings}=harness();const session=await createSession(env.SESSION_SECRET);
   const res=await worker.fetch(new Request('https://example.com/admin/teste-fotos/config',{method:'POST',headers:{Cookie:`session=${session}`,Origin:'https://example.com'},body:new URLSearchParams({action:'start'})}),env,context);
-  assert.equal(res.headers.get('location'),'/admin/teste-fotos?status=not_ready');assert.equal(settings.size,0);
+  assert.equal(res.headers.get('location'),'/admin/teste-fotos?status=saved');const config=JSON.parse(settings.get('photo.experiment'));assert.equal(config.enabled,true);assert.equal(config.share,50);assert.ok(config.startedAt>0);assert.equal(settings.has('photo.maps'),false);
 });
 test('start, duplicate start, pause and resume preserve one population and the original start time',async()=>{
   const {env,settings,reads}=harness();
@@ -58,7 +58,7 @@ test('start, duplicate start, pause and resume preserve one population and the o
   const before=writes();await action('start');assert.equal(writes(),before,'duplicate start does not rewrite config or invalidate cache');
   await action('pause');assert.equal(JSON.parse(settings.get('photo.experiment')).enabled,false);
   await action('start');assert.deepEqual(JSON.parse(settings.get('photo.experiment')),initial);
-  assert.deepEqual([...settings.keys()].sort(),['adsense.publisher_id','cache.last_purged_at','cache.version','photo.experiment','photo.maps']);
+  assert.deepEqual([...settings.keys()].sort(),['adsense.publisher_id','cache.last_purged_at','cache.version','photo.experiment']);
 });
 test('Analytics connect uses separate least-privilege grant and the existing registered callback',async()=>{
   const {env}=harness();Object.assign(env,{ADSENSE_CLIENT_ID:'local-client',ADSENSE_CLIENT_SECRET:'local-secret'});
@@ -88,7 +88,21 @@ test('approved map survives a new admin GET and cache invalidation; active test 
   const save=()=>worker.fetch(new Request('https://example.com/admin/teste-fotos/map',{method:'POST',headers:{Cookie:`session=${session}`,Origin:'https://example.com'},body:new URLSearchParams({source:'/img/9e5335709590212c.jpg',shots:JSON.stringify(shots)})}),env,context);
   assert.equal((await save()).headers.get('location'),'/admin/teste-fotos?status=map_saved');
   const saved=settings.get('photo.maps');assert.deepEqual(JSON.parse(saved)['/img/9e5335709590212c.jpg'].shots,shots);assert.ok(settings.has('cache.version'));
-  const read=await worker.fetch(new Request('https://example.com/admin/teste-fotos',{headers:{Cookie:`session=${session}`}}),env,context);assert.match(await read.text(),/id="photo-map-data">.*Rosto/);
+  const read=await worker.fetch(new Request('https://example.com/admin/teste-fotos',{headers:{Cookie:`session=${session}`}}),env,context);assert.doesNotMatch(await read.text(),/photo-map-form|photo-map-data|photo-map-editor/);
   settings.set('photo.experiment',JSON.stringify({enabled:true,id:'photo-v1',startedAt:Date.now()}));
   assert.equal((await save()).headers.get('location'),'/admin/teste-fotos?status=map_locked');assert.equal(settings.get('photo.maps'),saved);
+});
+
+test('changed Publisher hides only money and preserves the last engagement snapshot on GET',async()=>{
+  const {env,settings}=harness();Object.assign(env,{ADSENSE_CLIENT_ID:'local-client',ADSENSE_CLIENT_SECRET:'local-secret'});
+  settings.set('photo.experiment',JSON.stringify({enabled:true,id:'photo-v1',startedAt:Date.now()-3*86400000,share:50}));
+  settings.set('adsense.publisher_id','pub-0000000000000000');
+  const {seal}=await import('./adsenseReports.ts');const root='_internal/photo-analytics-v1/',objects=new Map();
+  const readiness={connectionId:'conn-1',publisherId:'ca-pub-9160979665550731',validFrom:1,checkedAt:Date.now(),revenueLinked:true,revenueStatus:'verified'};
+  objects.set(root+'connection',await seal(env,root+'connection',{id:'conn-1',email:'test@example.com',refreshToken:'private',timeZone:'America/Sao_Paulo'}));
+  objects.set(root+'readiness',await seal(env,root+'readiness',readiness));
+  objects.set(root+'report',await seal(env,root+'report',{connectionId:'conn-1',publisherId:readiness.publisherId,revenueValidFrom:1,testId:'photo-v1',generatedAt:Date.now(),start:'2026-10-13',end:'2026-10-15',currency:'USD',revenueLinked:true,revenueStatus:'verified',warnings:[],rows:[{date:'2026-10-15',variant:'static',adArm:'adsense',device:'mobile',views:743,sessions:50,engagedSessions:30,engagementSeconds:500,revenue:9}]}));
+  env.IMAGES.get=async key=>objects.has(key)?{text:async()=>objects.get(key)}:null;
+  const session=await createSession(env.SESSION_SECRET);const response=await worker.fetch(new Request('https://example.com/admin/teste-fotos',{headers:{Cookie:`session=${session}`}}),env,context);
+  const html=await response.text();assert.equal(response.status,200);assert.match(html,/743/);assert.match(html,/Publisher ID mudou/);assert.doesNotMatch(html,/US\$\s*9,00/);
 });

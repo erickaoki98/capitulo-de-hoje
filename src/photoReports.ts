@@ -25,7 +25,7 @@ export interface PhotoTotals extends Omit<PhotoReportRow, 'date' | 'adArm' | 'de
   engagementRate: number | null; engagementSecondsPerSession: number | null;
   rpmPer1000Views: number | null; revenuePer1000Sessions: number | null;
 }
-export interface PhotoReadiness { checkedAt: number; revenueLinked: boolean; validFrom: number; publisherId: string }
+export interface PhotoReadiness { checkedAt: number; revenueLinked: boolean; validFrom: number; publisherId: string; revenueStatus?: RevenueStatus }
 interface StoredReadiness extends PhotoReadiness { connectionId: string; revenueStatus: RevenueStatus }
 export interface PhotoReportSnapshot {
   connectionId: string; publisherId: string; revenueValidFrom: number; testId: string; generatedAt: number; start: string; end: string;
@@ -168,7 +168,7 @@ export async function photoReportsView(env: Env): Promise<PhotoReportsView> {
     if (snapshot && (!readiness?.revenueLinked || snapshot.publisherId !== readiness.publisherId || snapshot.revenueValidFrom !== readiness.validFrom)) {
       snapshot = {...snapshot,revenueLinked:false,revenueStatus:readiness?.revenueLinked?'link_unverified':readiness?.revenueStatus??'link_unverified',rows:snapshot.rows.map(row=>({...row,revenue:null})),warnings:[...snapshot.warnings,'A verificação mais recente não confirma receita disponível para o vínculo e período deste relatório. Os dados de engajamento foram preservados.']};
     }
-    return {...base,connected:true,email:connection.email,snapshot,readiness:readiness?{checkedAt:readiness.checkedAt,revenueLinked:readiness.revenueLinked,validFrom:readiness.validFrom,publisherId:readiness.publisherId}:null,guard:guard?await guard.json<PhotoSyncGuard>():null};
+    return {...base,connected:true,email:connection.email,snapshot,readiness:readiness?{checkedAt:readiness.checkedAt,revenueLinked:readiness.revenueLinked,validFrom:readiness.validFrom,publisherId:readiness.publisherId,revenueStatus:readiness.revenueStatus}:null,guard:guard?await guard.json<PhotoSyncGuard>():null};
   } catch (e) { return {...base,error:safeError(e)}; }
 }
 async function revenueLink(token: string, publisherId: string): Promise<{linked: boolean; status: RevenueStatus}> {
@@ -186,8 +186,10 @@ async function refreshReadiness(env: Env, connection: PhotoConnection, token: st
   const publisherId = /^pub-\d{16}$/.test(rawPublisher) ? 'ca-' + rawPublisher : publisher.trim();
   const previous = await readPrivate<StoredReadiness>(env,READINESS);
   const link = await revenueLink(token,publisherId);
-  const continuous = link.linked && previous?.revenueLinked && previous.connectionId===connection.id && previous.publisherId===publisherId && Number.isFinite(previous.validFrom) && previous.validFrom > 0;
-  const readiness: StoredReadiness = {connectionId:connection.id,publisherId,checkedAt:now,revenueLinked:link.linked,validFrom:link.linked?(continuous?previous!.validFrom:now):0,revenueStatus:link.status};
+  const continuous = previous?.connectionId===connection.id && previous.publisherId===publisherId && Number.isFinite(previous.validFrom) && previous.validFrom > 0 && ['verified','link_unverified','revenue_restricted'].includes(previous.revenueStatus);
+  // A transient permission/API failure hides money, but does not move a previously verified collection boundary.
+  const validFrom = link.linked ? (continuous ? previous!.validFrom : now) : link.status==='link_unverified' && continuous ? previous!.validFrom : 0;
+  const readiness: StoredReadiness = {connectionId:connection.id,publisherId,checkedAt:now,revenueLinked:link.linked,validFrom,revenueStatus:link.status};
   await writePrivate(env,READINESS,readiness);
   return readiness;
 }
@@ -215,8 +217,6 @@ export async function syncPhotoReports(env: Env, now = Date.now(), options: {man
       const readiness = await refreshReadiness(env,connection,token.access_token,settings['adsense.publisher_id'] ?? '',now);
       const link = {linked:readiness.revenueLinked,status:readiness.revenueStatus};
       const period = config?.startedAt ? photoReportPeriod(connection.timeZone,config.startedAt,now) : null;
-      const originalStart = period?.start;
-      if (period && readiness.revenueLinked) period.start = [period.start,safeRevenueStart(connection.timeZone,readiness.validFrom)].sort().at(-1)!;
       // A pause stops assignment in the browser; keep reading assigned days for GA latency and the final day.
       if (!config || typeof config.id !== 'string' || !config.id || config.id.length > 80 || !period || period.start > period.end) {
         await env.IMAGES.put(GUARD,JSON.stringify({...reserved,status:'ready'}),{onlyIf:{etagMatches:reservation.etag}});
@@ -227,10 +227,17 @@ export async function syncPhotoReports(env: Env, now = Date.now(), options: {man
       if (!response.ok) throw new PhotoReportsError(`O relatório Analytics não ficou disponível (HTTP ${response.status}). Os últimos dados válidos foram preservados.`);
       const raw = await response.json() as RawPhotoReport;
       if (raw.metadata?.timeZone !== connection.timeZone) throw new PhotoReportsError('O fuso da propriedade Analytics mudou ou não foi informado. Reconecte a conta para confirmar o calendário.');
-      if (link.linked && restrictedMetrics(raw).includes('totalAdRevenue')) { link.linked = false; link.status = 'revenue_restricted'; }
+      if (link.linked && restrictedMetrics(raw).includes('totalAdRevenue')) {
+        link.linked = false; link.status = 'revenue_restricted';
+        await writePrivate(env,READINESS,{...readiness,revenueLinked:false,revenueStatus:link.status});
+      }
       const parsed = parsePhotoReport(raw,period,link.linked);
+      if (link.linked) {
+        const revenueStart = safeRevenueStart(connection.timeZone,readiness.validFrom);
+        parsed.rows = parsed.rows.map(row => row.date < revenueStart ? {...row,revenue:null} : row);
+      }
       const warnings = ['O Analytics pode atrasar e revisar os dados; o relatório inclui somente dias encerrados. Comparações descritivas, sem vencedor automático.'];
-      if (period.start !== originalStart) warnings.push('O período foi reduzido para começar somente após a confirmação do vínculo e a janela inicial de coleta de receita. Visualizações e sessões usam o mesmo período da receita.');
+      warnings.push('O engajamento usa dias completos desde o início do teste, até 28 dias. A receita usa somente dias após a confirmação do vínculo e a janela inicial de coleta; dias inseguros ficam indisponíveis.');
       if (!link.linked) warnings.push(link.status==='revenue_restricted'?'Receita indisponível: a permissão desta conta no Analytics restringe a leitura de receita.':link.status==='missing_link'?'Receita indisponível: esta propriedade Analytics não confirmou vínculo com o AdSense deste blog.':link.status==='publisher_missing'?'Receita indisponível: configure o Publisher ID do AdSense deste blog.':'Receita indisponível: não foi possível verificar o vínculo entre Analytics e AdSense.');
       await writePrivate(env,REPORT,{...parsed,...period,connectionId:connection.id,publisherId:readiness.publisherId,revenueValidFrom:readiness.validFrom,testId:config.id,generatedAt:now,propertyId:PHOTO_PROPERTY_ID,domain,timeZone:connection.timeZone,revenueLinked:link.linked,revenueStatus:link.status,warnings} satisfies PhotoReportSnapshot);
       await env.IMAGES.put(GUARD,JSON.stringify({...reserved,status:'ready'}),{onlyIf:{etagMatches:reservation.etag}});

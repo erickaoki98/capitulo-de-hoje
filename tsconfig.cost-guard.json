@@ -10,6 +10,9 @@
     "src/photoReports.ts",
     "src/photoRoutes.ts",
     "src/photoPanel.ts",
-    "src/photoMaps.ts"
+    "src/photoMaps.ts",
+    "src/photoAI.ts",
+    "src/photoAIModel.ts",
+    "src/photoAIImages.ts"
   ]
 }

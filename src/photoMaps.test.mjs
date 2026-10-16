@@ -18,13 +18,14 @@ test('real image src is read as an attribute with mixed case, quoted greater-tha
   assert.deepEqual(articlePhotoMaps(`<IMG src=${PHOTO_SOURCE}>`,maps),maps);
   assert.deepEqual(articlePhotoMaps(`<img data-src="${PHOTO_SOURCE}" src="/img/unmapped.jpg">`,maps),{});
 });
-test('eight-map cap applies after excluding promotions and preserves first editorial source order',()=>{
+test('all editorial maps remain after excluding promotions in source order',()=>{
   const example=approvedExample()[PHOTO_SOURCE],maps=Object.fromEntries(Array.from({length:18},(_,i)=>[`/img/photo-${i}.jpg`,example]));
   const promo=Array.from({length:9},(_,i)=>`<a href="/ad"><img src="/img/photo-${i}.jpg"></a>`).join('');
   const article=Array.from({length:9},(_,i)=>`<figure><img src="/img/photo-${i+9}.jpg"></figure>`).join('');
-  assert.deepEqual(Object.keys(articlePhotoMaps(promo+article,maps)),Array.from({length:8},(_,i)=>`/img/photo-${i+9}.jpg`));
+  assert.deepEqual(Object.keys(articlePhotoMaps(promo+article,maps)),Array.from({length:9},(_,i)=>`/img/photo-${i+9}.jpg`));
 });
 test('map JSON stays parseable without executable closing script tags',()=>{
   const maps=approvedExample();maps[PHOTO_SOURCE].shots[0].label='Carta </script><img src=x onerror=alert(1)> revelada';
   const json=photoMapsJSON(maps);assert.doesNotMatch(json,/<\/script|<img/);assert.deepEqual(JSON.parse(json),maps);
 });
+test('all editorial photos are eligible beyond the former eight-image cutoff',()=>{const example=approvedExample()[PHOTO_SOURCE],maps=Object.fromEntries(Array.from({length:12},(_,i)=>[`/img/all-${i}.png`,example]));const content=Object.keys(maps).map(src=>`<figure><img src="${src}"></figure>`).join('');assert.equal(Object.keys(articlePhotoMaps(content,maps)).length,12)});
