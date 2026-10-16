@@ -34,7 +34,7 @@ function loadModels() {
   })();
 }
 
-async function detectImage(src) {
+export async function detectImage(src) {
   const api = await loadModels();
   const image = await new Promise((resolve,reject) => {
     const img = new Image();
