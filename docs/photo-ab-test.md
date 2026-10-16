@@ -1,41 +1,43 @@
 # Teste de fotos — Capítulo de Hoje
 
-**Alvo:** somente o blog `capitulodehoje.com.br`, Worker `capitulo-de-hoje`.
-**Branch:** `codex/photo-ab-retention-revenue`, baseada em `origin/main` atualizado.
+**Alvo:** `capitulodehoje.com.br`, Worker `capitulo-de-hoje`.
+**Branch:** `codex/photo-ab-retention-revenue`, com `origin/main` incorporada.
+**Painel:** `/admin/teste-fotos`, na navegação administrativa do blog.
 
-Plano de execução e verificação:
+## Experimento
 
-- [x] Identificação persistente 50/50 antes do primeiro config do GA; fotos do corpo com recortes fechados, trabalho limitado, sem APIs pagas. Preservar anúncios, hero, conteúdo e recomendações.
-- [x] Conector Analytics somente leitura, com OAuth/PKCE e token criptografado no R2. Relatório limitado a 28 dias e 5 mil linhas; reserva global por hora, falha sem repetição rápida; GET só lê snapshot.
-- [x] Painel autenticado `/admin/teste-fotos`: receita atribuída, receita por mil visualizações e sessões, tempo de engajamento e páginas por sessão, com filtros por aparelho e grupo dos anúncios.
-- [x] Testes de comportamento antes das implementações; repetir `npm run check:deploy` e `wrangler deploy --dry-run` ao integrar. Conferir visualmente fotos e painel em celular e desktop.
-- [ ] Revisar diff, registrar limitações da medição e solicitar a confirmação contextual de produção exigida por `AGENTS.md`. Não publicar checkout antigo nem migrar banco de produção.
+Sorteio 50/50 persistido por navegador em `cdh_photo_ab:photo-v1`. Só uma foto editorial com mapa aprovado pode inscrever novos navegadores; depois, o grupo acompanha a navegação. O bootstrap define `photo_ab_v1` (`static` ou `motion`) antes da primeira configuração do GA. Essa dimensão de usuário já foi registrada na propriedade `450970542`.
 
-O identificador de usuário no GA é `photo_ab_v1` (`static` ou `motion`), já registrado como dimensão de usuário na propriedade `450970542`. Foi criado um relatório preparatório no Analytics, mas o painel final fica no blog. Configuração do teste: chave `photo.experiment`, inicialmente desligada. Iniciar preserva a data na pausa/retomada; não reiniciar a população durante o mesmo teste.
+O controle recebe a foto original; o tratamento recebe os recortes aprovados, com alternância a cada 2,4 segundos e a transição C (tremor + glitch) de 230 ms. Há pausa por foto; alternância fora da tela ou com a aba oculta é suspensa. Movimento reduzido, falha, formato não quadrado ou menos de dois recortes seguros preservam a imagem original. Hero, recomendações, anúncios e tipografia do artigo conservam seu comportamento.
 
-Receita ausente é indisponível, não zero: o conector verifica o vínculo do publisher AdSense configurado. Não ratear a receita total pelos acessos e não reconstruir atribuição passada. A receita por mil usa visualizações do GA4, não o denominador próprio do AdSense. O teste existente `ad_arm` (`nativo` ou `adsense`) deve permanecer independente e ser considerado nos filtros.
+A análise segue a variante sorteada, inclusive quando uma preferência de acessibilidade ou uma foto sem mapa impede a animação. A divisão observada no painel usa sessões, não pessoas únicas. Engajamento e permanência são indicadores indiretos; o relatório não mede retorno de visitantes. Trocas automáticas não enviam eventos de engajamento. Não há declaração automática de vencedor ou significância estatística.
 
-O tempo de engajamento mede leitura em primeiro plano; animação automática não dispara eventos de engajamento nem eventos principais. A análise ainda não declara significância ou vencedor. Cortes não disponíveis, imagem não quadrada, mapa não aprovado, falha ou preferência por movimento reduzido mantêm a foto estática.
+## Enquadramento automático
 
-Conectar a conta Google ao leitor do painel e vincular AdSense/Analytics são ampliações de acesso que precisam de aprovação específica. Não conceder acessos nem aceitar novos escopos automaticamente.
+O Worker reutiliza sua `OPENAI_API_KEY` existente. As fotos editoriais locais do corpo são extraídas do HTML; anúncios, links e recomendações são excluídos. Não há editor manual no fluxo nem detecção paga em cada visita.
 
-Referências: [receita AdSense no GA4](https://support.google.com/analytics/answer/13610380), [Data API](https://developers.google.com/analytics/devguides/reporting/data/v1/api-schema), [leitura dos vínculos AdSense](https://developers.google.com/analytics/devguides/config/admin/v1/rest/v1alpha/properties.adSenseLinks/list).
+O GPT-6 Luna identifica até três assuntos com os prompts aprovados no estudo v2: expressões, ações, mãos e objetos relevantes; fundo sem função e recortes repetidos são evitados. Photon renderiza os quadrados propostos, e uma segunda chamada ao mesmo modelo revisa a foto original e os cortes efetivamente renderizados. A seleção valida os limites e restringe sobreposição entre quadros consecutivos, inclusive o último e o primeiro, a 25% da área do menor. Sem dois recortes aprovados, conserva-se a foto estática.
 
+Fila, reserva e resultado são persistidos em R2 antes do gasto. O cache por fonte impede repetição paga mesmo quando a imagem aparece em vários artigos. São no máximo duas chamadas por fonte e quatro fotos simultâneas, com claims globais condicionais. Falhas e execuções incertas não são repetidas automaticamente. O teto é de 250 novas fontes por dia UTC, com reserva conservadora de até US$ 5/dia; valores do painel são estimativas calculadas a partir do uso confirmado. Interrupções podem ter custo adicional ainda não confirmado. Falhas de acesso, modelo ou limite da API pausam a fila.
 
-## Mapeamento visual
+`_internal/photo-ai-v3/state` contém somente o resumo administrativo; `articles/<id>.json` contém status e mapas por artigo, e `images/<fonte>.json` contém a análise reutilizável. Nenhum desses caminhos privados é servido pela rota pública de imagens. O leitor público acessa somente o mapa do artigo em um miss de cache.
 
-A chave `photo.maps` guarda até 100 fotos locais com 2–6 cortes normalizados e data de revisão. O editor permite marcar rosto/reação/interação/detalhe, revisar e salvar. Não há reconhecimento de identidade nem inferência de importância por detector. Nenhuma chamada paga de IA foi adicionada. O exemplo aprovado usa dois planos fechados; ambiente sem ação relevante e testemunha ao fundo ficam fora.
+O backfill captura uma lista fixa dos 30 artigos públicos mais recentes e inclui todas as fotos editoriais locais encontradas. Publicação/edição via API ou admin, migração de imagens e descoberta limitada pelo cron colocam as novas fotos na fila. O processamento é assíncrono; enquanto aguarda, a foto conserva o formato original. Antes de iniciar uma análise paga, a publicação do artigo é revalidada.
 
-Somente imagens editoriais mapeadas do corpo de um artigo podem inscrever novos navegadores. Links, anúncios, recomendações, comentários e conteúdo inerte ficam fora; máximo de oito fontes por artigo. O mapa é reutilizado, sem detecção em cada acesso. Mapas ficam bloqueados durante o teste; pausar permite revisão sem reiniciar grupos.
+## Painel e receita
 
-## Preparação da receita
+A aba mostra visualizações, sessões, distribuição, tempo médio de engajamento, taxa de engajamento, páginas por sessão e receita atribuída pelo Analytics. Filtros por aparelho e pelo experimento independente `ad_arm` ajudam a comparar condições equivalentes. Também mostra artigos/fotos, fila, fotos animáveis/estáticas, falhas e custo confirmado da IA.
 
-O início exige conexão e vínculo do publisher verificados nas últimas duas horas, sem falha recente. A verificação funciona antes do início. Nenhum vínculo foi criado automaticamente: as contas abertas no navegador não tinham os acessos necessários para concluir a integração.
+O conector Google usa somente leitura, OAuth/PKCE e tokens criptografados no R2. GET administrativo apenas lê snapshots. A coleta automática é por hora, limitada a 28 dias e 5 mil linhas, com reserva global antes da tentativa; falhas preservam o último relatório válido. O botão de atualização verifica conexão e coleta; não refaz cortes.
 
-O período monetário começa no primeiro dia completo após a confirmação mais 24 horas de preparação da coleta; visualizações e sessões usam o mesmo período. Perda ou mudança do vínculo esconde a receita antiga. Receita bloqueada por permissão continua indisponível. O teste permanece desligado na publicação até que essas condições sejam atendidas.
+O A/B pode iniciar antes da conexão monetária. Engajamento usa o período do experimento. Receita indisponível é nula, nunca zero inventado ou rateio proporcional dos acessos. O conector confirma vínculo e publisher AdSense na mesma propriedade; a receita só aparece para dias completos válidos após a preparação. Denominadores de receita por mil usam as mesmas datas da receita. Mudança/perda do vínculo esconde valores monetários incompatíveis, preservando engajamento. Compare receita dentro do grupo AdSense: receitas de outras redes fora do Analytics não são atribuídas por este painel.
 
-## Validação
+Consentimento de leitura e eventual vínculo Google exigem ação autorizada; nenhum acesso Google é concedido automaticamente.
 
-`npm run check:deploy` e `wrangler deploy --dry-run` passaram na integração; a conferência final deve ser repetida após qualquer reparo. Não é necessária migração D1. Prévia local usa o renderizador real do blog e uma foto pública, sem métricas fictícias. Publicação no Worker `capitulo-de-hoje` depende da confirmação contextual do AGENTS.md deste repositório.
+## Operação e verificação
 
-Validação final após incorporar `origin/main` (`6664699`): 185 testes aprovados, TypeScript e dry-run aprovados. Painel conferido a 390 px e desktop; sem transbordamento horizontal após o ajuste. Publicação e consentimentos Google continuam pendentes.
+Rotas existentes de API com chave Bearer protegem `/api/photo-ai/{status,backfill,run,start-test,report-status,sync-reports}`. Não há endpoints públicos de gasto. Início, pausa e retomada preservam a população e a data; não reiniciar o identificador durante o mesmo experimento.
+
+Antes de publicar: `npm run check:deploy`, `wrangler deploy --dry-run`, revisão do diff e ancestralidade de `origin/main`. Não há migração D1. Rankings públicos continuam lendo snapshots, sem agregações de `pageviews_hourly` nos leitores. A escrita do cache conserva a versão lida antes do render para não recolocar mapas antigos em uma versão nova.
+
+O pedido de 16/10/2026 autorizou implementar, publicar e iniciar este experimento, incluindo o backfill. O executor temporário de lançamento deve ser removido após a execução; a automação permanente pertence ao próprio Worker.

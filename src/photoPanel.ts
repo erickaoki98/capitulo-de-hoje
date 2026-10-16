@@ -32,7 +32,7 @@ export function photoPanelBody(data:PhotoPanelData,message?:string):string {
     <div class="photo-grid">
       <section class="photo-card"><h3>Teste de fotos</h3><p class="photo-big">${status}</p><p class="photo-muted">${started?'Início: '+stamp(config.startedAt):'O blog continua com fotos estáticas até o início do teste.'}</p><p class="photo-muted">Divisão 50% / 50%, persistente por navegador.</p></section>
       <section class="photo-card"><h3>Analytics</h3><p class="photo-big">${reports.connected?'Conectado':'A conectar'}</p><p class="photo-muted">${reports.email?escape(reports.email):'Leitura da propriedade Capítulo de Hoje.'}</p></section>
-      <section class="photo-card"><h3>Receita por versão</h3><p class="photo-big">${revenueReady?'Vínculo verificado':'Indisponível'}</p><p class="photo-muted">${revenueReady?'Coleta após a preparação do vínculo; dias completos e com acesso à receita.':readiness?.revenueStatus==='revenue_restricted'?'A permissão desta conta restringe a leitura de receita. O engajamento continua disponível.':'O AdSense precisa estar vinculado à mesma propriedade do Analytics. Sem vínculo, não tratamos receita como zero.'}</p></section>
+      <section class="photo-card"><h3>Receita AdSense por versão</h3><p class="photo-big">${revenueReady?'Vínculo verificado':'Indisponível'}</p><p class="photo-muted">${revenueReady?'Coleta após a preparação do vínculo; dias completos e com acesso à receita.':readiness?.revenueStatus==='revenue_restricted'?'A permissão desta conta restringe a leitura de receita. O engajamento continua disponível.':'O AdSense precisa estar vinculado à mesma propriedade do Analytics. Sem vínculo, não tratamos receita como zero.'}</p></section>
     </div>
     ${(reports.error||reports.guard?.error)?`<div class="photo-note photo-error" role="alert">${escape(reports.error||reports.guard?.error)}</div>`:''}
     ${stale?'<div class="photo-note">Relatório anterior: a última atualização tem mais de duas horas. Confira a conexão antes de comparar resultados.</div>':''}
@@ -44,7 +44,7 @@ export function photoPanelBody(data:PhotoPanelData,message?:string):string {
       ${row('Visualizações',values(t=>n(t.views)))}
       ${row('Sessões',values(t=>n(t.sessions)))}
       ${row('Distribuição por sessões',values(t=>pct(totalSessions?t.sessions/totalSessions:null)))}
-      ${row('Receita atribuída (dias válidos)',revenueTotals.map(t=>money(t.revenue)))}
+      ${row('Receita AdSense atribuída (dias válidos)',revenueTotals.map(t=>money(t.revenue)))}
       ${row('Receita por mil visualizações',revenueTotals.map(t=>money(t.rpmPer1000Views)))}
       ${row('Receita por mil sessões',revenueTotals.map(t=>money(t.revenuePer1000Sessions)))}
       ${row('Engajamento médio por sessão',values(t=>t.engagementSecondsPerSession==null?'—':n(t.engagementSecondsPerSession)+' s'))}
@@ -54,7 +54,7 @@ export function photoPanelBody(data:PhotoPanelData,message?:string):string {
       <p class="photo-muted">${hasData?'Resultados descritivos; ainda não declaramos um vencedor ou significância estatística.':'Ainda não há amostra para comparar as versões.'} Tempo de engajamento considera uso em primeiro plano; trocar um enquadramento não conta como interação.</p>
       <p class="photo-muted">A divisão observada usa sessões; um navegador pode iniciar várias sessões. Engajamento e permanência são indicadores indiretos: este relatório não mede a retenção de retorno.</p>
       <p class="photo-muted">${revenueDays.length?`Receita: ${escape(revenueDays[0])} a ${escape(revenueDays.at(-1))}, somente nas datas válidas disponíveis. Os cálculos de receita por mil usam visualizações e sessões dessas mesmas datas.`:'Receita indisponível até haver dias completos com vínculo e permissão confirmados.'} Não há rateio ou estimativa de receita entre versões.</p>
-      <p class="photo-muted">A receita por mil usa visualizações do Analytics. O teste de anúncios continua separado; use o filtro “Somente AdSense” para comparar fotos dentro do mesmo tipo de monetização.</p>
+      <p class="photo-muted">A receita por mil usa visualizações do Analytics. O teste de anúncios continua separado; use o filtro “Somente AdSense” para comparar fotos dentro do mesmo tipo de monetização. Vendas e receita dos banners próprios não são atribuídas por este relatório.</p>
     </section>
     <section class="photo-card"><h2>Conexão e coleta</h2><div class="photo-actions">
       <form method="POST" action="/admin/teste-fotos/connect"><button type="submit"${!reports.configured?' disabled':''}>${reports.connected?'Reconectar':'Conectar'} Analytics (leitura)</button></form>
