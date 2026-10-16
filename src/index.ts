@@ -1383,7 +1383,7 @@ ${urls.join('\n')}
             relatedPosts = relatedPosts.sort((a, b) =>
               (slugOrder.get(a.slug) ?? 999) - (slugOrder.get(b.slug) ?? 999),
             );
-            // "Em Alta": posts mais vistos nas últimas 24h (excluindo o atual).
+            // Related section cards: shared 24h ranking, independent of novela.
             const trendSlugs = top24h.map((v) => v.path.replace(/^\//, ''));
             let trendingPosts = trendSlugs.length > 0
               ? await getPublicPostsBySlugList(env.DB, trendSlugs)
@@ -1391,7 +1391,7 @@ ${urls.join('\n')}
             const trendOrder = new Map(trendSlugs.map((s, i) => [s, i]));
             trendingPosts = trendingPosts
               .sort((a, b) => (trendOrder.get(a.slug) ?? 999) - (trendOrder.get(b.slug) ?? 999))
-              .slice(0, 4);
+              .slice(0, 12);
             if (relatedPosts.length < 6) {
               const recent = await listPosts(env.DB, { includeDrafts: false, limit: 20 });
               for (const r of recent) {

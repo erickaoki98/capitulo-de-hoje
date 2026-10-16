@@ -102,7 +102,7 @@ W.addEventListener('focus',function(){
 
 /* ---------- Cliques (delegação) ---------- */
 var CT=[
-  ['.trend','em_alta'],['.rcmd','relacionados'],['.btn-primary-cta','fim_home'],['.btn-secondary-cta','fim_novela'],
+  ['.section-rec','leia_tambem'],['.trend','em_alta'],['.rcmd','relacionados'],['.btn-primary-cta','fim_home'],['.btn-secondary-cta','fim_novela'],
   ['.post__kicker','novela_topo'],['.post-card','card_home'],['.site-logo','logo'],['.site-footer','rodape'],['.author-box','autor']
 ];
 D.addEventListener('click',function(e){

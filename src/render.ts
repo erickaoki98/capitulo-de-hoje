@@ -1,3 +1,4 @@
+import { injectSectionRecommendations, selectSectionCandidates } from './sectionRecommendations.ts';
 import type { Env, Post, PostCard } from './types';
 import type { ShopeeProduct, AdminUser, ShopeeClickDay, ShopeeProductDayClicks } from './db';
 import type { ShopeeApiProduct } from './shopee';
@@ -1139,16 +1140,12 @@ export function renderPost(
   const extraSlots = (pubId && ads?.config.inContentExtra) ? ads.config.inContentExtra : [];
   html = planAndInjectBlocks(html, adPlan, shopeeConfig ?? null, 2, extraSlots, pubId, null, ads?.native);
 
-  // "Em Alta" (top 24h): aparece ao FIM de cada seção — ou seja, logo antes de
-  // cada H2 (exceto o primeiro). Repete o bloco em cada transição de subtítulo.
-  if (trendingPosts && trendingPosts.length >= 2) {
-    const trendingHtml = renderTrendingCarousel(trendingPosts);
-    let firstH2 = true;
-    html = html.replace(/<h2(\b[^>]*)>/g, (full) => {
-      if (firstH2) { firstH2 = false; return full; } // 1º subtítulo: nada antes dele
-      return trendingHtml + '\n' + full;
-    });
-  }
+  // One different recommendation at the end of each section, using the shared 24h rank.
+  const rankedCandidates = selectSectionCandidates(trendingPosts ?? [], post.slug);
+  const recommendations = injectSectionRecommendations(
+    html, rankedCandidates.length ? rankedCandidates : related, post.slug,
+  );
+  html = recommendations.html;
 
   // helper que renderiza um ad slot se config + slotId
   type SinglePlacementKey = Exclude<keyof AdConfig, 'inContentExtra'>;
@@ -1160,7 +1157,8 @@ export function renderPost(
   };
 
   // Related posts
-  const relatedHtml = related.length === 0 ? '' : renderRelatedSection(related);
+  const remainingRelated = selectSectionCandidates(related, post.slug).filter(p => !recommendations.usedSlugs.has(p.slug));
+  const relatedHtml = remainingRelated.length === 0 ? '' : renderRelatedSection(remainingRelated);
 
   // Autor exibido (perfil padrão/redator resolvido). Usado no byline E no JSON-LD,
   // para o robô do Google/AdSense ler a mesma assinatura que aparece na página.
@@ -1216,6 +1214,7 @@ export function renderPost(
   <div class="prose">${html}</div>
   ${adIf('afterContent', 'ad-slot--after')}
 </article>${authorProfile ? renderAuthorBox(authorProfile) : ''}${relatedHtml}
+${recommendations.usedSlugs.size ? '<script type="module" src="/related-faces.js?v=20261016-1"></script>' : ''}
 ${adIf('bottomOfPage', 'ad-slot--bottom')}
 <div class="continue-cta">
   <h3 class="continue-cta__title">Gostou do capítulo?</h3>
@@ -1238,7 +1237,7 @@ ${adIf('bottomOfPage', 'ad-slot--bottom')}
   // Conteúdo: oculta a imagem/figure quebrada (não atrapalha a leitura).
   // Hero: promove a 1ª imagem do conteúdo que carregar; se nenhuma, oculta.
   (function(){
-    document.querySelectorAll('.prose img').forEach(function(img) {
+    document.querySelectorAll('.prose img:not(.section-rec__image)').forEach(function(img) {
       img.addEventListener('error', function() {
         if (this.dataset.broken) return;
         this.dataset.broken = '1';
@@ -1350,35 +1349,6 @@ ${adIf('bottomOfPage', 'ad-slot--bottom')}
 }
 
 // ====== Related Posts — Banner Carousel ======
-/** Carrossel horizontal "Em Alta" — top posts das últimas 24h (in-article, após H2). */
-function renderTrendingCarousel(posts: (Post | PostCard)[]): string {
-  if (posts.length < 2) return '';
-  const cards = posts.slice(0, 4).map((p, i) => {
-    const bg = p.hero_image ? escapeHtml(p.hero_image) : '';
-    const cat = 'category' in p && p.category && p.category !== 'Sem categoria' ? p.category : '';
-    return `<a class="trend__card" href="/${escapeHtml(p.slug)}" data-trend-idx="${i}">
-      <span class="trend__img-wrap">
-        ${bg ? `<img class="trend__img" src="${bg}" alt="" loading="lazy" decoding="async">` : '<span class="trend__img trend__img--ph"></span>'}
-        <span class="trend__rank">${i + 1}</span>
-      </span>
-      <span class="trend__body">
-        ${cat ? `<span class="trend__cat">${escapeHtml(cat)}</span>` : ''}
-        <span class="trend__title">${escapeHtml(p.title)}</span>
-      </span>
-    </a>`;
-  }).join('');
-
-  return `<aside class="trend" aria-label="Em alta">
-  <div class="trend__header">
-    <svg class="trend__icon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
-    <h3 class="trend__heading">Em Alta</h3>
-  </div>
-  <div class="trend__scroll" data-trend-scroll>
-    ${cards}
-  </div>
-</aside>`;
-}
-
 function renderRelatedSection(posts: (Post | PostCard)[]): string {
   if (posts.length === 0) return '';
   const slides = posts.map((p, i) => {

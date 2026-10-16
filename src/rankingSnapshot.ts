@@ -138,6 +138,6 @@ export async function readRankingSnapshot(bucket: R2Bucket, cache: Cache, origin
 export function rankingsForArticle(snapshot: RankingSnapshot, path: string) {
   return {
     topViews: snapshot.top48h.filter(row => row.path !== path).slice(0, 12),
-    top24h: snapshot.top24h.filter(row => row.path !== path).slice(0, 4),
+    top24h: snapshot.top24h.filter(row => row.path !== path).slice(0, 12),
   };
 }

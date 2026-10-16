@@ -29,6 +29,9 @@ export interface Post {
   source_url: string | null;
 }
 
+/** Public card metadata; article content is optional and never required by the renderer. */
+export type PostCard = Omit<Post, 'content' | 'draft' | 'source_url'>;
+
 export interface PostInput {
   slug: string;
   title: string;
