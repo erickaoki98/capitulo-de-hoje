@@ -3,6 +3,8 @@ import {articlePhotoSources,PHOTO_AI_ROOT,parseShots,type PhotoMaps} from './pho
 import {analyzePhoto,PHOTO_AI_VERSION,type PhotoAIResult} from './photoAIModel.ts';
 import {bumpCacheVersion} from './cache.ts';
 import {publicPostVisibilitySql} from './archive.ts';
+import {getSetting} from './db';
+import {parsePhotoConfig} from './photoExperiment.ts';
 export const PHOTO_AI_DAILY_MAX=250;
 const STATE=PHOTO_AI_ROOT+'state',LEASE=PHOTO_AI_ROOT+'lease';
 type Status='queued'|'processing'|'ready'|'static'|'failed';
@@ -16,17 +18,17 @@ const privateOptions={httpMetadata:{contentType:'application/json',cacheControl:
 async function read<T>(env:Env,key:string):Promise<T|null>{const o=await env.IMAGES.get(key);return o?o.json<T>():null;}
 async function mutate(env:Env,fn:(state:State)=>void):Promise<State>{for(let i=0;i<6;i++){const old=await env.IMAGES.get(STATE),state=old?await old.json<State>():initial();fn(state);state.lastUpdated=Date.now();const saved=await env.IMAGES.put(STATE,JSON.stringify(state),{...privateOptions,onlyIf:old?{etagMatches:old.etag}:{etagDoesNotMatch:'*'}});if(saved)return state;}throw Error('Fila ocupada; tente novamente.');}
 function stats(job:ArticleJob):ArticleStats{return {id:job.id,slug:job.slug,total:job.images.length,ready:job.images.filter(i=>i.status==='ready').length,static:job.images.filter(i=>i.status==='static').length,failed:job.images.filter(i=>i.status==='failed').length,processing:job.images.filter(i=>i.status==='processing').length,cost:job.images.reduce((n,i)=>n+i.cost,0),updatedAt:job.updatedAt};}
-async function changeJob(env:Env,id:number,change:(old:ArticleJob|null)=>ArticleJob|null):Promise<void>{
+async function changeJob(env:Env,id:number,change:(old:ArticleJob|null)=>ArticleJob|null):Promise<ArticleJob|null>{
   const key=PHOTO_AI_ROOT+'articles/'+id+'.json';
   for(let attempt=0;attempt<6;attempt++){
-    const object=await env.IMAGES.get(key),old=object?await object.json<ArticleJob>():null,job=change(old);if(!job)return;
+    const object=await env.IMAGES.get(key),old=object?await object.json<ArticleJob>():null,job=change(old);if(!job)return null;
     job.updatedAt=Math.max(Date.now(),(old?.updatedAt||0)+1);
     const saved=await env.IMAGES.put(key,JSON.stringify(job),{...privateOptions,onlyIf:object?{etagMatches:object.etag}:{etagDoesNotMatch:'*'}});if(!saved)continue;
-    await mutate(env,state=>{const summary=stats(job),i=state.articles.findIndex(a=>a.id===id);if(i<0)state.articles.push(summary);else if((state.articles[i].updatedAt||0)<=summary.updatedAt)state.articles[i]=summary;});return;
+    await mutate(env,state=>{const summary=stats(job),i=state.articles.findIndex(a=>a.id===id);if(i<0)state.articles.push(summary);else if((state.articles[i].updatedAt||0)<=summary.updatedAt)state.articles[i]=summary;});return job;
   }throw Error('Artigo da fila ocupado; nova descoberta atualizará as fotos.');
 }
-async function saveProgress(env:Env,job:ArticleJob,image:ImageJob):Promise<void>{
-  await changeJob(env,job.id,latest=>{
+async function saveProgress(env:Env,job:ArticleJob,image:ImageJob):Promise<ArticleJob|null>{
+  return changeJob(env,job.id,latest=>{
     if(!latest)return null;const index=latest.images.findIndex(i=>i.source===image.source);if(index<0)return null;
     latest.images[index]={...image};
     if(job.maps[image.source])latest.maps[image.source]=job.maps[image.source];else delete latest.maps[image.source];return latest;
@@ -112,7 +114,9 @@ export async function runPhotoAI(env:Env,now=Date.now(),analyze:typeof analyzePh
     image.status=cached.status;image.at=Date.now();image.cost=cached.owner===job.id?(cached.result?.estimatedCostUsd||cached.partialCost||0):0;image.reason=cached.error||cached.result?.reason;
     if(cached.status==='ready'&&cached.result){const shots=parseShots(cached.result.shots);if(shots)job.maps[image.source]={shots,reviewedAt:Date.now()};else{image.status='failed';image.reason='Mapa inválido.';}}
     else delete job.maps[image.source];
-    await saveProgress(env,job,image);if(image.status==='ready')await bumpCacheVersion(env);
+    const completed=await saveProgress(env,job,image);
+    // Initial preparation invalidates once at launch. Future articles invalidate once when fully processed.
+    if(completed&&Object.keys(completed.maps).length&&completed.images.every(i=>i.status!=='queued'&&i.status!=='processing')&&parsePhotoConfig(await getSetting(env.DB,'photo.experiment')).enabled)await bumpCacheVersion(env);
     return {status:image.status,source:image.source,view:await photoAIView(env)};
   }catch(error){await mutate(env,s=>{s.error=error instanceof Error?error.message.slice(0,180):'Falha na fila.';});return {status:'error'};}
   finally{if(!released)await env.IMAGES.put(LEASE,JSON.stringify({until:0}),{...privateOptions,onlyIf:{etagMatches:lock}});}
