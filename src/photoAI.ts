@@ -20,7 +20,7 @@ async function changeJob(env:Env,id:number,change:(old:ArticleJob|null)=>Article
   const key=PHOTO_AI_ROOT+'articles/'+id+'.json';
   for(let attempt=0;attempt<6;attempt++){
     const object=await env.IMAGES.get(key),old=object?await object.json<ArticleJob>():null,job=change(old);if(!job)return;
-    job.updatedAt=Date.now();
+    job.updatedAt=Math.max(Date.now(),(old?.updatedAt||0)+1);
     const saved=await env.IMAGES.put(key,JSON.stringify(job),{...privateOptions,onlyIf:object?{etagMatches:object.etag}:{etagDoesNotMatch:'*'}});if(!saved)continue;
     await mutate(env,state=>{const summary=stats(job),i=state.articles.findIndex(a=>a.id===id);if(i<0)state.articles.push(summary);else if((state.articles[i].updatedAt||0)<=summary.updatedAt)state.articles[i]=summary;});return;
   }throw Error('Artigo da fila ocupado; nova descoberta atualizará as fotos.');
@@ -41,7 +41,7 @@ export async function enqueuePhotoPost(env:Env,post:Pick<Post,'id'|'slug'|'title
     return {id:post.id,slug:post.slug,title:post.title,images:sources.map(source=>{const previous=old?.images.find(i=>i.source===source);return previous&&previous.reason!=='Artigo fora de publicação.'?previous:{source,status:'queued',at:Date.now(),cost:previous?.cost||0};}),maps:Object.fromEntries(Object.entries(old?.maps||{}).filter(([source])=>sources.includes(source))),updatedAt:Date.now()};
   });
 }
-async function acquire(env:Env,key:string,now:number,ms:number):Promise<string|null>{const old=await env.IMAGES.get(key),previous=old?await old.json<{until:number}>():null;if(previous&&previous.until>now)return null;const value=await env.IMAGES.put(key,JSON.stringify({until:now+ms}),{...privateOptions,onlyIf:old?{etagMatches:old.etag}:{etagDoesNotMatch:'*'}});return value?.etag||null;}
+async function acquire(env:Env,key:string,now:number,ms:number):Promise<string|null>{const old=await env.IMAGES.get(key),previous=old?await old.json<{until:number}>():null;if(previous&&previous.until>now)return null;const value=await env.IMAGES.put(key,JSON.stringify({until:now+ms,nonce:crypto.randomUUID()}),{...privateOptions,onlyIf:old?{etagMatches:old.etag}:{etagDoesNotMatch:'*'}});return value?.etag||null;}
 /** One immutable seed snapshot; retries only finish enqueueing the same ids, never choose another thirty. */
 export async function startPhotoBackfill(env:Env):Promise<PhotoAIView>{
   const lock=await acquire(env,PHOTO_AI_ROOT+'seed-lease',Date.now(),60000);if(!lock)return photoAIView(env);
@@ -69,15 +69,23 @@ export async function photoAIView(env:Env):Promise<PhotoAIView>{
 }
 async function reserveDaily(env:Env,now:number){const key=PHOTO_AI_ROOT+'budgets/'+new Date(now).toISOString().slice(0,10),old=await env.IMAGES.get(key),budget=old?await old.json<{reserved:number}>():{reserved:0};if(budget.reserved>=PHOTO_AI_DAILY_MAX)return false;return !!await env.IMAGES.put(key,JSON.stringify({reserved:budget.reserved+1,reservedUsd:(budget.reserved+1)*.02,maxImages:PHOTO_AI_DAILY_MAX,maxReservedUsd:PHOTO_AI_DAILY_MAX*.02}),{...privateOptions,onlyIf:old?{etagMatches:old.etag}:{etagDoesNotMatch:'*'}});}
 interface CachedImage {status:'processing'|'ready'|'static'|'failed';owner:number;at:number;result?:PhotoAIResult;error?:string;partialCost?:number}
-/** Serial bounded processor. Reservations survive errors and expired executions; uncertain API calls are never repeated. */
+/** Bounded processor with serialized claims and at most four concurrent photos. Reservations survive errors and expired executions; uncertain API calls are never repeated. */
 export async function runPhotoAI(env:Env,now=Date.now(),analyze:typeof analyzePhoto=analyzePhoto):Promise<{status:string;source?:string;view?:PhotoAIView}>{
   const state=await read<State>(env,STATE);if(!state?.enabled)return {status:'disabled'};if(!env.OPENAI_API_KEY)return {status:'not_configured'};
   const lock=await acquire(env,LEASE,now,180000);if(!lock)return {status:'limited'};
+  let released=false;
   try{
-    const next=state.articles.find(a=>a.total>a.ready+a.static+a.failed);if(!next)return {status:'complete'};
+    const fresh=await read<State>(env,STATE);if(!fresh?.enabled)return {status:'disabled'};
+    const pending=fresh.articles.filter(a=>a.total>a.ready+a.static+a.failed);
+    if(!pending.length)return {status:'complete'};
+    const processing=fresh.articles.reduce((n,a)=>n+a.processing,0);
+    const stale=pending.find(a=>a.processing>0&&a.updatedAt<now-180000);
+    if(processing>=4&&!stale)return {status:'limited'};
+    const next=stale||pending.find(a=>a.total>a.ready+a.static+a.failed+a.processing)||pending[0];
     const job=await read<ArticleJob>(env,PHOTO_AI_ROOT+'articles/'+next.id+'.json');if(!job)throw Error('Artigo da fila não encontrado.');
-    const image=job.images.find(i=>i.status==='queued'||i.status==='processing');if(!image)return {status:'reconciled'};
+    const image=job.images.find(i=>i.status==='processing'&&i.at<now-180000)||job.images.find(i=>i.status==='queued')||job.images.find(i=>i.status==='processing');if(!image)return {status:'reconciled'};
     const cacheKey=PHOTO_AI_ROOT+'images/'+image.source.slice(5)+'.json';let cached=await read<CachedImage>(env,cacheKey);
+    if(cached?.status==='processing'&&cached.at>now-180000)return {status:'limited'};
     if(!cached){
       const published=await env.DB.prepare(`SELECT p.id FROM posts AS p WHERE p.id=? AND ${publicPostVisibilitySql('p')}`).bind(job.id).first();
       if(!published){await changeJob(env,job.id,latest=>{if(!latest)return null;for(const pending of latest.images)if(pending.status==='queued'||pending.status==='processing'){pending.status='static';pending.reason='Artigo fora de publicação.';}return latest;});return {status:'unpublished'};}
@@ -86,6 +94,8 @@ export async function runPhotoAI(env:Env,now=Date.now(),analyze:typeof analyzePh
       if(!await reserveDaily(env,now)){await mutate(env,s=>{s.error='Teto diário de 250 fotos atingido; a fila continua no próximo dia, sem gasto extra.';});return {status:'budget'};}
       cached={status:'processing',owner:job.id,at:now};const reservation=await env.IMAGES.put(cacheKey,JSON.stringify(cached),{...privateOptions,onlyIf:{etagDoesNotMatch:'*'}});if(!reservation)return {status:'limited'};
       image.status='processing';image.at=now;await saveProgress(env,job,image);
+      // The global lease serializes claims; up to four persisted jobs may analyze concurrently.
+      await env.IMAGES.put(LEASE,JSON.stringify({until:0}),{...privateOptions,onlyIf:{etagMatches:lock}});released=true;
       try{
         const result=await analyze(await source.arrayBuffer(),env.OPENAI_API_KEY);
         const shots=result.shots.length>=2?parseShots(result.shots):null;
@@ -105,5 +115,5 @@ export async function runPhotoAI(env:Env,now=Date.now(),analyze:typeof analyzePh
     await saveProgress(env,job,image);if(image.status==='ready')await bumpCacheVersion(env);
     return {status:image.status,source:image.source,view:await photoAIView(env)};
   }catch(error){await mutate(env,s=>{s.error=error instanceof Error?error.message.slice(0,180):'Falha na fila.';});return {status:'error'};}
-  finally{await env.IMAGES.put(LEASE,JSON.stringify({until:0}),{...privateOptions,onlyIf:{etagMatches:lock}});}
+  finally{if(!released)await env.IMAGES.put(LEASE,JSON.stringify({until:0}),{...privateOptions,onlyIf:{etagMatches:lock}});}
 }
