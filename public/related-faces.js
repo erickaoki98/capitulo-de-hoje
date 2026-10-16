@@ -1,4 +1,4 @@
-import { approvedFaces, faceCrop, faceSources } from './related-face-policy.js';
+import { approvedFaces, faceCrop, contextCrop, faceSources } from './related-face-policy.js?v=20261016-3';
 
 const MODEL_BASE = '/vendor/related-faces-v1';
 let modelPromise;
@@ -43,7 +43,7 @@ async function detectImage(src) {
     img.onerror = () => { clearTimeout(timer); reject(Error('Face image unavailable')); };
     img.src = src;
   });
-  const results = await api.detectAllFaces(image,new api.TinyFaceDetectorOptions({inputSize:512,scoreThreshold:.8})).withFaceLandmarks(true);
+  const results = await api.detectAllFaces(image,new api.TinyFaceDetectorOptions({inputSize:512,scoreThreshold:.25})).withFaceLandmarks(true);
   return {width:image.naturalWidth,height:image.naturalHeight,faces:results.map(result => ({
     score:result.detection.score,
     box:{x:result.detection.box.x,y:result.detection.box.y,width:result.detection.box.width,height:result.detection.box.height},
@@ -88,6 +88,7 @@ export function enhanceRelatedCards({doc=document,view=window,detect=detectImage
       state.layers = null;
       Object.assign(image.style,{width:'',height:'',maxWidth:'',left:'',top:''});
     }
+    state.wide = false; delete card.dataset.faceFraming;
     state.pause?.remove(); state.pause = null;
     sync(state);
     if (!src) { hide(card); return; }
@@ -102,7 +103,9 @@ export function enhanceRelatedCards({doc=document,view=window,detect=detectImage
     const size = state.photo.getBoundingClientRect();
     if (!size.width || !size.height) return;
     state.layers.forEach((layer,i) => {
-      const crop = faceCrop(state.faces[i],state.width,state.height,size.width,size.height);
+      const crop = state.wide
+        ? contextCrop(state.detectedFaces,state.width,state.height,size.width,size.height)
+        : faceCrop(state.faces[i],state.width,state.height,size.width,size.height);
       const scale = size.width/crop.width;
       Object.assign(layer.style,{width:`${state.width*scale}px`,height:`${state.height*scale}px`,maxWidth:'none',left:`${-crop.x*scale}px`,top:`${-crop.y*scale}px`});
     });
@@ -110,11 +113,13 @@ export function enhanceRelatedCards({doc=document,view=window,detect=detectImage
   const resize = view.ResizeObserver ? new view.ResizeObserver(entries => entries.forEach(entry => { const state=states.find(s=>s.photo===entry.target); if(state)layout(state); })) : null;
   const process = async state => {
     const {card,photo,image} = state;
+    const contexts = new Map();
     try {
       for (const src of state.sources) {
         if (state.failed.has(src)) continue;
-        if (!cache.has(src)) cache.set(src,detect(src).then(data => ({...data,faces:approvedFaces(data.faces,data.width,data.height)})).catch(() => null));
+        if (!cache.has(src)) cache.set(src,detect(src).then(data => ({...data,detectedFaces:data.faces,faces:approvedFaces(data.faces,data.width,data.height)})).catch(() => null));
         const data = await cache.get(src);
+        if (data?.width > 0 && data?.height > 0 && !state.failed.has(src)) contexts.set(src,data);
         if (!data?.faces.length || state.failed.has(src)) continue;
         Object.assign(state,data,{index:0,layers:[]});
         data.faces.forEach((face,i) => {
@@ -125,7 +130,7 @@ export function enhanceRelatedCards({doc=document,view=window,detect=detectImage
           state.layers.push(layer);
         });
         layout(state); resize?.observe(photo);
-        card.dataset.faceStatus = 'ready';
+        card.dataset.faceStatus = 'ready'; card.dataset.faceFraming = 'faces';
         if (data.faces.length > 1) {
           const pause = doc.createElement('button');
           pause.type = 'button'; pause.className = 'section-rec__pause';
@@ -142,6 +147,12 @@ export function enhanceRelatedCards({doc=document,view=window,detect=detectImage
       }
     } catch {}
     fallback(state);
+    const context = contexts.get(image.src);
+    if (context && !state.failed.has(image.src)) {
+      Object.assign(state,context,{wide:true,layers:[image]});
+      layout(state); resize?.observe(photo);
+      card.dataset.faceFraming = 'context';
+    }
   };
   const near = view.IntersectionObserver ? new view.IntersectionObserver(entries => entries.forEach(entry => {
     const state = states.find(s => s.card === entry.target);

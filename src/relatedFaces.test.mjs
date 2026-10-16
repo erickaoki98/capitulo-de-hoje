@@ -15,11 +15,11 @@ function face(overrides = {}) {
   return { score: .96, box: { x: 100, y: 95, width: 100, height: 110 }, landmarks: points, ...overrides };
 }
 
-test('only clear frontal faces pass; largest approved face comes first', () => {
+test('usable faces pass; largest approved face comes first', () => {
   assert.equal(typeof policy.approvedFaces, 'function');
   const good = face();
   const small = face({box:{x:100,y:95,width:25,height:30}});
-  const low = face({score:.7});
+  const low = face({score:.2});
   const truncated = face({box:{x:-5,y:95,width:100,height:110}});
   const profile = face(); profile.landmarks[30].x = 174;
   const rear = face(); rear.landmarks[42] = rear.landmarks[36];
@@ -28,11 +28,11 @@ test('only clear frontal faces pass; largest approved face comes first', () => {
   assert.deepEqual(policy.approvedFaces([good,small,low,truncated,profile,rear,missing,larger],800,450),[larger,good]);
 });
 
-test('rejects invisible mouth, invalid geometry and faces with collapsed eyes', () => {
+test('accepts closed eyes but rejects invalid mouth and geometry', () => {
   const mouth = face(); mouth.landmarks[48].y = mouth.landmarks[54].y = 128;
   const eye = face(); eye.landmarks[37].y = eye.landmarks[41].y;
   const invalid = face({box:{x:NaN,y:95,width:100,height:110}});
-  assert.deepEqual(policy.approvedFaces([mouth,eye,invalid],800,450),[]);
+  assert.deepEqual(policy.approvedFaces([mouth,eye,invalid],800,450),[eye]);
 });
 
 test('crop stays entirely inside source and keeps constant face scale across sizes', () => {
@@ -55,17 +55,17 @@ test('source list permits only two unique same-origin managed images', () => {
   assert.deepEqual(policy.faceSources('/img/a.jpg','invalid','https://example.com'),['https://example.com/img/a.jpg']);
 });
 
-test('real preview frontal face is accepted at detector score; lower confidence is rejected', () => {
+test('real preview face is accepted; detections below the reviewed floor are rejected', () => {
   const actual = face({score:.813,box:{x:119.46,y:170.5,width:129.92,height:110.93}});
   const pts = [[178.15,198.16],[184.16,198.26],[189.11,198.21],[193.49,201.21],[189.26,202.89],[183.29,201.46],[215.23,201.77],[221.68,199.33],[226.5,199.68],[229.14,201.11],[225.68,203.6],[220.56,203.93]];
   pts.forEach(([x,y],i) => actual.landmarks[36+i]={x,y});
   actual.landmarks[30]={x:207.95,y:231.96};actual.landmarks[48]={x:185.07,y:245.05};actual.landmarks[54]={x:214.25,y:247.02};
   assert.equal(policy.approvedFaces([actual],1080,1080).length,1);
-  assert.equal(policy.approvedFaces([face({score:.79})],800,450).length,0);
+  assert.equal(policy.approvedFaces([face({score:.24})],800,450).length,0);
 });
 
 const runtimeSource = await readFile(new URL('../public/related-faces.js',import.meta.url),'utf8').catch(()=>'');
-const runtime = await import(`data:text/javascript;base64,${Buffer.from(runtimeSource.replace("'./related-face-policy.js'",JSON.stringify(`data:text/javascript;base64,${Buffer.from(policySource).toString('base64')}`))).toString('base64')}`);
+const runtime = await import(`data:text/javascript;base64,${Buffer.from(runtimeSource.replace(/'\.\/related-face-policy\.js(?:\?[^']*)?'/,JSON.stringify(`data:text/javascript;base64,${Buffer.from(policySource).toString('base64')}`))).toString('base64')}`);
 
 function harness(count=1) {
   class Element {
@@ -151,7 +151,7 @@ test('no approved face preserves the original photo without face zoom',async()=>
   runtime.enhanceRelatedCards({...h,detect:async()=>({width:800,height:450,faces:[]})});
   h.observers[0].fn([{target:h.cards[0],isIntersecting:true}]);await settle();
   assert.equal(h.cards[0].dataset.faceStatus,'fallback');assert.equal(image.src,'https://example.com/img/a.jpg');
-  assert.ok(!h.cards[0].classList.values.has('section-rec--text-only'));assert.equal(image.style.width,undefined);
+  assert.ok(!h.cards[0].classList.values.has('section-rec--text-only'));assert.ok(parseFloat(image.style.width)>0,'native image remains visible in its widest frame');
 });
 
 test('unsupported observer preserves native photo and never loads models',()=>{
@@ -217,4 +217,50 @@ test('external hero uses just one safe alternate after native error without infe
   assert.equal(image.src,'https://legacy-cdn.test/r2/hero.jpg');assert.ok(calls.every(src=>src.startsWith('https://example.com/img/')));
   image.listeners.error();assert.equal(image.src,'https://example.com/img/b.jpg');assert.equal(h.cards[0].dataset.faceStatus,'fallback');
   image.listeners.error();assert.equal(h.cards[0].dataset.faceStatus,'unavailable');assert.equal(image.src,'https://example.com/img/b.jpg');
+});
+
+
+test('five visually reviewed photos retain 1, 2, 1, 2 and 1 crops while excluding side profiles',async()=>{
+  const photos=JSON.parse(await readFile(new URL('./fixtures/related-face-review.json',import.meta.url),'utf8'));
+  for(const photo of photos){
+    const faces=photo.faces.map(f=>({...f,landmarks:f.landmarks.map(([x,y])=>({x,y}))}));
+    const selected=policy.approvedFaces(faces,photo.width,photo.height);
+    assert.deepEqual(faces.flatMap((face,i)=>selected.includes(face)?[i]:[]),photo.expected,`foto ${photo.sample}`);
+  }
+});
+
+test('open framing anchors the most prominent detected character and stays wider than face zoom',()=>{
+  assert.equal(typeof policy.contextCrop,'function');
+  const dominant=face({box:{x:650,y:90,width:140,height:150}});
+  const smaller=face({box:{x:150,y:100,width:70,height:80}});
+  const crop=policy.contextCrop([smaller,dominant],1000,600,100,140);
+  const tight=policy.faceCrop(dominant,1000,600,100,140);
+  assert.ok(crop.width>tight.width && crop.height>tight.height);
+  assert.ok(crop.x<=dominant.box.x && crop.x+crop.width>=dominant.box.x+dominant.box.width);
+  assert.ok(crop.x>400,'framing follows the character on the right instead of the empty center');
+  assert.ok(crop.x>=0 && crop.y>=0 && crop.x+crop.width<=1000 && crop.y+crop.height<=600);
+  const centered=policy.contextCrop([{score:1,box:{x:NaN,y:0,width:99,height:99}}],1000,600,100,140);
+  assert.ok(Math.abs(centered.x-(1000-centered.width)/2)<.001);
+});
+
+test('no approved face keeps one wide character crop and never rotates',async()=>{
+  const h=harness();const image=h.cards[0].querySelector('.section-rec__image');
+  const profile=face({box:{x:640,y:90,width:130,height:150}});profile.landmarks[30].x=185;
+  runtime.enhanceRelatedCards({...h,detect:async()=>({width:1000,height:600,faces:[profile]})});
+  h.observers[0].fn([{target:h.cards[0],isIntersecting:true}]);await settle();
+  assert.equal(h.cards[0].dataset.faceStatus,'fallback');assert.equal(h.cards[0].dataset.faceFraming,'context');
+  assert.equal(h.cards[0].photo.children.length,1);assert.equal(h.cards[0].children.length,0);assert.equal(h.intervals.size,0);
+  assert.ok(parseFloat(image.style.left)<-50,'wide photo follows the detected character');
+  assert.ok(parseFloat(image.style.width)<250,'fallback uses a wide frame instead of close face zoom');
+  image.listeners.error();assert.equal(image.style.width,'');assert.equal(h.cards[0].dataset.faceStatus,'unavailable');
+});
+
+test('native alternate with no approved face uses its own wide framing after a broken hero',async()=>{
+  const h=harness();const image=h.cards[0].querySelector('.section-rec__image');
+  h.cards[0].photo.dataset.faceAlternatives='["/img/b.jpg"]';
+  image.complete=true;image.naturalWidth=0;
+  runtime.enhanceRelatedCards({...h,detect:async()=>({width:800,height:450,faces:[]})});
+  h.observers[0].fn([{target:h.cards[0],isIntersecting:true}]);await settle();
+  assert.equal(image.src,'https://example.com/img/b.jpg');assert.equal(h.cards[0].dataset.faceFraming,'context');
+  assert.equal(h.cards[0].dataset.faceStatus,'fallback');assert.equal(h.intervals.size,0);
 });

@@ -8,11 +8,11 @@ The library is the upstream `dist/face-api.min.js`. The only downloaded weights 
 
 - At most 12 cards per page, at most two unique same-origin `/img/` source URLs per card; alternative is only tried if the hero has no approved face.
 - Lazy start within 240px of viewport; one shared model promise and sequential image processing. Successes, empty detections and failures are cached per URL for the page lifetime. No retry loop.
-- Library and each model fetch have 8-second network deadlines; image loading has an 8-second deadline. Detector input is fixed at 512px, confidence floor 0.80.
-- Conservative landmark gate requires both visible eyes, adequate eye spacing and symmetry, centered nose and visible mouth; minimum face 48×56px, 0.6% source area, and a 2px source-edge margin. At most four approved faces, largest first.
+- Library and each model fetch have 8-second network deadlines; image loading has an 8-second deadline. Detector input is fixed at 512px, detection floor 0.25.
+- Reviewed landmark gate accepts closed eyes, downward gaze and moderate turns; strong side profiles are rejected using eye spacing and nose geometry. Minimum face 48×56px, 0.6% source area, and a 2px source-edge margin. At most four approved faces, largest first.
 - Crop frame height is the larger of 1.65× face height and the height needed to include 1.18× face width, clamped to source bounds with correct aspect ratio. Framing remains consistent between faces unless the source edge makes that physically impossible.
 - One face stays fixed. Multiple approved faces crossfade for 240ms every 3500ms; pause offscreen, in hidden tabs, with reduced motion, or via the keyboard-focus pause button.
-- The original photo stays visible while detection is pending or unavailable, and when no face passes the conservative gate. Zoom/rotation are enhancements only; model failure does not remove a valid image. Only genuinely missing/broken sources can leave a text-only card. A detection score is not a calibrated probability or a guarantee of pose correctness.
+- The original photo stays visible while detection is pending or unavailable. When no face passes the reviewed gate, use the widest source-bounded frame that fills the card, centered on the largest reliable detected face box (area × score); without a plausible box, center the open photo. The fallback stays fixed and reuses existing detections with no extra inference. Zoom/rotation are enhancements only; model failure does not remove a valid image. Only genuinely missing/broken sources can leave a text-only card. A detection score is not a calibrated probability or a guarantee of pose correctness.
 
 ## Reproduction / integrity
 
