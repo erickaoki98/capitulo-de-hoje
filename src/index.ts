@@ -1,4 +1,7 @@
 import { handleAdSenseRoute } from './adsenseRoutes.ts';
+import { handlePhotoRoute } from './photoRoutes.ts';
+import { loadPhotoSettings } from './photoMaps.ts';
+import { syncPhotoReports } from './photoReports.ts';
 import { syncReports, reportsView, pageRpm, nextDayIn } from './adsenseReports.ts';
 import { usdBrl } from './fx.ts';
 import type { Env, Post, PostInput } from './types';
@@ -23,7 +26,7 @@ import {
   renderHome, renderPost, render404, renderPrivacy, renderDocs,
   renderLogin, renderAdminDashboard, renderAdminPosts, renderAdminEditor,
   renderAdminSettings, renderAdminConfiguracoes, renderAdminAnalytics, renderAdminApiKeys,
-  renderAdminCache, renderAdminAdSense,
+  renderAdminCache, renderAdminAdSense, renderAdminPhotoTest,
   type SiteAdSettings, type SiteTypography, type NativePanelData,
 } from './render';
 import {
@@ -237,15 +240,16 @@ export default {
           ctx.waitUntil(recordPageview(env.DB, '/').catch(() => {}));
           return cached;
         }
-        const [posts, ads, typo, gaId, cookieBanner] = await Promise.all([
+        const [posts, ads, typo, gaId, cookieBanner, photoConfig] = await Promise.all([
           listPosts(env.DB, { includeDrafts: false, limit: 60 }),
           loadAdSettings(env),
           loadTypography(env),
           loadGaId(env), // PROTEÇÃO ANALYTICS: gaId precisa chegar no render (ver loadGaId)
           loadCookieBanner(env),
+          loadPhotoSettings(env),
         ]);
         ctx.waitUntil(recordPageview(env.DB, '/').catch(() => {}));
-        const resp = new Response(renderHome(env, request, posts, ads, typo, gaId, cookieBanner), { headers: PUBLIC_CACHE_HEADERS });
+        const resp = new Response(renderHome(env, request, posts, ads, typo, gaId, cookieBanner, photoConfig.config), { headers: PUBLIC_CACHE_HEADERS });
         return writeCache(env, ctx, request, resp);
       }
 
@@ -555,6 +559,10 @@ ${urls.join('\n')}
 
       // ===== Everything below requires auth =====
       const authed = await requireAuth(request, env.SESSION_SECRET);
+
+      if (pathname === '/admin/teste-fotos' || pathname.startsWith('/admin/teste-fotos/')) {
+        return handlePhotoRoute(request, env, authed, (view, message) => renderAdminPhotoTest(env, view, message));
+      }
 
       if (pathname === '/admin/adsense' || pathname.startsWith('/admin/adsense/')) {
         return handleAdSenseRoute(request, env, authed, (view, message) => renderAdminAdSense(env, view, message));
@@ -1367,12 +1375,13 @@ ${urls.join('\n')}
           }
           const post = await getPublicPostBySlug(env.DB, slug);
           if (post && !post.draft) {
-            const [sharedRankings, ads, typo, gaId, cookieBanner] = await Promise.all([
+            const [sharedRankings, ads, typo, gaId, cookieBanner, photoConfig] = await Promise.all([
               readRankingSnapshot(env.IMAGES, caches.default, env.CANONICAL_URL || url.origin),
               loadAdSettings(env),
               loadTypography(env),
               loadGaId(env), // PROTEÇÃO ANALYTICS: gaId precisa chegar no render (ver loadGaId)
               loadCookieBanner(env),
+              loadPhotoSettings(env),
             ]);
             const { topViews, top24h } = rankingsForArticle(sharedRankings, pathname);
             const slugs = topViews.map((v) => v.path.replace(/^\//, ''));
@@ -1403,7 +1412,7 @@ ${urls.join('\n')}
             }
             ctx.waitUntil(recordPageview(env.DB, pathname).catch(() => {}));
             const resp = new Response(
-              renderPost(env, request, post, relatedPosts.slice(0, 12), ads, typo, trendingPosts, undefined, gaId, null, null, cookieBanner),
+              renderPost(env, request, post, relatedPosts.slice(0, 12), ads, typo, trendingPosts, undefined, gaId, null, null, cookieBanner, photoConfig.config, photoConfig.maps),
               { headers: PUBLIC_CACHE_HEADERS },
             );
             return writeCache(env, ctx, request, resp);
@@ -1437,6 +1446,7 @@ ${urls.join('\n')}
     ctx.waitUntil(refreshRankingSnapshot(env.IMAGES, env.DB));
     // AdSense reserves globally at most one attempt/hour; no D1 history scans.
     ctx.waitUntil(syncReports(env));
+    ctx.waitUntil(syncPhotoReports(env));
     ctx.waitUntil((async () => {
       try {
         // batch maior pra aproveitar a janela do worker no cron (sem cap de IP)

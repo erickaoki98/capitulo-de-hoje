@@ -5,6 +5,11 @@
     "src/sectionRecommendations.ts",
     "src/publicCacheKey.ts",
     "src/adsenseReports.ts",
-    "src/adsenseRoutes.ts"
+    "src/adsenseRoutes.ts",
+    "src/photoExperiment.ts",
+    "src/photoReports.ts",
+    "src/photoRoutes.ts",
+    "src/photoPanel.ts",
+    "src/photoMaps.ts"
   ]
 }
