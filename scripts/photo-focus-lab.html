@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Capítulo de Hoje — cinco fotos com foco automático</title>
+<style>body{font:16px/1.5 system-ui;margin:0;background:#eef1f7;color:#172235}main{max-width:1400px;margin:auto;padding:28px}h1{font-size:26px}button,a{font:inherit;min-height:44px;padding:10px 16px;border-radius:8px}button{background:#2457d6;color:white;border:0}button:disabled{opacity:.5}a{color:#2457d6}canvas{width:100%;height:auto;background:white;border-radius:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere}#export-image{display:none}.actions{display:flex;gap:12px;align-items:center;flex-wrap:wrap}:focus-visible{outline:3px solid #b65e00;outline-offset:3px}</style>
+<main><h1>Foco automático · teste de cinco fotos antigas</h1><p>Detector local do blog + a mesma regra geométrica em todas as fotos. Sem cortes escolhidos à mão, sem API paga e sem publicar o experimento.</p><div class="actions"><button id="run">Executar detecção no navegador</button><a id="download" hidden download="cinco-fotos-foco-automatico.png">Baixar relatório PNG</a></div><p id="status" role="status">Cinco fontes selecionadas antes da detecção.</p><canvas id="report" width="1800" height="3320" aria-label="Foto completa com áreas detectadas e recortes automáticos de cinco artigos"></canvas><img id="export-image" alt="Arquivo PNG do relatório"><details><summary>Resultados e coordenadas reproduzíveis</summary><pre id="results-json"></pre></details></main>
+<script type="module">
+import {analyzePhotoFocus} from '/photo-auto-focus.js';
+const button=document.getElementById('run'),status=document.getElementById('status'),canvas=document.getElementById('report'),ctx=canvas.getContext('2d'),download=document.getElementById('download');
+const wrap=(text,x,y,width,line=29)=>{let row='';for(const word of text.split(' ')){const next=row?row+' '+word:word;if(ctx.measureText(next).width>width&&row){ctx.fillText(row,x,y);row=word;y+=line;}else row=next;}ctx.fillText(row,x,y);return y;};
+const colors=['#b64020','#1644aa','#08795e'];
+function background(){ctx.fillStyle='#fff';ctx.fillRect(0,0,canvas.width,canvas.height);ctx.fillStyle='#172235';ctx.font='600 40px system-ui';ctx.fillText('Capítulo de Hoje | Detecção automática no navegador',50,64);ctx.font='25px system-ui';ctx.fillText('5 fotos de setembro de 2026 · mesma regra em todos os casos · sem enquadramento manual',50,108);ctx.font='22px system-ui';ctx.fillStyle='#4d596b';ctx.fillText('Tracejado = rosto detectado. Caixa numerada = corte aceito. Não há identificação da pessoa.',50,147);}
+function paint(row,index,image,data){
+ const top=190+index*600;ctx.fillStyle='#172235';ctx.font='600 25px system-ui';const end=wrap(`${index+1}. ${row.title}`,50,top,1690,30);ctx.font='22px system-ui';ctx.fillStyle='#4d596b';ctx.fillText(`Publicado: ${row.date} | ${data.width} × ${data.height} | ${data.faces.length} rosto(s) detectado(s) | ${data.points.length} corte(s) aceito(s) | ${data.durationMs} ms`,50,end+33);
+ const y=top+90,s=410;ctx.drawImage(image,50,y,s,s);
+ for(const face of data.faces){const b=face.box;ctx.setLineDash([8,6]);ctx.strokeStyle='#fff';ctx.lineWidth=3;ctx.strokeRect(50+b.x/data.width*s,y+b.y/data.height*s,b.width/data.width*s,b.height/data.height*s);ctx.setLineDash([]);}
+ data.points.forEach((p,i)=>{const color=colors[i],x=500+i*420;ctx.strokeStyle=color;ctx.lineWidth=5;ctx.strokeRect(50+p.x/data.width*s,y+p.y/data.height*s,p.width/data.width*s,p.height/data.height*s);ctx.fillStyle=color;ctx.fillRect(50+p.x/data.width*s,y+p.y/data.height*s,34,34);ctx.fillStyle='white';ctx.font='600 23px system-ui';ctx.fillText(String(i+1),58+p.x/data.width*s,y+26+p.y/data.height*s);ctx.drawImage(image,p.x,p.y,p.width,p.height,x,y,370,370);ctx.fillStyle=color;ctx.font='600 23px system-ui';ctx.fillText(`Corte ${i+1} · rosto`,x,y+404);});
+ if(!data.points.length){ctx.fillStyle='#b64020';ctx.font='600 26px system-ui';ctx.fillText('Sem corte seguro — manter foto original',500,y+100);ctx.font='23px system-ui';wrap('O detector não encontrou um rosto que passasse pela regra de tamanho, isolamento e confiança.',500,y+143,950);}
+ ctx.fillStyle='#4d596b';ctx.font='21px system-ui';ctx.fillText(data.points.length>=2?'Uso previsto: alternar estes recortes.':data.points.length===1?'Uso previsto: um foco encontrado; não montar animação repetindo o mesmo plano.':'Uso previsto: imagem estática.',50,y+448);
+ ctx.strokeStyle='#d7dce5';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(50,top+575);ctx.lineTo(1750,top+575);ctx.stroke();
+}
+background();
+button.addEventListener('click',async()=>{
+ button.disabled=true;download.hidden=true;background();const results=[];
+ try{
+  const rows=await (await fetch('/samples.json')).json();
+  for(let i=0;i<rows.length;i++){
+   const row=rows[i];status.textContent=`Analisando ${i+1} de ${rows.length}…`;
+   const image=await new Promise((resolve,reject)=>{const im=new Image();im.onload=()=>resolve(im);im.onerror=reject;im.src=row.source;});
+   const data=await analyzePhotoFocus(row.source);results.push({...row,...data});paint(row,i,image,data);
+  }
+  ctx.fillStyle='#172235';ctx.font='23px system-ui';wrap('Limite do fluxo: localiza rostos por geometria; não entende roteiro, identidade, emoção ou importância narrativa de objetos. Detalhes de ação não são inventados.',50,3260,1680);
+  const payload={policy:'browser-face-v1',detector:'face-api.js 0.22.2 · TinyFaceDetector 512 / limiar 0.80 + 68 landmarks',selection:'Índices 500,600,700,800,900 do sitemap-1; primeira foto do corpo de cada artigo; escolha anterior à detecção.',results};
+  document.getElementById('results-json').textContent=JSON.stringify(payload,null,2);
+  const png=canvas.toDataURL('image/png');document.getElementById('export-image').src=png;download.href=png;download.hidden=false;status.textContent='Concluído: cinco fotos analisadas no navegador. Arquivo PNG pronto.';
+ }catch(error){status.textContent='Falha no teste: '+error.message;button.disabled=false;}
+});
+</script></html>
