@@ -33,4 +33,12 @@
 ## 5. Revisar, publicar e executar
 - [x] Revisão de escopo e qualidade por agentes, correções e `npm run check:deploy`, `wrangler deploy --dry-run`.
 - [x] Atualizar main e conferir ancestralidade/diff. Publicar somente arquivos da branch `codex/photo-ab-retention-revenue` no Worker `capitulo-de-hoje`, domínio `capitulodehoje.com.br`, conforme pedido atual de implementar e iniciar o teste.
-- [ ] Iniciar fila idempotente e processar os últimos 30 artigos; verificar contagens, erros e custo reais. Ativar 50/50 e confirmar bootstrap/mapas/JS na produção, painel e movimento reduzido. Não inventar métricas ainda não coletadas.
+- [x] Iniciar fila idempotente e processar os últimos 30 artigos; verificar contagens, erros e custo reais. Ativar 50/50 e confirmar bootstrap/mapas/JS na produção, painel e movimento reduzido. Não inventar métricas ainda não coletadas.
+
+## Registro de lançamento — 16/10/2026
+
+- PR #5 integrado em `main` (`db0c8bf`); workflow oficial do Worker, execução `38964144740`, concluído com sucesso. Verificação local: 224 testes, TypeScript e dry-run do Wrangler aprovados.
+- Backfill concluído: 30 artigos, 240 fotos, 182 prontas para animar, 57 estáticas e uma falha de JSON preservando a original. Fila e processamento zerados. Uso confirmado estimado em US$ 0,1780436; eventuais chamadas interrompidas não confirmadas permanecem explicitamente fora dessa estimativa.
+- Teste `photo-v1` iniciado pelo painel em 16/10/2026 às 17:49:20 de São Paulo (`1792183760427`), divisão 50/50. URL pública canônica conferida após atualização: oito mapas no artigo de amostra, controle estático no IAB e tratamento com foto pronta e botão de pausa no Chrome, sem forçar a variante.
+- Executor Supabase temporário `cdh-photo-ab-launch-20261016` removido e ausência confirmada. Descoberta e processamento futuros pertencem ao Worker publicado.
+- Conexão Google de leitura aprovada pelo usuário. O perfil Sérgio tem acesso ao projeto Cloud; escopos `openid`, email e `analytics.readonly` registrados. Consentimento pendente na confirmação de identidade por chave de acesso da conta. O painel mostra Analytics a conectar e receita indisponível; não há resultado de desempenho a declarar.

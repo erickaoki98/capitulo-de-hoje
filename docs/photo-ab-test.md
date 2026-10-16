@@ -41,3 +41,11 @@ Rotas existentes de API com chave Bearer protegem `/api/photo-ai/{status,backfil
 Antes de publicar: `npm run check:deploy`, `wrangler deploy --dry-run`, revisão do diff e ancestralidade de `origin/main`. Não há migração D1. Rankings públicos continuam lendo snapshots, sem agregações de `pageviews_hourly` nos leitores. A escrita do cache conserva a versão lida antes do render para não recolocar mapas antigos em uma versão nova.
 
 O pedido de 16/10/2026 autorizou implementar, publicar e iniciar este experimento, incluindo o backfill. O executor temporário de lançamento deve ser removido após a execução; a automação permanente pertence ao próprio Worker.
+
+### Lançamento realizado em 16/10/2026
+
+O PR [#5](https://github.com/erickaoki98/capitulo-de-hoje/pull/5) foi integrado em `main` e publicado pelo workflow oficial do Worker (execução `38964144740`). O A/B `photo-v1` iniciou pelo painel às **17:49:20, horário de São Paulo**, com divisão 50/50. Foram aprovados 224 testes, TypeScript e dry-run do Wrangler. A conferência na URL canônica de um artigo mostrou oito mapas e os dois comportamentos em navegadores distintos, incluindo a foto animada e seu controle de pausa.
+
+Os 30 artigos e suas 240 fotos terminaram o processamento: **182 animáveis, 57 estáticas e uma falha de análise**, que conserva a imagem original sem repetir cobrança. Nenhuma foto ficou na fila ou em processamento. A estimativa acumulada do uso confirmado foi de **US$ 0,1780436**, sujeita à ressalva de chamadas interrompidas indicada no painel. O executor temporário foi removido e sua ausência foi confirmada; o processamento futuro permanece automático no Worker.
+
+A conexão de leitura do Analytics foi autorizada. No encerramento desta etapa, o Google solicitava confirmação de identidade por chave de acesso no perfil Sérgio antes de concluir o consentimento. O painel continua mostrando conexão e receita indisponíveis até essa conclusão e a verificação do vínculo AdSense; os números de análise das fotos acima não são resultados de engajamento ou receita do experimento.
