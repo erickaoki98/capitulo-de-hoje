@@ -8,7 +8,7 @@ Plano de execução e verificação:
 - [x] Identificação persistente 50/50 antes do primeiro config do GA; fotos do corpo com recortes fechados, trabalho limitado, sem APIs pagas. Preservar anúncios, hero, conteúdo e recomendações.
 - [x] Conector Analytics somente leitura, com OAuth/PKCE e token criptografado no R2. Relatório limitado a 28 dias e 5 mil linhas; reserva global por hora, falha sem repetição rápida; GET só lê snapshot.
 - [x] Painel autenticado `/admin/teste-fotos`: receita atribuída, receita por mil visualizações e sessões, tempo de engajamento e páginas por sessão, com filtros por aparelho e grupo dos anúncios.
-- [ ] Testes de comportamento antes das implementações; repetir `npm run check:deploy` e `wrangler deploy --dry-run` ao integrar. Conferir visualmente fotos e painel em celular e desktop.
+- [x] Testes de comportamento antes das implementações; repetir `npm run check:deploy` e `wrangler deploy --dry-run` ao integrar. Conferir visualmente fotos e painel em celular e desktop.
 - [ ] Revisar diff, registrar limitações da medição e solicitar a confirmação contextual de produção exigida por `AGENTS.md`. Não publicar checkout antigo nem migrar banco de produção.
 
 O identificador de usuário no GA é `photo_ab_v1` (`static` ou `motion`), já registrado como dimensão de usuário na propriedade `450970542`. Foi criado um relatório preparatório no Analytics, mas o painel final fica no blog. Configuração do teste: chave `photo.experiment`, inicialmente desligada. Iniciar preserva a data na pausa/retomada; não reiniciar a população durante o mesmo teste.
@@ -37,3 +37,5 @@ O período monetário começa no primeiro dia completo após a confirmação mai
 ## Validação
 
 `npm run check:deploy` e `wrangler deploy --dry-run` passaram na integração; a conferência final deve ser repetida após qualquer reparo. Não é necessária migração D1. Prévia local usa o renderizador real do blog e uma foto pública, sem métricas fictícias. Publicação no Worker `capitulo-de-hoje` depende da confirmação contextual do AGENTS.md deste repositório.
+
+Validação final após incorporar `origin/main` (`6664699`): 185 testes aprovados, TypeScript e dry-run aprovados. Painel conferido a 390 px e desktop; sem transbordamento horizontal após o ajuste. Publicação e consentimentos Google continuam pendentes.
