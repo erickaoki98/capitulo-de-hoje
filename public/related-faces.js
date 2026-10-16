@@ -51,6 +51,19 @@ async function detectImage(src) {
   }))};
 }
 
+// Display legacy HTTPS photos normally; inference remains restricted to managed /img URLs.
+function displaySources(primary,alternatives,origin) {
+  let extra = [];
+  try { const parsed = JSON.parse(alternatives || '[]'); if (Array.isArray(parsed)) extra = parsed.slice(0,1); } catch {}
+  return [...new Set([primary,...extra].flatMap(value => {
+    if (typeof value !== 'string') return [];
+    try {
+      const url = new URL(value,origin);
+      return !url.username && !url.password && (url.protocol === 'https:' || (url.origin === origin && /^\/img\/[a-zA-Z0-9/_.-]+$/.test(url.pathname))) ? [url.href] : [];
+    } catch { return []; }
+  }))].slice(0,2);
+}
+
 export function enhanceRelatedCards({doc=document,view=window,detect=detectImage} = {}) {
   const cards = [...doc.querySelectorAll('[data-related-card]')];
   if (!cards.length) return;
@@ -67,6 +80,23 @@ export function enhanceRelatedCards({doc=document,view=window,detect=detectImage
       state.layers[state.index].style.opacity = '1';
     },3500);
   };
+  const fallback = state => {
+    const {card,image,displaySources:sources,failed} = state;
+    const src = sources.includes(image.src) && !failed.has(image.src) ? image.src : sources.find(url => !failed.has(url));
+    if (state.layers) {
+      state.layers.slice(1).forEach(layer => layer.remove());
+      state.layers = null;
+      Object.assign(image.style,{width:'',height:'',maxWidth:'',left:'',top:''});
+    }
+    state.pause?.remove(); state.pause = null;
+    sync(state);
+    if (!src) { hide(card); return; }
+    card.classList.remove('section-rec--text-only');
+    image.style.display = ''; image.style.opacity = '1'; delete image.dataset.broken;
+    // Native image fallback is independent of the optional detector and never retries a failed URL.
+    if (image.src !== src) image.src = src;
+    card.dataset.faceStatus = 'fallback';
+  };
   const layout = state => {
     if (!state.layers) return;
     const size = state.photo.getBoundingClientRect();
@@ -81,10 +111,11 @@ export function enhanceRelatedCards({doc=document,view=window,detect=detectImage
   const process = async state => {
     const {card,photo,image} = state;
     try {
-      for (const src of faceSources(image.src,photo.dataset.faceAlternatives,view.location.origin)) {
+      for (const src of state.sources) {
+        if (state.failed.has(src)) continue;
         if (!cache.has(src)) cache.set(src,detect(src).then(data => ({...data,faces:approvedFaces(data.faces,data.width,data.height)})).catch(() => null));
         const data = await cache.get(src);
-        if (!data?.faces.length) continue;
+        if (!data?.faces.length || state.failed.has(src)) continue;
         Object.assign(state,data,{index:0,layers:[]});
         data.faces.forEach((face,i) => {
           const layer = i === 0 ? image : image.cloneNode(false);
@@ -105,12 +136,12 @@ export function enhanceRelatedCards({doc=document,view=window,detect=detectImage
             pause.textContent = state.paused ? 'Retomar alternância de rostos' : 'Pausar alternância de rostos';
             sync(state);
           });
-          card.append(pause);
+          card.append(pause); state.pause = pause;
         }
         sync(state); return;
       }
     } catch {}
-    hide(card);
+    fallback(state);
   };
   const near = view.IntersectionObserver ? new view.IntersectionObserver(entries => entries.forEach(entry => {
     const state = states.find(s => s.card === entry.target);
@@ -124,8 +155,13 @@ export function enhanceRelatedCards({doc=document,view=window,detect=detectImage
   }),{threshold:0}) : null;
   cards.forEach((card,i) => {
     const photo = card.querySelector('[data-face-photo]'), image = card.querySelector('.section-rec__image');
-    if (i >= 12 || !photo || !image || !near) { hide(card); return; }
-    const state = {card,photo,image,requested:false,visible:false,paused:false};
+    if (!photo || !image) { hide(card); return; }
+    const display = displaySources(image.src,photo.dataset.faceAlternatives,view.location.origin);
+    const state = {card,photo,image,displaySources:display,sources:display.flatMap(src => faceSources(src,'[]',view.location.origin)),failed:new Set(),requested:false,visible:false,paused:false};
+    image.addEventListener('error',() => { state.failed.add(image.src); fallback(state); });
+    if (image.complete && image.naturalWidth === 0) state.failed.add(image.src);
+    fallback(state);
+    if (i >= 12 || !near || !state.sources.includes(image.src) || !state.sources.some(src => !state.failed.has(src))) return;
     states.push(state); card.dataset.faceStatus = 'pending'; near.observe(card); visible.observe(card);
   });
   doc.addEventListener('visibilitychange',() => states.forEach(sync));

@@ -3609,7 +3609,7 @@ body.adm-page .nv-share input[type="number"] { width: 84px; }
   height: 100%;
   object-fit: cover;
   border-radius: 0;
-  opacity: 0;
+  opacity: 1;
   transition: opacity 240ms ease-in-out;
 }
 .section-rec__copy {
@@ -3640,16 +3640,13 @@ body.adm-page .nv-share input[type="number"] { width: 84px; }
   letter-spacing: -.02em;
   color: var(--rec-ink);
 }
-.section-rec__cta {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  font-weight: 750;
+.section-rec__novela {
+  display: block;
+  font-size: 11px;
+  font-weight: 550;
   line-height: 1.5;
-  color: var(--rec-blue);
+  color: #59657b;
 }
-.section-rec__cta svg { flex-shrink: 0; }
 .section-rec__link:hover .section-rec__title { color: var(--rec-blue); }
 .section-rec__link:focus-visible { outline: 3px solid var(--rec-blue); outline-offset: -4px; border-radius: 8px; }
 .section-rec--text-only .section-rec__photo { display: none; }
@@ -3683,7 +3680,7 @@ body.adm-page .nv-share input[type="number"] { width: 84px; }
   .section-rec__photo { flex-basis: 94px; min-height: 136px; }
   .prose strong.section-rec__title { font-size: 16px; line-height: 1.32; }
   .section-rec__eyebrow { font-size: 10px; }
-  .section-rec__cta { font-size: 12px; }
+  .section-rec__novela { font-size: 11px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .section-rec__image { transition: none; }

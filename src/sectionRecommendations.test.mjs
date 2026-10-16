@@ -57,8 +57,8 @@ test('escapa título, recusa URL de imagem perigosa e não insere Teoria ou slid
  assert.match(result.html,/&lt;img/);
  assert.match(result.html,/&amp;/);
  assert.doesNotMatch(result.html,/src="javascript:|<img[^>]* onerror=|TEORIA|data-dot|rcmd__dot/i);
- assert.match(result.html,/Leia também/);
- assert.match(result.html,/Ler a matéria/);
+ assert.match(result.html,/Notícias quentes do momento/);
+ assert.doesNotMatch(result.html,/Ler a matéria|section-rec__cta/);
  assert.match(result.html,/section-rec--text-only/);
 });
 
@@ -90,4 +90,29 @@ test('imagem dentro de comentário, script ou style não transforma seção vazi
  const html='<h2>Vazia</h2><!-- <img src=hidden> --><script>var x="<img src=hidden>";</script><style>/* <img src=hidden> */</style><h2>Texto</h2><p>Real</p>';
  const result=injectSectionRecommendations(html,[post('a'),post('b')],'atual',NOW);
  assert.equal(result.usedSlugs.size,1);
+});
+
+
+test('card separa novela do título, mostra legenda pequena e elimina CTA redundante',async()=>{
+ const {renderSectionCard}=await lib();
+ const html=renderSectionCard(post('pilar',{title:'Pilar descobre a prova | Quem Ama Cuida',category:'Quem ama cuida'}),1);
+ assert.match(html,/section-rec__eyebrow">Notícias quentes do momento</);
+ assert.match(html,/section-rec__title">Pilar descobre a prova</);
+ assert.match(html,/section-rec__novela">Quem ama cuida</);
+ assert.doesNotMatch(html,/Leia também|Ler a matéria|section-rec__cta/);
+});
+
+test('limpa sufixo com barra e preserva nome da novela que faz parte da notícia',async()=>{
+ const {renderSectionCard}=await lib();
+ const html=renderSectionCard(post('adriana',{title:'Adriana retorna em Quem Ama Cuida / Quem Ama Cuida',category:'Quem Ama Cuida'}),1);
+ assert.match(html,/section-rec__title">Adriana retorna em Quem Ama Cuida</);
+ const escaped=renderSectionCard(post('titulo',{title:'Personagem revela segredo | Novela & Cia',category:'Novela & Cia'}),1);
+ assert.match(escaped,/section-rec__novela">Novela &amp; Cia</);
+});
+
+test('card usa foto do conteúdo quando a capa não está preenchida',async()=>{
+ const {renderSectionCard}=await lib();
+ const html=renderSectionCard(post('sem-capa',{hero_image:null,content:'<p>Texto</p><figure><img src="/img/foto-do-artigo.jpg"></figure>',category:'Novela'}),1);
+ assert.match(html,/class="section-rec__image" src="\/img\/foto-do-artigo.jpg"/);
+ assert.doesNotMatch(html,/section-rec--text-only/);
 });

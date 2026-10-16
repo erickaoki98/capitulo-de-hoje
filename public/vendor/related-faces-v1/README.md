@@ -12,7 +12,7 @@ The library is the upstream `dist/face-api.min.js`. The only downloaded weights 
 - Conservative landmark gate requires both visible eyes, adequate eye spacing and symmetry, centered nose and visible mouth; minimum face 48×56px, 0.6% source area, and a 2px source-edge margin. At most four approved faces, largest first.
 - Crop frame height is the larger of 1.65× face height and the height needed to include 1.18× face width, clamped to source bounds with correct aspect ratio. Framing remains consistent between faces unless the source edge makes that physically impossible.
 - One face stays fixed. Multiple approved faces crossfade for 240ms every 3500ms; pause offscreen, in hidden tabs, with reduced motion, or via the keyboard-focus pause button.
-- No trusted face/model/image means a text-only card. Model limitations can conservatively hide a usable face; a detection score is not a calibrated probability or a guarantee of pose correctness.
+- The original photo stays visible while detection is pending or unavailable, and when no face passes the conservative gate. Zoom/rotation are enhancements only; model failure does not remove a valid image. Only genuinely missing/broken sources can leave a text-only card. A detection score is not a calibrated probability or a guarantee of pose correctness.
 
 ## Reproduction / integrity
 

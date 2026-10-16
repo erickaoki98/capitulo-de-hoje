@@ -69,11 +69,12 @@ const runtime = await import(`data:text/javascript;base64,${Buffer.from(runtimeS
 
 function harness(count=1) {
   class Element {
-    constructor(){this.dataset={};this.style={};this.children=[];this.attrs={};this.listeners={};this.classList={values:new Set(),add:v=>this.classList.values.add(v)};}
+    constructor(){this.dataset={};this.style={};this.children=[];this.attrs={};this.listeners={};this.classList={values:new Set(),add:v=>this.classList.values.add(v),remove:v=>this.classList.values.delete(v)};}
     setAttribute(k,v){this.attrs[k]=v;}
     append(...children){this.children.push(...children);}
     addEventListener(k,fn){this.listeners[k]=fn;}
     cloneNode(){return new Element();}
+    remove(){this.removed=true;}
     getBoundingClientRect(){return {width:100,height:140};}
   }
   const cards=Array.from({length:count},()=>{const card=new Element(),photo=new Element(),image=new Element();image.src='https://example.com/img/a.jpg';card.querySelector=s=>s.includes('photo')?photo:image;photo.append(image);card.photo=photo;return card;});
@@ -93,14 +94,14 @@ test('runtime is lazy, processes at most 12 cards sequentially and reuses source
   await settle();await settle();
   assert.equal(calls,1);assert.equal(maxActive,1);
   assert.equal(h.cards.filter(c=>c.dataset.faceStatus==='ready').length,12);
-  assert.ok(h.cards[12].classList.values.has('section-rec--text-only'));
+  assert.equal(h.cards[12].dataset.faceStatus,'fallback');assert.ok(!h.cards[12].classList.values.has('section-rec--text-only'));
 });
 
-test('failure stays text-only and does not retry a failed source',async()=>{
+test('model failure preserves photos and does not retry a failed source',async()=>{
   const h=harness(2);let calls=0;
   runtime.enhanceRelatedCards({...h,detect:async()=>{calls++;throw Error('model unavailable');}});
   h.observers[0].fn(h.cards.map(target=>({target,isIntersecting:true})));await settle();
-  assert.equal(calls,1);assert.ok(h.cards.every(c=>c.classList.values.has('section-rec--text-only')));
+  assert.equal(calls,1);assert.ok(h.cards.every(c=>c.dataset.faceStatus==='fallback' && !c.classList.values.has('section-rec--text-only')));
   h.observers[0].fn(h.cards.map(target=>({target,isIntersecting:true})));await settle();assert.equal(calls,1);
 });
 
@@ -124,7 +125,7 @@ test('alternate on photo is tried after an unusable hero, with sequential work a
   runtime.enhanceRelatedCards({...h,detect:async src=>{calls.push(src);maxActive=Math.max(maxActive,++active);await settle();active--;return {width:800,height:450,faces:src.endsWith('/b.jpg')?[face()]:[]};}});
   h.observers[0].fn(h.cards.map(target=>({target,isIntersecting:true})));await settle();await settle();await settle();await settle();
   assert.deepEqual(calls,['https://example.com/img/a.jpg','https://example.com/img/b.jpg','https://example.com/img/c.jpg']);
-  assert.equal(maxActive,1);assert.equal(h.cards[0].dataset.faceStatus,'ready');assert.equal(h.cards[1].dataset.faceStatus,'unavailable');
+  assert.equal(maxActive,1);assert.equal(h.cards[0].dataset.faceStatus,'ready');assert.equal(h.cards[1].dataset.faceStatus,'fallback');
 });
 
 test('tall narrow frames preserve full face width with margin and source bounds',()=>{
@@ -142,4 +143,78 @@ test('approved alternate restores image hidden by an earlier image error',async(
   runtime.enhanceRelatedCards({...h,detect:async src=>({width:800,height:450,faces:src.endsWith('/b.jpg')?[face()]:[]})});
   h.observers[0].fn([{target:h.cards[0],isIntersecting:true}]);await settle();
   assert.equal(h.cards[0].dataset.faceStatus,'ready');assert.equal(image.style.display,'');assert.equal(image.src,'https://example.com/img/b.jpg');
+});
+
+
+test('no approved face preserves the original photo without face zoom',async()=>{
+  const h=harness();const image=h.cards[0].querySelector('.section-rec__image');
+  runtime.enhanceRelatedCards({...h,detect:async()=>({width:800,height:450,faces:[]})});
+  h.observers[0].fn([{target:h.cards[0],isIntersecting:true}]);await settle();
+  assert.equal(h.cards[0].dataset.faceStatus,'fallback');assert.equal(image.src,'https://example.com/img/a.jpg');
+  assert.ok(!h.cards[0].classList.values.has('section-rec--text-only'));assert.equal(image.style.width,undefined);
+});
+
+test('unsupported observer preserves native photo and never loads models',()=>{
+  const h=harness();delete h.view.IntersectionObserver;let calls=0;
+  runtime.enhanceRelatedCards({...h,detect:async()=>{calls++;return {};}});
+  assert.equal(calls,0);assert.equal(h.cards[0].dataset.faceStatus,'fallback');
+  assert.ok(!h.cards[0].classList.values.has('section-rec--text-only'));
+});
+
+test('native image failure tries alternate even when model fails; only both native errors hide photo',async()=>{
+  const h=harness();const image=h.cards[0].querySelector('.section-rec__image');h.cards[0].photo.dataset.faceAlternatives='["/img/b.jpg"]';
+  runtime.enhanceRelatedCards({...h,detect:async()=>{throw Error('model503');}});
+  h.observers[0].fn([{target:h.cards[0],isIntersecting:true}]);await settle();
+  assert.equal(typeof image.listeners.error,'function');image.listeners.error();
+  assert.equal(image.src,'https://example.com/img/b.jpg');assert.equal(h.cards[0].dataset.faceStatus,'fallback');
+  assert.ok(!h.cards[0].classList.values.has('section-rec--text-only'));
+  image.listeners.error();assert.equal(h.cards[0].dataset.faceStatus,'unavailable');
+  assert.ok(h.cards[0].classList.values.has('section-rec--text-only'));
+  image.listeners.error();assert.equal(image.src,'https://example.com/img/b.jpg');
+});
+
+test('already broken hero uses valid unzoomed alternate with no approved faces',async()=>{
+  const h=harness();const image=h.cards[0].querySelector('.section-rec__image');
+  image.complete=true;image.naturalWidth=0;image.style.display='none';h.cards[0].photo.dataset.faceAlternatives='["/img/b.jpg"]';
+  runtime.enhanceRelatedCards({...h,detect:async()=>({width:800,height:450,faces:[]})});
+  h.observers[0].fn([{target:h.cards[0],isIntersecting:true}]);await settle();
+  assert.equal(image.src,'https://example.com/img/b.jpg');assert.equal(image.style.display,'');assert.equal(image.style.opacity,'1');
+  assert.equal(h.cards[0].dataset.faceStatus,'fallback');assert.ok(!h.cards[0].classList.values.has('section-rec--text-only'));
+});
+
+
+test('native error after approved crop clears zoom and animation for safe alternate',async()=>{
+  const h=harness();const image=h.cards[0].querySelector('.section-rec__image');h.cards[0].photo.dataset.faceAlternatives='["/img/b.jpg"]';
+  runtime.enhanceRelatedCards({...h,detect:async()=>({width:800,height:450,faces:[face(),face()]})});
+  h.observers[0].fn([{target:h.cards[0],isIntersecting:true}]);await settle();
+  h.observers[1].fn([{target:h.cards[0],isIntersecting:true}]);assert.equal(h.intervals.size,1);
+  const clone=h.cards[0].photo.children[1],button=h.cards[0].children[0];image.listeners.error();
+  assert.equal(h.intervals.size,0);assert.ok(clone.removed && button.removed);
+  assert.equal(image.style.width,'');assert.equal(image.style.height,'');assert.equal(image.style.opacity,'1');
+  assert.equal(image.src,'https://example.com/img/b.jpg');assert.equal(h.cards[0].dataset.faceStatus,'fallback');
+});
+
+test('only absence of a safe display image removes initial photo',()=>{
+  const h=harness();h.cards[0].querySelector('.section-rec__image').src='http://external.test/photo.jpg';
+  runtime.enhanceRelatedCards({...h,detect:async()=>{throw Error('must not detect');}});
+  assert.equal(h.cards[0].dataset.faceStatus,'unavailable');assert.ok(h.cards[0].classList.values.has('section-rec--text-only'));
+});
+
+
+test('valid external HTTPS hero remains visible without loading inference',async()=>{
+  const h=harness();const image=h.cards[0].querySelector('.section-rec__image');image.src='https://legacy-cdn.test/r2/hero.jpg';let calls=0;
+  runtime.enhanceRelatedCards({...h,detect:async()=>{calls++;throw Error('external must not infer');}});
+  h.observers[0].fn([{target:h.cards[0],isIntersecting:true}]);await settle();
+  assert.equal(calls,0);assert.equal(image.src,'https://legacy-cdn.test/r2/hero.jpg');
+  assert.equal(h.cards[0].dataset.faceStatus,'fallback');assert.ok(!h.cards[0].classList.values.has('section-rec--text-only'));
+});
+
+test('external hero uses just one safe alternate after native error without inferring remote URLs',async()=>{
+  const h=harness();const image=h.cards[0].querySelector('.section-rec__image');image.src='https://legacy-cdn.test/r2/hero.jpg';
+  h.cards[0].photo.dataset.faceAlternatives='["/img/b.jpg","/img/ignored.jpg"]';const calls=[];
+  runtime.enhanceRelatedCards({...h,detect:async src=>{calls.push(src);return {width:800,height:450,faces:[]};}});
+  h.observers[0].fn([{target:h.cards[0],isIntersecting:true}]);await settle();
+  assert.equal(image.src,'https://legacy-cdn.test/r2/hero.jpg');assert.ok(calls.every(src=>src.startsWith('https://example.com/img/')));
+  image.listeners.error();assert.equal(image.src,'https://example.com/img/b.jpg');assert.equal(h.cards[0].dataset.faceStatus,'fallback');
+  image.listeners.error();assert.equal(h.cards[0].dataset.faceStatus,'unavailable');assert.equal(image.src,'https://example.com/img/b.jpg');
 });

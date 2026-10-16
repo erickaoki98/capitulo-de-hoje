@@ -1,3 +1,4 @@
+import { cleanTitle } from './articleTitle.ts';
 import type { Post, PostCard } from './types';
 
 type Candidate = Post | PostCard;
@@ -30,16 +31,19 @@ function safeImage(value: string | null): string {
 }
 
 export function renderSectionCard(post: Candidate, position: number): string {
-  const image = safeImage(post.hero_image);
-  const alternate = 'content' in post
+  const contentImages = 'content' in post
     ? [...post.content.matchAll(/<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi)]
-      .map(match => safeImage(match[1])).find(src => src && src !== image)
-    : undefined;
+      .map(match => safeImage(match[1])).filter(Boolean)
+    : [];
+  const image = safeImage(post.hero_image) || contentImages[0] || '';
+  const novela = post.category?.trim();
+  const caption = novela && novela !== 'Sem categoria' ? `<span class="section-rec__novela">${escape(novela)}</span>` : '';
+  const alternate = contentImages.find(src => src !== image);
   const alternatives = alternate ? ` data-face-alternatives="${escape(JSON.stringify([alternate]))}"` : '';
-  return `<aside class="section-rec${image ? '' : ' section-rec--text-only'}" data-related-card data-rec-position="${position}" aria-label="Leia também">
+  return `<aside class="section-rec${image ? '' : ' section-rec--text-only'}" data-related-card data-rec-position="${position}" aria-label="Notícias quentes do momento">
 <a class="section-rec__link" href="/${escape(post.slug)}">
 ${image ? `<span class="section-rec__photo" data-face-photo${alternatives}><img class="section-rec__image" src="${escape(image)}" alt="" loading="lazy" decoding="async" width="1024" height="1024"></span>` : ''}
-<span class="section-rec__copy"><span class="section-rec__eyebrow">Leia também</span><strong class="section-rec__title">${escape(post.title)}</strong><span class="section-rec__cta">Ler a matéria <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></span>
+<span class="section-rec__copy"><span class="section-rec__eyebrow">Notícias quentes do momento</span><strong class="section-rec__title">${escape(cleanTitle(post.title, post.category))}</strong>${caption}</span>
 </a></aside>`;
 }
 
