@@ -96,8 +96,8 @@ test('imagem dentro de comentário, script ou style não transforma seção vazi
 test('card separa novela do título, mostra legenda pequena e elimina CTA redundante',async()=>{
  const {renderSectionCard}=await lib();
  const html=renderSectionCard(post('pilar',{title:'Pilar descobre a prova | Quem Ama Cuida',category:'Quem ama cuida'}),1);
- assert.match(html,/section-rec__eyebrow">Notícias quentes do momento</);
- assert.match(html,/section-rec__title">Pilar descobre a prova</);
+ assert.match(html,/section-rec__eyebrow">[\s\S]*?<span>Notícias quentes do momento<\/span>/);
+ assert.match(html.replace(/<\/?mark[^>]*>/g,''),/section-rec__title">Pilar descobre a prova</);
  assert.match(html,/section-rec__novela">Quem ama cuida</);
  assert.doesNotMatch(html,/Leia também|Ler a matéria|section-rec__cta/);
 });
@@ -105,7 +105,7 @@ test('card separa novela do título, mostra legenda pequena e elimina CTA redund
 test('limpa sufixo com barra e preserva nome da novela que faz parte da notícia',async()=>{
  const {renderSectionCard}=await lib();
  const html=renderSectionCard(post('adriana',{title:'Adriana retorna em Quem Ama Cuida / Quem Ama Cuida',category:'Quem Ama Cuida'}),1);
- assert.match(html,/section-rec__title">Adriana retorna em Quem Ama Cuida</);
+ assert.match(html.replace(/<\/?mark[^>]*>/g,''),/section-rec__title">Adriana retorna em Quem Ama Cuida</);
  const escaped=renderSectionCard(post('titulo',{title:'Personagem revela segredo | Novela & Cia',category:'Novela & Cia'}),1);
  assert.match(escaped,/section-rec__novela">Novela &amp; Cia</);
 });
@@ -115,4 +115,40 @@ test('card usa foto do conteúdo quando a capa não está preenchida',async()=>{
  const html=renderSectionCard(post('sem-capa',{hero_image:null,content:'<p>Texto</p><figure><img src="/img/foto-do-artigo.jpg"></figure>',category:'Novela'}),1);
  assert.match(html,/class="section-rec__image" src="\/img\/foto-do-artigo.jpg"/);
  assert.doesNotMatch(html,/section-rec--text-only/);
+});
+
+
+test('limita o título a uma frase vermelha e uma preta, mantendo o restante sem grifo',async()=>{
+ const {renderSectionCard}=await lib();
+ const html=renderSectionCard(post('heitor',{title:'Heitor encontra ligação entre fraude da auditoria e morte de Arthur e faz acusação inesperada | Quem Ama Cuida',category:'Quem Ama Cuida'}),1);
+ const title=html.match(/<strong class="section-rec__title">([\s\S]*?)<\/strong>/)[1];
+ assert.equal((title.match(/<mark\b/g)||[]).length,2);
+ assert.match(title,/<mark class="section-rec__highlight section-rec__highlight--hot">encontra ligação<\/mark>/);
+ assert.match(title,/<mark class="section-rec__highlight section-rec__highlight--dark">acusação inesperada<\/mark>/);
+ assert.match(title,/entre fraude da auditoria e morte de Arthur e faz/);
+ assert.equal(title.replace(/<[^>]+>/g,''),'Heitor encontra ligação entre fraude da auditoria e morte de Arthur e faz acusação inesperada');
+ assert.deepEqual([...title.matchAll(/highlight--(hot|dark)/g)].map(m=>m[1]),['hot','dark']);
+ const safe=renderSectionCard(post('seguro',{title:'<script>alert(1)</script> ameaça & segredo'}),1);
+ assert.doesNotMatch(safe,/<script>/);
+ assert.match(safe,/&lt;script&gt;/);
+ const plain=renderSectionCard(post('normal',{title:'Um encontro em Paris'}),1);
+ assert.equal((plain.match(/<mark\b/g)||[]).length,2);
+ const word=renderSectionCard(post('palavra',{title:'Ameaçador comenta o segredo'}),1);
+ assert.doesNotMatch(word,/>Ameaça<\/mark>/i);
+});
+
+
+test('sempre aplica dois grifos na ordem vermelho/preto nos dez títulos reais e no vocabulário novo',async()=>{
+ const {renderSectionCard}=await lib();
+ const titles=["Heitor encontra ligação entre fraude da auditoria e morte de Arthur e faz acusação inesperada", "Adriana é absolvida e Pilar recebe notícia que pode levá-la diretamente para prisão", "Juarez é seguido após visitar túmulo de Juli e recebe ameaça sobre acidente", "Virgínia sofre sangramento e Mirinho descobre que pode perder o próprio filho", "Samuca escolhe Bela diante de Peixe e provoca reviravolta na disputa pela guarda", "Binta descobre que Alika está grávida e prepara armadilha contra herdeiro de Tonho", "Margô recebe resultado da biópsia e faz pedido emocionante a Lucas", "Mirinho coloca fortuna em nome de Virgínia e Manoel descobre motivo assustador", "Peixe descobre plano de Vanessa contra Bela e precisa escolher de que lado ficará", "Jendal descobre que rebeldes estão tomando palácio e precisa escolher entre Alika e o trono", "Cecília encontra fotografias na gaveta e entrega documento ao delegado", "Luz do sol ilumina as ruas de uma pequena cidade"];
+ for(const title of titles){
+  const html=renderSectionCard(post('amostra',{title}),1);
+  const rendered=html.match(/<strong class="section-rec__title">([\s\S]*?)<\/strong>/)[1];
+  assert.deepEqual([...rendered.matchAll(/highlight--(hot|dark)/g)].map(m=>m[1]),['hot','dark'],title);
+  assert.equal(rendered.replace(/<[^>]+>/g,''),title);
+  const marked=[...rendered.matchAll(/<mark[^>]*>([^<]+)<\/mark>/g)].map(m=>m[1]);
+  assert.ok(marked.every(text=>text.trim().split(/\s+/).length>=2),title);
+  assert.ok(marked.join(' ').split(/\s+/).length<title.split(/\s+/).length,title);
+  assert.equal(renderSectionCard(post('amostra',{title}),1),html);
+ }
 });

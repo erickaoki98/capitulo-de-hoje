@@ -1206,7 +1206,7 @@ export function renderPost(
   <div class="prose">${html}</div>
   ${adIf('afterContent', 'ad-slot--after')}
 </article>${authorProfile ? renderAuthorBox(authorProfile) : ''}${relatedHtml}
-${recommendations.usedSlugs.size ? '<script type="module" src="/related-faces.js?v=20261016-2"></script>' : ''}
+${recommendations.usedSlugs.size ? '<script type="module" src="/related-faces.js?v=20261016-3"></script>' : ''}
 ${adIf('bottomOfPage', 'ad-slot--bottom')}
 <div class="continue-cta">
   <h3 class="continue-cta__title">Gostou do capítulo?</h3>

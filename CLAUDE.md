@@ -4,6 +4,8 @@ Blog em Cloudflare Workers + D1 + R2. Server-rendered HTML via TypeScript templa
 
 ## Regras obrigatórias
 
+- **UX e tamanho de fonte:** ler e seguir [docs/ux.md](docs/ux.md) em qualquer alteração pública. Texto principal e títulos dos cards: mínimo 22 px e nunca menores que o corpo do artigo; textos auxiliares: mínimo 16 px, inclusive no celular.
+
 - **Sempre usar Superpowers skills** em qualquer tarefa — invocar o skill relevante ANTES de agir.
 - **Sempre usar o skill `ui-ux-pro-max`** para qualquer trabalho de design, UX, UI, CSS ou estilização.
 - Comunicar em português brasileiro.
