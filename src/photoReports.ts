@@ -1,5 +1,5 @@
 import type { Env } from './types';
-import { exchangeToken, googleJson, randomToken, seal, unseal } from './adsenseReports.ts';
+import { exchangeToken, randomToken, seal, unseal } from './adsenseReports.ts';
 import { getSettingsByKeys } from './db.ts';
 
 export const ANALYTICS_SCOPE = 'https://www.googleapis.com/auth/analytics.readonly';
@@ -37,7 +37,10 @@ export interface PhotoReportsView {
   configured: boolean; connected: boolean; email?: string;
   snapshot: PhotoReportSnapshot | null; guard: PhotoSyncGuard | null; readiness: PhotoReadiness | null; error?: string;
 }
-class PhotoReportsError extends Error {}
+export class PhotoReportsError extends Error {
+  readonly oauthCode:'oauth_error'|'oauth_api_disabled'|'oauth_access_denied'|'oauth_expired';
+  constructor(message:string,oauthCode:PhotoReportsError['oauthCode']='oauth_error'){super(message);this.oauthCode=oauthCode;}
+}
 function safeError(e: unknown): string {
   return e instanceof PhotoReportsError ? e.message : 'Sincronização do Analytics indisponível. Os últimos dados válidos foram preservados.';
 }
@@ -53,8 +56,20 @@ async function writePrivate(env: Env, key: string, value: unknown): Promise<void
   await env.IMAGES.put(key, await seal(env, key, value), { httpMetadata: { contentType: 'application/octet-stream', cacheControl: 'private, no-store' } });
 }
 async function analyticsJson<T>(url: string, token: string): Promise<T> {
-  try { return await googleJson<T>(url, token); }
-  catch { throw new PhotoReportsError('O Google Analytics não confirmou o acesso de leitura. Verifique as APIs e a autorização da propriedade.'); }
+  try {
+    const response=await fetch(url,{headers:{Authorization:`Bearer ${token}`},signal:AbortSignal.timeout(15000)});
+    if(response.status===401)throw new PhotoReportsError('Autorização Google expirada. Reconecte a conta.','oauth_expired');
+    if(response.status===403||response.status===404){
+      const body=await response.json().catch(()=>null) as {error?:{details?:{reason?:string}[]}}|null;
+      if(body?.error?.details?.some(detail=>detail.reason==='SERVICE_DISABLED'))throw new PhotoReportsError('Ative as APIs do Analytics no projeto Google Cloud do aplicativo.','oauth_api_disabled');
+      throw new PhotoReportsError('Esta conta não confirmou acesso de leitura à propriedade Analytics do Capítulo de Hoje. Use a conta que já administra essa propriedade.','oauth_access_denied');
+    }
+    if(!response.ok)throw new Error('Analytics unavailable');
+    return await response.json() as T;
+  } catch(error) {
+    if(error instanceof PhotoReportsError)throw error;
+    throw new PhotoReportsError('O Google Analytics não confirmou o acesso de leitura. Verifique as APIs e a autorização da propriedade.');
+  }
 }
 
 /** A separate consent and refresh token; never reuse the AdSense connection implicitly. */

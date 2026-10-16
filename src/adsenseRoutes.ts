@@ -3,7 +3,7 @@ import { getSessionFromRequest } from './auth';
 import { getSetting } from './db';
 import { ADSENSE_SCOPE, AdSenseError, callbackUrl, digest, exchangeToken, isConfigured, randomToken, reportsView, saveConnection, seal, syncReports, unseal } from './adsenseReports.ts';
 import type { ReportsView } from './adsenseReports.ts';
-import { ANALYTICS_SCOPE, photoReportsConfigured, savePhotoConnection } from './photoReports.ts';
+import { ANALYTICS_SCOPE, PhotoReportsError, photoReportsConfigured, savePhotoConnection } from './photoReports.ts';
 
 const PATH = '/admin/adsense';
 const COOKIE = '__Secure-adsense-oauth';
@@ -59,7 +59,7 @@ export async function handleAdSenseRoute(request: Request, env: Env, authed: boo
         await saveConnection(env, token, await getSetting(env.DB, 'adsense.publisher_id') ?? '');
       }
       response = redirect(`${destination}?status=connected`);
-    } catch { response = redirect(`${destination}?status=oauth_error`); }
+    } catch(error) { response = redirect(`${destination}?status=${error instanceof PhotoReportsError?error.oauthCode:'oauth_error'}`); }
     response.headers.set('Set-Cookie', cookie('', 0));
     return response;
   }
