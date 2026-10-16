@@ -41,7 +41,7 @@ function harness(count=1) {
   const images=Array.from({length:count},(_,i)=>{const image=new Element(),parent=new Element();parent.append(image);image.src=`https://example.com/img/${i}.jpg`;image.currentSrc=image.src;image.complete=true;image.naturalWidth=1080;image.naturalHeight=1080;return image;});
   const observers=[],intervals=new Set(),delays=[],events=[],media={matches:false,addEventListener(k,fn){this.change=fn;}};
   const view={gtag:(...args)=>events.push(args),location:{origin:'https://example.com'},cdhPhotoVariant:'motion',matchMedia:()=>media,IntersectionObserver:class{constructor(fn,options){this.fn=fn;this.options=options;observers.push(this);}observe(){}unobserve(){}},ResizeObserver:class{observe(){}},setInterval(fn,delay){intervals.add(fn);delays.push(delay);return fn;},clearInterval(fn){intervals.delete(fn);},addEventListener(k,fn){this[k]=fn;}};
-  const doc={hidden:false,getElementById(){return {textContent:this.mapText??JSON.stringify(Object.fromEntries(images.map(image=>[new URL(image.src).pathname,{reviewedAt:100,shots:[{x:.1,y:.1,size:.25,label:'Reação'},{x:.65,y:.1,size:.25,label:'Ação'}]}])))};},querySelectorAll(selector){assert.equal(selector,'.post .prose img');return images;},createElement:()=>new Element(),addEventListener(k,fn){this[k]=fn;}};
+  const doc={hidden:false,getElementById(){return {textContent:this.mapText??JSON.stringify(Object.fromEntries(images.map(image=>[new URL(image.src).pathname,{reviewedAt:100,shots:[{x:.1,y:.1,size:.25,label:'Reação'},{x:.65,y:.1,size:.25,label:'Ação'}]}])))};},querySelectorAll(selector){assert.equal(selector,'.post .prose img');return images;},createElement:tag=>Object.assign(new Element(),{tagName:tag.toUpperCase()}),addEventListener(k,fn){this[k]=fn;}};
   return {doc,view,images,observers,intervals,media,delays,events};
 }
 const settle=async()=>{for(let i=0;i<30;i++)await new Promise(resolve=>setImmediate(resolve));};
@@ -63,11 +63,11 @@ test('reviewed normalized shots support meaningful action objects and reject una
   assert.deepEqual(policy.photoShots({...data,shots:[{x:.9,y:.9,size:.3,label:'Fora da foto'},data.shots[1]]}),[]);
   assert.deepEqual(policy.photoShots({...data,shots:[{...data.shots[0],label:''},data.shots[1]]}),[]);
 });
-test('playback pauses for user, hidden page, offscreen image, reduced motion and failed image',async()=>{
+test('public playback has no pause control and only suspends automatically for visibility or failure',async()=>{
   assert.equal(typeof runtime.enhanceArticlePhotos,'function');
   const h=harness();runtime.enhanceArticlePhotos({...h,detect:async()=>evidence});h.observers[0].fn([{target:h.images[0],isIntersecting:true}]);await settle();
   h.observers[1].fn([{target:h.images[0],isIntersecting:true}]);assert.equal(h.intervals.size,1);
-  const frame=h.images[0].parentNode,button=frame.children.at(-1);assert.equal(button.attrs['aria-pressed'],'false');button.fire('click');assert.equal(h.intervals.size,0);button.fire('click');assert.equal(h.intervals.size,1);
+  const frame=h.images[0].parentNode;assert.equal(frame.children.some(child=>child.tagName==='BUTTON'),false);frame.fire('click');assert.equal(h.intervals.size,1);
   h.doc.hidden=true;h.doc.visibilitychange();assert.equal(h.intervals.size,0);h.doc.hidden=false;h.doc.visibilitychange();assert.equal(h.intervals.size,1);
   h.observers[1].fn([{target:h.images[0],isIntersecting:false}]);assert.equal(h.intervals.size,0);h.observers[1].fn([{target:h.images[0],isIntersecting:true}]);assert.equal(h.intervals.size,1);
   frame.children[1].children[0].fire('error');assert.equal(h.intervals.size,0);assert.equal(h.images[0].dataset.photoStatus,'static');
@@ -104,14 +104,14 @@ test('each frame is stable until its 2.4-second switch, with a subtle 230ms came
   const h=harness(),frame=await openPhoto(h),surface=frame.children[1],layers=surface.children;
   assert.equal(h.delays.at(-1),2400);assert.equal(surface.animations.length,0);
   assert.equal(layers[0].style.opacity,'1');assert.equal(layers[1].style.opacity,'0');
-  const effects=frame.children.slice(2,-1);assert.equal(effects.length,4);
+  const effects=frame.children.slice(2);assert.equal(effects.length,4);
   for(const effect of effects){assert.equal(effect.attrs['aria-hidden'],'true');assert.equal(effect.style.opacity,'0');}
   [...h.intervals][0]();assert.equal(layers[0].style.opacity,'0');assert.equal(layers[1].style.opacity,'1');
   assert.equal(surface.animations.length,1);assert.equal(surface.animations[0].options.duration,230);
   assert.equal(surface.animations[0].frames.at(-1).transform,'none');
   for(const effect of effects){assert.equal(effect.animations.length,1);assert.equal(effect.animations[0].options.duration,230);assert.equal(effect.animations[0].frames.at(-1).opacity,0);assert.equal(effect.style.opacity,'0');}
   assert.deepEqual(h.events,[]);
-  frame.children.at(-1).fire('click');assert.equal(h.intervals.size,0);assert.ok(surface.animations.every(a=>a.cancelled));assert.ok(effects.every(effect=>effect.animations.every(a=>a.cancelled)));
+  frame.fire('click');assert.equal(h.intervals.size,1);h.doc.hidden=true;h.doc.visibilitychange();assert.equal(h.intervals.size,0);assert.ok(surface.animations.every(a=>a.cancelled));assert.ok(effects.every(effect=>effect.animations.every(a=>a.cancelled)));
 });
 test('turning on reduced motion restores the original photo and cancels active effects permanently',async()=>{
   const h=harness(),image=h.images[0],originalParent=image.parentNode,frame=await openPhoto(h),surface=frame.children[1];

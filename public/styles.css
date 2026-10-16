@@ -2670,6 +2670,22 @@ body:has(.post__hero-wrap) .site-header {
 .prose img,
 .prose > img { border-radius: 8px; }
 
+/* Fotos editoriais, estáticas ou animadas, de ponta a ponta no celular.
+   A legenda permanece alinhada à coluna de leitura. */
+.post .prose figcaption { font-size: max(16px, .85rem) !important; line-height: 1.5; }
+@media (max-width: 620px) {
+  .post .prose figure > img,
+  .post .prose figure > .cdh-photo-motion,
+  .post .prose > img,
+  .post .prose > .cdh-photo-motion {
+    width: calc(100% + 2.5rem) !important;
+    max-width: none !important;
+    margin-left: -1.25rem !important;
+    margin-right: 0 !important;
+    border-radius: 0 !important;
+  }
+}
+
 /* --- Card images — subtle zoom on scroll (home/related) --- */
 @supports (animation-timeline: view()) {
   .post-card__image img,

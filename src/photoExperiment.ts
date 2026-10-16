@@ -50,8 +50,6 @@ export function renderPhotoScript(config: PhotoExperimentConfig): string {
 .cdh-photo-cyan{filter:grayscale(1) sepia(1) saturate(7) hue-rotate(130deg);mix-blend-mode:screen;clip-path:inset(62% 0 20% 0)}
 .cdh-photo-slice{clip-path:inset(43% 0 44% 0)}
 .cdh-photo-lines{background:repeating-linear-gradient(0deg,transparent 0 3px,#091b2d66 3px 4px)}
-.cdh-photo-pause{position:absolute;right:8px;bottom:8px;z-index:2;min-width:44px;min-height:44px;padding:8px 12px;border:1px solid #fff8;border-radius:8px;background:#151515e8;color:#fff;font:600 max(16px,1rem)/1.5 system-ui;cursor:pointer}
-.cdh-photo-pause:focus-visible{outline:3px solid #fff;outline-offset:-5px}
 @media(prefers-reduced-motion:reduce){.cdh-photo-motion .cdh-photo-surface,.cdh-photo-motion .cdh-photo-effect{display:none!important}.cdh-photo-motion>img.cdh-photo-original{opacity:1!important}}
-</style><script>if(window.cdhPhotoVariant==='motion'&&!window.matchMedia('(prefers-reduced-motion: reduce)').matches){var s=document.createElement('script');s.type='module';s.src='/photo-motion.js?v=20261016-2';document.body.appendChild(s);}</script>`;
+</style><script>if(window.cdhPhotoVariant==='motion'&&!window.matchMedia('(prefers-reduced-motion: reduce)').matches){var s=document.createElement('script');s.type='module';s.src='/photo-motion.js?v=20261016-3';document.body.appendChild(s);}</script>`;
 }

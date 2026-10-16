@@ -114,8 +114,6 @@ export function enhanceArticlePhotos({doc=document,view=window}={}) {
       state.onError=()=>restore(state);
       shots.forEach((shot,i)=>{const layer=doc.createElement('img');layer.className='cdh-photo-layer';layer.src=src;layer.alt='';layer.setAttribute('aria-hidden','true');layer.style.opacity=i===0?'1':'0';layer.addEventListener('error',()=>restore(state),{once:true});state.layers.push(layer);});
       createSurface(state,doc);
-      const button=doc.createElement('button');button.type='button';button.className='cdh-photo-pause';button.textContent='Pausar fotos';button.setAttribute('aria-label','Pausar alternância de enquadramentos da foto');button.setAttribute('aria-pressed','false');
-      button.addEventListener('click',()=>{state.paused=!state.paused;button.textContent=state.paused?'Retomar fotos':'Pausar fotos';button.setAttribute('aria-label',state.paused?'Retomar alternância de enquadramentos da foto':'Pausar alternância de enquadramentos da foto');button.setAttribute('aria-pressed',String(state.paused));sync(state);});frame.append(button);
       image.dataset.photoStatus='ready';layout(state);resize?.observe(frame);sync(state);
     }catch{restore(state);}
   };
@@ -126,7 +124,7 @@ export function enhanceArticlePhotos({doc=document,view=window}={}) {
   const visible=new view.IntersectionObserver(entries=>entries.forEach(entry=>{const state=states.find(s=>s.image===entry.target);if(state){state.visible=entry.isIntersecting;sync(state);}}),{threshold:0});
   [...doc.querySelectorAll('.post .prose img')].filter(image=>!image.closest('a,[data-related-card],.section-rec,.ad-slot,.ad-inarticle,.cdh-mix,.cdh-spot,.shopee-inline,.shopee-card,[data-product-id]')&&approvedMap(image)).forEach(image=>{
     if(image.dataset.photoStatus)return;
-    const state={image,map:approvedMap(image),visible:false,paused:false,requested:false,failed:false};states.push(state);image.dataset.photoStatus='pending';
+    const state={image,map:approvedMap(image),visible:false,requested:false,failed:false};states.push(state);image.dataset.photoStatus='pending';
     image.addEventListener('error',()=>restore(state),{once:true});
     const observe=()=>{near.observe(image);visible.observe(image);};if(image.complete)observe();else image.addEventListener('load',observe,{once:true});
   });
