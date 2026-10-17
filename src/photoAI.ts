@@ -8,16 +8,16 @@ import {parsePhotoConfig} from './photoExperiment.ts';
 export const PHOTO_AI_DAILY_MAX=250;
 const STATE=PHOTO_AI_ROOT+'state',LEASE=PHOTO_AI_ROOT+'lease';
 type Status='queued'|'processing'|'ready'|'static'|'failed';
-interface ImageJob {source:string;status:Status;at:number;cost:number;reason?:string}
-interface ArticleJob {id:number;slug:string;title:string;images:ImageJob[];maps:PhotoMaps;updatedAt:number;costs?:Record<string,number>}
-interface ArticleStats {id:number;slug:string;total:number;ready:number;static:number;failed:number;processing:number;cost:number;updatedAt:number}
-interface State {enabled:boolean;seededAt:number;backfillIds:number[];articles:ArticleStats[];nextDiscoveryAt:number;lastUpdated:number;error?:string}
+interface ImageJob {source:string;status:Status;at:number;cost:number;reason?:string;composition?:string}
+interface ArticleJob {id:number;slug:string;title:string;images:ImageJob[];maps:PhotoMaps;updatedAt:number;costs?:Record<string,number>;composition?:string}
+interface ArticleStats {id:number;slug:string;total:number;ready:number;static:number;failed:number;processing:number;cost:number;updatedAt:number;composition?:string}
+interface State {enabled:boolean;seededAt:number;backfillIds:number[];articles:ArticleStats[];nextDiscoveryAt:number;lastUpdated:number;error?:string;composition?:string}
 export interface PhotoAIView {enabled:boolean;totalArticles:number;totalImages:number;queued:number;processing:number;ready:number;static:number;failed:number;estimatedCostUsd:number;lastUpdated:number;error?:string;backfillArticles:number}
 const initial=():State=>({enabled:false,seededAt:0,backfillIds:[],articles:[],nextDiscoveryAt:0,lastUpdated:0});
 const privateOptions={httpMetadata:{contentType:'application/json',cacheControl:'private, no-store'}};
 async function read<T>(env:Env,key:string):Promise<T|null>{const o=await env.IMAGES.get(key);return o?o.json<T>():null;}
 async function mutate(env:Env,fn:(state:State)=>void):Promise<State>{for(let i=0;i<6;i++){const old=await env.IMAGES.get(STATE),state=old?await old.json<State>():initial();fn(state);state.lastUpdated=Date.now();const saved=await env.IMAGES.put(STATE,JSON.stringify(state),{...privateOptions,onlyIf:old?{etagMatches:old.etag}:{etagDoesNotMatch:'*'}});if(saved)return state;}throw Error('Fila ocupada; tente novamente.');}
-function stats(job:ArticleJob):ArticleStats{return {id:job.id,slug:job.slug,total:job.images.length,ready:job.images.filter(i=>i.status==='ready').length,static:job.images.filter(i=>i.status==='static').length,failed:job.images.filter(i=>i.status==='failed').length,processing:job.images.filter(i=>i.status==='processing').length,cost:job.costs?Object.values(job.costs).reduce((n,c)=>n+c,0):job.images.reduce((n,i)=>n+i.cost,0),updatedAt:job.updatedAt};}
+function stats(job:ArticleJob):ArticleStats{return {id:job.id,slug:job.slug,total:job.images.length,ready:job.images.filter(i=>i.status==='ready').length,static:job.images.filter(i=>i.status==='static').length,failed:job.images.filter(i=>i.status==='failed').length,processing:job.images.filter(i=>i.status==='processing').length,cost:job.costs?Object.values(job.costs).reduce((n,c)=>n+c,0):job.images.reduce((n,i)=>n+i.cost,0),updatedAt:job.updatedAt,composition:job.composition};}
 async function changeJob(env:Env,id:number,change:(old:ArticleJob|null)=>ArticleJob|null):Promise<ArticleJob|null>{
   const key=PHOTO_AI_ROOT+'articles/'+id+'.json';
   for(let attempt=0;attempt<6;attempt++){
@@ -29,9 +29,10 @@ async function changeJob(env:Env,id:number,change:(old:ArticleJob|null)=>Article
 }
 async function saveProgress(env:Env,job:ArticleJob,image:ImageJob):Promise<ArticleJob|null>{
   const completed=await changeJob(env,job.id,latest=>{
-    if(!latest)return null;
+    if(!latest||latest.composition!==job.composition)return null;
     latest.costs??=Object.fromEntries(latest.images.filter(i=>i.cost>0).map(i=>[i.source,i.cost]));
-    if(image.cost>0)latest.costs[image.source]=Math.max(latest.costs[image.source]||0,image.cost);
+    const costKey=PHOTO_AI_VERSION+':'+image.source;
+    if(image.cost>0)latest.costs[costKey]=Math.max(latest.costs[costKey]||0,image.cost);
     const index=latest.images.findIndex(i=>i.source===image.source);if(index<0)return latest;
     latest.images[index]={...image};
     if(job.maps[image.source])latest.maps[image.source]=job.maps[image.source];else delete latest.maps[image.source];return latest;
@@ -45,8 +46,9 @@ export async function enqueuePhotoPost(env:Env,post:Pick<Post,'id'|'slug'|'title
   if(post.draft)return;const state=await read<State>(env,STATE);if(!force&&!state?.enabled)return;
   const sources=articlePhotoSources(post.content);
   await changeJob(env,post.id,old=>{
-    if(old&&old.images.map(i=>i.source).join('\n')===sources.join('\n')&&!old.images.some(i=>i.reason==='Artigo fora de publicação.'))return null;
-    return {id:post.id,slug:post.slug,title:post.title,costs:old?.costs??Object.fromEntries((old?.images||[]).filter(i=>i.cost>0).map(i=>[i.source,i.cost])),images:sources.map(source=>{const previous=old?.images.find(i=>i.source===source);return previous&&previous.reason!=='Artigo fora de publicação.'?previous:{source,status:'queued',at:Date.now(),cost:previous?.cost||0};}),maps:Object.fromEntries(Object.entries(old?.maps||{}).filter(([source])=>sources.includes(source))),updatedAt:Date.now()};
+    const stale=(i:ImageJob)=>i.composition!==PHOTO_AI_VERSION&&['ready','processing'].includes(i.status)||i.status==='ready'&&old?.maps[i.source]?.composition!==PHOTO_AI_VERSION;
+    if(old&&old.composition===PHOTO_AI_VERSION&&old.images.map(i=>i.source).join('\n')===sources.join('\n')&&!old.images.some(i=>i.reason==='Artigo fora de publicação.'||stale(i)))return null;
+    return {id:post.id,slug:post.slug,title:post.title,composition:PHOTO_AI_VERSION,costs:old?.costs??Object.fromEntries((old?.images||[]).filter(i=>i.cost>0).map(i=>[i.source,i.cost])),images:sources.map(source=>{const previous=old?.images.find(i=>i.source===source);return previous&&previous.reason!=='Artigo fora de publicação.'&&!stale(previous)?{...previous,composition:PHOTO_AI_VERSION}:{source,status:'queued',at:Date.now(),cost:0,composition:PHOTO_AI_VERSION};}),maps:Object.fromEntries(Object.entries(old?.maps||{}).filter(([source,map])=>sources.includes(source)&&map.composition===PHOTO_AI_VERSION)),updatedAt:Date.now()};
   });
 }
 async function acquire(env:Env,key:string,now:number,ms:number):Promise<string|null>{const old=await env.IMAGES.get(key),previous=old?await old.json<{until:number}>():null;if(previous&&previous.until>now)return null;const value=await env.IMAGES.put(key,JSON.stringify({until:now+ms,nonce:crypto.randomUUID()}),{...privateOptions,onlyIf:old?{etagMatches:old.etag}:{etagDoesNotMatch:'*'}});return value?.etag||null;}
@@ -67,8 +69,12 @@ export async function startPhotoBackfill(env:Env):Promise<PhotoAIView>{
 export async function discoverPhotoPosts(env:Env,now=Date.now()):Promise<void>{
   const state=await read<State>(env,STATE);if(!state?.enabled)return;
   const lock=await acquire(env,PHOTO_AI_ROOT+'discovery',now,300000);if(!lock)return;
+  if(state.composition!==PHOTO_AI_VERSION){await bumpCacheVersion(env);await mutate(env,s=>{s.composition=PHOTO_AI_VERSION;});}
   const posts=await env.DB.prepare(`SELECT p.* FROM posts AS p INDEXED BY idx_posts_pub_date WHERE ${publicPostVisibilitySql('p')} ORDER BY p.pub_date DESC LIMIT 30`).all<Post>();
   for(const post of posts.results||[])await enqueuePhotoPost(env,post);
+  // Eight tracked older articles per discovery; preserve the original seed and never scan history.
+  const legacy=state.articles.filter(a=>a.composition!==PHOTO_AI_VERSION&&!(posts.results||[]).some(p=>p.id===a.id)).slice(0,8).map(a=>a.id);
+  if(legacy.length){const older=await env.DB.prepare(`SELECT p.* FROM posts AS p WHERE p.id IN (${legacy.map(()=>'?').join(',')}) AND ${publicPostVisibilitySql('p')}`).bind(...legacy).all<Post>();for(const post of older.results||[])await enqueuePhotoPost(env,post);const found=new Set((older.results||[]).map(p=>p.id));await mutate(env,s=>{for(const a of s.articles)if(legacy.includes(a.id)&&!found.has(a.id))a.composition=PHOTO_AI_VERSION;});}
 }
 export async function photoAIView(env:Env):Promise<PhotoAIView>{
   const state=await read<State>(env,STATE)||initial(),sum=(key:'total'|'ready'|'static'|'failed'|'processing'|'cost')=>state.articles.reduce((n,a)=>n+a[key],0);
@@ -92,7 +98,7 @@ export async function runPhotoAI(env:Env,now=Date.now(),analyze:typeof analyzePh
     const next=stale||pending.find(a=>a.total>a.ready+a.static+a.failed+a.processing)||pending[0];
     const job=await read<ArticleJob>(env,PHOTO_AI_ROOT+'articles/'+next.id+'.json');if(!job)throw Error('Artigo da fila não encontrado.');
     const image=job.images.find(i=>i.status==='processing'&&i.at<now-180000)||job.images.find(i=>i.status==='queued')||job.images.find(i=>i.status==='processing');if(!image)return {status:'reconciled'};
-    const cacheKey=PHOTO_AI_ROOT+'images/'+image.source.slice(5)+'.json';let cached=await read<CachedImage>(env,cacheKey);
+    const cacheKey=PHOTO_AI_ROOT+'images/'+PHOTO_AI_VERSION+'/'+image.source.slice(5)+'.json';let cached=await read<CachedImage>(env,cacheKey);
     if(cached?.status==='processing'&&cached.at>now-180000)return {status:'limited'};
     if(!cached){
       const published=await env.DB.prepare(`SELECT p.id FROM posts AS p WHERE p.id=? AND ${publicPostVisibilitySql('p')}`).bind(job.id).first();
@@ -117,8 +123,8 @@ export async function runPhotoAI(env:Env,now=Date.now(),analyze:typeof analyzePh
       await env.IMAGES.put(cacheKey,JSON.stringify(cached),privateOptions);
     }
     if(cached.status==='processing')cached={...cached,status:'failed',error:'Execução anterior interrompida; chamada não repetida para evitar cobrança duplicada.'};
-    image.status=cached.status;image.at=Date.now();image.cost=cached.owner===job.id?(cached.result?.estimatedCostUsd||cached.partialCost||0):0;image.reason=cached.error||cached.result?.reason;
-    if(cached.status==='ready'&&cached.result){const shots=parseShots(cached.result.shots);if(shots)job.maps[image.source]={shots,reviewedAt:Date.now()};else{image.status='failed';image.reason='Mapa inválido.';}}
+    image.status=cached.status;image.at=Date.now();image.composition=PHOTO_AI_VERSION;image.cost=cached.owner===job.id?(cached.result?.estimatedCostUsd||cached.partialCost||0):0;image.reason=cached.error||cached.result?.reason;
+    if(cached.status==='ready'&&cached.result){const shots=parseShots(cached.result.shots);if(shots)job.maps[image.source]={shots,reviewedAt:Date.now(),composition:PHOTO_AI_VERSION};else{image.status='failed';image.reason='Mapa inválido.';}}
     else delete job.maps[image.source];
     await saveProgress(env,job,image);
     return {status:image.status,source:image.source,view:await photoAIView(env)};

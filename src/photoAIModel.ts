@@ -1,11 +1,14 @@
 import { PHOTO_IDENTIFY_PROMPT, PHOTO_REVIEW_PROMPT } from './photoAIPrompts.ts';
-export const PHOTO_AI_VERSION='luna-v3';
+export { PHOTO_AI_VERSION } from './photoMaps.ts';
 export interface AIShot {id:string;x:number;y:number;size:number;label:string}
 export interface PhotoAIResult {shots:AIShot[];estimatedCostUsd:number;inputTokens:number;outputTokens:number;proposals:number;rejected:number;reason:string;model:string}
-export function subjectSquare(box:any):{x:number;y:number;size:number}|null {
+export function subjectSquare(box:any,kind='object'):{x:number;y:number;size:number}|null {
   if(!box||![box.x1,box.y1,box.x2,box.y2].every(v=>typeof v==='number'&&Number.isFinite(v)&&v>=0&&v<=1)||box.x2<=box.x1||box.y2<=box.y1)return null;
-  const size=Math.min(1,Math.max(box.x2-box.x1,box.y2-box.y1)*1.1);if(size<.1||size>.92)return null;
-  return {x:Math.max(0,Math.min(1-size,(box.x1+box.x2-size)/2)),y:Math.max(0,Math.min(1-size,(box.y1+box.y2-size)/2)),size};
+  const portrait=kind==='expression';
+  const size=Math.min(1,portrait?Math.max((box.y2-box.y1)*1.65,(box.x2-box.x1)*1.6):Math.max(box.x2-box.x1,box.y2-box.y1)*1.1);if(size<.1||(!portrait&&size>.92))return null;
+  const square={x:Math.max(0,Math.min(1-size,(box.x1+box.x2-size)/2)),y:Math.max(0,Math.min(1-size,portrait?box.y1-size*.08:(box.y1+box.y2-size)/2)),size};
+  const center=((box.x1+box.x2)/2-square.x)/size;
+  return portrait&&(center<.34||center>.66)?null:square;
 }
 function overlap(a:AIShot,b:AIShot):number {return Math.max(0,Math.min(a.x+a.size,b.x+b.size)-Math.max(a.x,b.x))*Math.max(0,Math.min(a.y+a.size,b.y+b.size)-Math.max(a.y,b.y))/Math.min(a.size*a.size,b.size*b.size)}
 function permutations<T>(items:T[],count:number):T[][] {if(!count)return [[]];return items.flatMap((item,i)=>permutations(items.filter((_,j)=>i!==j),count-1).map(rest=>[item,...rest]));}
@@ -42,7 +45,7 @@ export async function analyzePhoto(input:ArrayBuffer,key:string):Promise<PhotoAI
   try {
   const subjects=identified.data?.subjects;if(!Array.isArray(subjects)||subjects.length>3)throw Error('Invalid Luna subjects');
   const seen=new Set<string>();const candidates:AIShot[]=[];
-  for(const subject of subjects){const square=subjectSquare(subject.box);if(!square||typeof subject.id!=='string'||seen.has(subject.id)||typeof subject.label!=='string'||!subject.label.trim()||subject.label.length>80)continue;seen.add(subject.id);candidates.push({...square,id:subject.id,label:subject.label.trim()});}
+  for(const subject of subjects){const square=subjectSquare(subject.box,subject.kind);if(!square||typeof subject.id!=='string'||seen.has(subject.id)||typeof subject.label!=='string'||!subject.label.trim()||subject.label.length>80)continue;seen.add(subject.id);candidates.push({...square,id:subject.id,label:subject.label.trim()});}
   if(!candidates.length)return {...base,estimatedCostUsd:cost,inputTokens:inputs,outputTokens:outputs,proposals:subjects.length,reason:'A IA não identificou recortes seguros.'};
   const rendered=renderPhotoCrops(input,candidates),content:any[]=[{type:'input_text',text:PHOTO_REVIEW_PROMPT},{type:'input_text',text:'IMAGEM ORIGINAL'},image];
   candidates.forEach((c,i)=>content.push({type:'input_text',text:`RECORTE id=${c.id}, rótulo descritivo: ${c.label}`},{type:'input_image',image_url:rendered[i],detail:'high'}));

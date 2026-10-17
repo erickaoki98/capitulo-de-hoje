@@ -1,7 +1,8 @@
 import type { Env } from './types';
 import { parsePhotoConfig } from './photoExperiment.ts';
+export const PHOTO_AI_VERSION='luna-shoulders-v1';
 export interface PhotoShot { x:number; y:number; size:number; label:string }
-export interface PhotoMap { shots:PhotoShot[]; reviewedAt:number }
+export interface PhotoMap { shots:PhotoShot[]; reviewedAt:number; composition?:string }
 export type PhotoMaps=Record<string,PhotoMap>;
 export const PHOTO_SOURCE='/img/9e5335709590212c.jpg';
 export const approvedExample=():PhotoMaps=>({[PHOTO_SOURCE]:{reviewedAt:Date.now(),shots:[{x:.17,y:0,size:.30,label:'Rosto de Heitor'},{x:.66,y:.105,size:.30,label:'Reação de Pilar'}]}});
@@ -22,7 +23,7 @@ export function parsePhotoMaps(raw:string|null):PhotoMaps {
   const maps:PhotoMaps={};if(!raw||raw.length>1048576)return maps;
   try{const data=JSON.parse(raw);for(const [source,map] of Object.entries(data).slice(0,2000)){
     const m=map as PhotoMap,shots=parseShots(m?.shots);
-    if(validSource(source)&&shots&&Number.isFinite(m.reviewedAt)&&m.reviewedAt>0)maps[source]={shots,reviewedAt:m.reviewedAt};
+    if(validSource(source)&&shots&&Number.isFinite(m.reviewedAt)&&m.reviewedAt>0)maps[source]={shots,reviewedAt:m.reviewedAt,...(typeof m.composition==='string'?{composition:m.composition}:{})};
   }}catch{}return maps;
 }
 /** Two exact settings keys; never touches historical pageview tables. */
@@ -63,5 +64,5 @@ export function articlePhotoSources(content:string):string[] {
 }
 export function articlePhotoMaps(content:string,maps:PhotoMaps):PhotoMaps{return Object.fromEntries(articlePhotoSources(content).filter(source=>maps[source]).map(source=>[source,maps[source]]));}
 export const PHOTO_AI_ROOT="_internal/photo-ai-v3/";
-export async function loadAutomaticPhotoMaps(env:Env,postId:number):Promise<PhotoMaps>{try{const object=await env.IMAGES.get(PHOTO_AI_ROOT+"articles/"+postId+".json");if(!object)return {};const post=await object.json<{maps?:PhotoMaps}>();return parsePhotoMaps(JSON.stringify(post.maps||{}));}catch{return {};}}
+export async function loadAutomaticPhotoMaps(env:Env,postId:number):Promise<PhotoMaps>{try{const object=await env.IMAGES.get(PHOTO_AI_ROOT+"articles/"+postId+".json");if(!object)return {};const post=await object.json<{maps?:PhotoMaps}>();return parsePhotoMaps(JSON.stringify(Object.fromEntries(Object.entries(post.maps||{}).filter(([,map])=>map.composition===PHOTO_AI_VERSION))));}catch{return {};}}
 export const photoMapsJSON=(maps:PhotoMaps)=>JSON.stringify(maps).replace(/</g,'\\u003c');

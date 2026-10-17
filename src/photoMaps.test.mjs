@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {articlePhotoMaps,approvedExample,PHOTO_SOURCE,photoMapsJSON} from './photoMaps.ts';
+import {articlePhotoMaps,approvedExample,PHOTO_SOURCE,photoMapsJSON,loadAutomaticPhotoMaps} from './photoMaps.ts';
+import {PHOTO_AI_VERSION} from './photoAIModel.ts';
 const img=`<img src="${PHOTO_SOURCE}">`;
 test('article eligibility excludes linked, promotional and recommended images at any ancestor depth',()=>{
   const maps=approvedExample();
@@ -30,3 +31,8 @@ test('map JSON stays parseable without executable closing script tags',()=>{
 });
 test('all editorial photos are eligible beyond the former eight-image cutoff',()=>{const example=approvedExample()[PHOTO_SOURCE],maps=Object.fromEntries(Array.from({length:12},(_,i)=>[`/img/all-${i}.png`,example]));const content=Object.keys(maps).map(src=>`<figure><img src="${src}"></figure>`).join('');assert.equal(Object.keys(articlePhotoMaps(content,maps)).length,12)});
 test('self-closing SVG decoration in an excluded recommendation cannot hide subsequent article photos',()=>{const example=approvedExample()[PHOTO_SOURCE],maps={[PHOTO_SOURCE]:example,'/img/after.jpg':example};const content=`<figure>${img}</figure><aside class="section-rec"><a href="/other"><svg><path d="M0 0"/><path d="M1 1"/></svg><img src="/img/promo.jpg"></a></aside><figure><img src="/img/after.jpg"></figure>`;assert.deepEqual(Object.keys(articlePhotoMaps(content,maps)),Object.keys(maps));});
+test('public reader keeps legacy tight portraits static until shoulder composition is reviewed',async()=>{
+ const old=approvedExample()[PHOTO_SOURCE],maps={[PHOTO_SOURCE]:old,'/img/current.jpg':{...old,composition:PHOTO_AI_VERSION}};
+ const env={IMAGES:{async get(){return {async json(){return {maps}}}}}};
+ assert.deepEqual(Object.keys(await loadAutomaticPhotoMaps(env,1)),['/img/current.jpg']);
+});
