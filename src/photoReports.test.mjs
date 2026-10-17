@@ -202,3 +202,16 @@ test('pausing keeps fetching completed assigned days so final-day and delayed GA
     assert.deepEqual(query.dimensionFilter.andGroup.expressions[0].filter.inListFilter.values,['static','motion']);const {snapshot}=await api.photoReportsView(e);assert.equal(snapshot.generatedAt,afterPause);assert.equal(snapshot.rows[0].date,'2026-10-16');assert.equal(snapshot.rows[0].views,120);assert.equal(snapshot.rows[0].revenue,2);
   });
 });
+
+test('invalid report dimensions identify the failed field without exposing arbitrary values',()=>{
+  const period={start:'2026-10-02',end:'2026-10-15'};
+  for(const [variant,adArm,device,message] of [
+    ['static','','mobile',/grupo de anúncios vazio/],
+    ['static','adsense','',/aparelho vazio/],
+    ['(not set)','adsense','mobile',/variante sem atribuição/],
+    ['private unexpected value','adsense','mobile',/variante desconhecida/],
+    ['static','(other)','mobile',/outras linhas agrupadas/]
+  ]){
+    assert.throws(()=>api.parsePhotoReport(rawReport([['20261015',variant,adArm,device,1,1,1,1,0]]),period,false),message);
+  }
+});

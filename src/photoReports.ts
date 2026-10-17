@@ -149,7 +149,10 @@ export function parsePhotoReport(raw: RawPhotoReport, period: {start: string; en
     const [rawDate,variant,adArm,device] = keys;
     const date = rawDate.replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3');
     if (!/^\d{8}$/.test(rawDate) || !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0,10) !== date || date < period.start || date > period.end) throw new PhotoReportsError('O Analytics retornou uma data inválida ou fora do período solicitado.');
-    if ((variant !== 'static' && variant !== 'motion') || !adArm || !device || keys.some(k => k === '(other)')) throw new PhotoReportsError('O Analytics retornou uma variante inválida ou outras linhas agrupadas.');
+    if (keys.some(k => k === '(other)')) throw new PhotoReportsError('O Analytics retornou outras linhas agrupadas; os dados anteriores foram preservados.');
+    if (variant !== 'static' && variant !== 'motion') throw new PhotoReportsError(variant === '(not set)' || !variant ? 'O Analytics retornou uma variante sem atribuição, apesar do filtro A/B; os dados anteriores foram preservados.' : 'O Analytics retornou uma variante desconhecida; os dados anteriores foram preservados.');
+    if (!adArm) throw new PhotoReportsError('O Analytics retornou um grupo de anúncios vazio; os dados anteriores foram preservados.');
+    if (!device) throw new PhotoReportsError('O Analytics retornou um aparelho vazio; os dados anteriores foram preservados.');
     const key = JSON.stringify(keys);
     if (seen.has(key)) throw new PhotoReportsError('O Analytics retornou linhas duplicadas.');
     seen.add(key);
