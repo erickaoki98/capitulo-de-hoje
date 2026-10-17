@@ -146,12 +146,13 @@ export function parsePhotoReport(raw: RawPhotoReport, period: {start: string; en
   const seen = new Set<string>();
   return {currency: currency && /^[A-Z]{3}$/.test(currency) ? currency : null, rows:rows.map(row => {
     const keys = dims.map(i => row.dimensionValues?.[i]?.value ?? '');
-    const [rawDate,variant,adArm,device] = keys;
+    const [rawDate,variant,rawAdArm,device] = keys;
+    // An unassigned advertising cohort does not invalidate an assigned photo cohort.
+    const adArm = rawAdArm || '(not set)';
     const date = rawDate.replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3');
     if (!/^\d{8}$/.test(rawDate) || !Number.isFinite(Date.parse(date)) || new Date(date).toISOString().slice(0,10) !== date || date < period.start || date > period.end) throw new PhotoReportsError('O Analytics retornou uma data inválida ou fora do período solicitado.');
     if (keys.some(k => k === '(other)')) throw new PhotoReportsError('O Analytics retornou outras linhas agrupadas; os dados anteriores foram preservados.');
     if (variant !== 'static' && variant !== 'motion') throw new PhotoReportsError(variant === '(not set)' || !variant ? 'O Analytics retornou uma variante sem atribuição, apesar do filtro A/B; os dados anteriores foram preservados.' : 'O Analytics retornou uma variante desconhecida; os dados anteriores foram preservados.');
-    if (!adArm) throw new PhotoReportsError('O Analytics retornou um grupo de anúncios vazio; os dados anteriores foram preservados.');
     if (!device) throw new PhotoReportsError('O Analytics retornou um aparelho vazio; os dados anteriores foram preservados.');
     const key = JSON.stringify(keys);
     if (seen.has(key)) throw new PhotoReportsError('O Analytics retornou linhas duplicadas.');
@@ -256,6 +257,7 @@ export async function syncPhotoReports(env: Env, now = Date.now(), options: {man
       }
       const warnings = ['O Analytics pode atrasar e revisar os dados; o relatório inclui somente dias encerrados. Comparações descritivas, sem vencedor automático.'];
       warnings.push('O engajamento usa dias completos desde o início do teste, até 28 dias. A receita usa somente dias após a confirmação do vínculo e a janela inicial de coleta; dias inseguros ficam indisponíveis.');
+      if (parsed.rows.some(row => row.adArm === '(not set)')) warnings.push('Acessos sem identificação do grupo de anúncios foram preservados em “Sem grupo de anúncios”. Eles entram na comparação geral das fotos, mas não no filtro “Somente AdSense”.');
       if (!link.linked) warnings.push(link.status==='revenue_restricted'?'Receita indisponível: a permissão desta conta no Analytics restringe a leitura de receita.':link.status==='missing_link'?'Receita indisponível: esta propriedade Analytics não confirmou vínculo com o AdSense deste blog.':link.status==='publisher_missing'?'Receita indisponível: configure o Publisher ID do AdSense deste blog.':'Receita indisponível: não foi possível verificar o vínculo entre Analytics e AdSense.');
       await writePrivate(env,REPORT,{...parsed,...period,connectionId:connection.id,publisherId:readiness.publisherId,revenueValidFrom:readiness.validFrom,testId:config.id,generatedAt:now,propertyId:PHOTO_PROPERTY_ID,domain,timeZone:connection.timeZone,revenueLinked:link.linked,revenueStatus:link.status,warnings} satisfies PhotoReportSnapshot);
       await env.IMAGES.put(GUARD,JSON.stringify({...reserved,status:'ready'}),{onlyIf:{etagMatches:reservation.etag}});

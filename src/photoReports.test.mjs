@@ -206,7 +206,6 @@ test('pausing keeps fetching completed assigned days so final-day and delayed GA
 test('invalid report dimensions identify the failed field without exposing arbitrary values',()=>{
   const period={start:'2026-10-02',end:'2026-10-15'};
   for(const [variant,adArm,device,message] of [
-    ['static','','mobile',/grupo de anúncios vazio/],
     ['static','adsense','',/aparelho vazio/],
     ['(not set)','adsense','mobile',/variante sem atribuição/],
     ['private unexpected value','adsense','mobile',/variante desconhecida/],
@@ -214,4 +213,25 @@ test('invalid report dimensions identify the failed field without exposing arbit
   ]){
     assert.throws(()=>api.parsePhotoReport(rawReport([['20261015',variant,adArm,device,1,1,1,1,0]]),period,false),message);
   }
+});
+
+
+test('missing ad assignment preserves valid photo cohorts and never guesses AdSense attribution',async()=>{
+  const missing=rawReport([
+    ['20261015','static','','mobile',100,10,6,90,0],
+    ['20261015','static','(not set)','mobile',20,2,1,10,0],
+    ['20261015','motion','','mobile',80,8,5,100,0],
+    ['20261015','static','adsense','mobile',30,3,2,20,0]
+  ]);
+  delete missing.rows[2].dimensionValues[2].value; // Empty protobuf strings may omit value.
+  const e=env();await connected(e);
+  await withFetch(google({link:false,report:missing}),async()=>{
+    assert.equal(await api.syncPhotoReports(e,now),'ready');
+    const {snapshot,guard}=await api.photoReportsView(e);assert.equal(guard.status,'ready');
+    assert.deepEqual(snapshot.rows.map(row=>row.adArm),['(not set)','(not set)','(not set)','adsense']);
+    assert.ok(snapshot.warnings.some(w=>/Sem grupo de anúncios/.test(w)));
+    const all=api.aggregatePhotoRows(snapshot.rows);assert.equal(all[0].views,150);assert.equal(all[1].views,80);
+    const unknown=api.aggregatePhotoRows(snapshot.rows,{adArm:'(not set)'});assert.equal(unknown[0].sessions,12);assert.equal(unknown[1].sessions,8);
+    const ads=api.aggregatePhotoRows(snapshot.rows,{adArm:'adsense'});assert.equal(ads[0].views,30);assert.equal(ads[1].views,0);assert.equal(ads[0].revenue,null);
+  });
 });
