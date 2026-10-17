@@ -29,3 +29,11 @@ test('concurrent reservations are conditional and malformed or oversized manifes
  await api.runPhotoTraffic(h.env,now,async(_env,_now,_analyze,scope)=>{const results=await Promise.all(Array.from({length:12},()=>scope.reserve('/img/p-0.jpg')));successes=results.filter(Boolean).length;return {status:'ready'}});assert.equal(successes,1);
  h.objects.get(api.PHOTO_TRAFFIC_KEY).value.articleIds=Array.from({length:501},(_,i)=>i+1);await assert.rejects(()=>api.preparePhotoTraffic(h.env,now,async()=>{}),/manifesto/i);
 });
+
+test('fixed article partitions finish independently and only the final partition completes the batch',async()=>{
+ const h=harness(12);await api.preparePhotoTraffic(h.env,now,async()=>{});await api.preparePhotoTraffic(h.env,now+1,async()=>{});
+ const ids=[],leases=[];const run=async(_env,_now,_analyze,scope)=>{assert.equal(scope.articleIds.length,1);ids.push(scope.articleIds[0]);leases.push(scope.leaseKey);assert.equal(scope.holdLease,true);return {status:'complete'}};
+ for(let i=0;i<11;i++)assert.equal((await api.runPhotoTraffic(h.env,now+2,run,()=>0)).status,'reconciled');
+ assert.equal((await api.photoTrafficView(h.env)).status,'active');
+ assert.equal((await api.runPhotoTraffic(h.env,now+3,run,()=>0)).status,'complete');assert.equal(new Set(ids).size,12);assert.equal(new Set(leases).size,12);
+});

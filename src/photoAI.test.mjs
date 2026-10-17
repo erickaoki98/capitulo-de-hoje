@@ -63,3 +63,19 @@ test('fixed traffic batches allow up to twelve concurrent analyses while ordinar
  const pending=[];for(let i=0;i<13;i++){pending.push(runPhotoAI(env,Date.now(),analyze,scope));await new Promise(r=>setTimeout(r,5));}
  assert.equal(calls,12);assert.equal(max,12);for(const release of releases)release();await Promise.all(pending);assert.equal((await photoAIView(env)).queued,1);
 });
+
+test('partitioned traffic claims deduplicate a shared source before reserving any paid work',async()=>{
+ const {env,objects,posts}=harness(1);await startPhotoBackfill(env);objects.set('source-0.png',{etag:'image',value:{}});
+ let calls=0,reservations=0;const releases=[];const analyze=async()=>{calls++;await new Promise(r=>releases.push(r));return model()};
+ const scope={articleIds:[1],sources:['/img/source-0.png'],holdLease:true,maxConcurrent:12,reserve:async()=>{assert.ok([...objects.keys()].some(k=>k.includes('/images/')&&objects.get(k).value.status==='processing'));reservations++;return true}};
+ const pending=Array.from({length:12},(_,i)=>runPhotoAI(env,Date.now(),analyze,{...scope,leaseKey:'_internal/test-slot-'+i}));
+ await new Promise(r=>setTimeout(r,20));assert.equal(calls,1);assert.equal(reservations,1);releases.forEach(r=>r());await Promise.all(pending);
+});
+
+test('independent article leases permit real parallel work and block another owner of the same partition',async()=>{
+ const {env,objects,posts}=harness(12);await startPhotoBackfill(env);for(let i=0;i<12;i++)objects.set('source-'+i+'.png',{etag:'image',value:{}});
+ let active=0;const releases=[];const analyze=async()=>{active++;await new Promise(r=>releases.push(r));return model()};
+ const scope=i=>({articleIds:[i+1],sources:['/img/source-'+i+'.png'],maxConcurrent:12,leaseKey:'_internal/partition-'+i,holdLease:true,reserve:async()=>true});
+ const pending=posts.map((_,i)=>runPhotoAI(env,Date.now(),analyze,scope(i)));await new Promise(r=>setTimeout(r,30));assert.equal(active,12);
+ assert.equal((await runPhotoAI(env,Date.now(),analyze,scope(0))).status,'limited');assert.equal(active,12);releases.forEach(r=>r());await Promise.all(pending);assert.equal((await photoAIView(env)).ready,12);
+});

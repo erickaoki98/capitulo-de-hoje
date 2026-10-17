@@ -12,3 +12,7 @@
 - [ ] Confirmar resultado por artigo, fotos prontas/estáticas/falhas, custo confirmado e mapas servidos nas páginas públicas prioritárias; entregar lista para conferência.
 
 A coleta foi administrativa e pontual: índice cobrindo bucket/path/count, intervalo de hoje no fuso de São Paulo, 14.144 linhas lidas e zero escritas; conteúdo dos ids selecionados exigiu 354 leituras e zero escritas. Não há nova agregação nos leitores públicos nem cron de descoberta por tráfego.
+
+## Ajuste do executor durante a execução
+
+A reserva global original serializava a preparação, mantendo somente uma ou duas análises efetivamente simultâneas. O lote adicional usa agora até doze partições fixas de ids, cada uma com lease exclusivo mantido até o fim da análise. A reivindicação CAS da fonte antecede a reserva de gasto nas partições, impedindo duplicidade mesmo em fotos compartilhadas. Só a conclusão de todas as partições encerra o lote. A fila normal mantém seu lease e teto originais. Testes confirmam doze artigos em paralelo, bloqueio de um segundo dono da mesma partição, reserva única de foto compartilhada e conclusão independente. Verificação: 243 testes, TypeScript e dry-run. Antes da publicação foi confirmado processamento zero para não interromper chamadas anteriores.

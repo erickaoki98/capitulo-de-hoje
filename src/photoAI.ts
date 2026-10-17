@@ -16,7 +16,7 @@ export interface PhotoAIView {enabled:boolean;totalArticles:number;totalImages:n
 const initial=():State=>({enabled:false,seededAt:0,backfillIds:[],articles:[],nextDiscoveryAt:0,lastUpdated:0});
 const privateOptions={httpMetadata:{contentType:'application/json',cacheControl:'private, no-store'}};
 async function read<T>(env:Env,key:string):Promise<T|null>{const o=await env.IMAGES.get(key);return o?o.json<T>():null;}
-async function mutate(env:Env,fn:(state:State)=>void):Promise<State>{for(let i=0;i<6;i++){const old=await env.IMAGES.get(STATE),state=old?await old.json<State>():initial();fn(state);state.lastUpdated=Date.now();const saved=await env.IMAGES.put(STATE,JSON.stringify(state),{...privateOptions,onlyIf:old?{etagMatches:old.etag}:{etagDoesNotMatch:'*'}});if(saved)return state;}throw Error('Fila ocupada; tente novamente.');}
+async function mutate(env:Env,fn:(state:State)=>void):Promise<State>{for(let i=0;i<24;i++){const old=await env.IMAGES.get(STATE),state=old?await old.json<State>():initial();fn(state);state.lastUpdated=Date.now();const saved=await env.IMAGES.put(STATE,JSON.stringify(state),{...privateOptions,onlyIf:old?{etagMatches:old.etag}:{etagDoesNotMatch:'*'}});if(saved)return state;}throw Error('Fila ocupada; tente novamente.');}
 function stats(job:ArticleJob):ArticleStats{return {id:job.id,slug:job.slug,total:job.images.length,ready:job.images.filter(i=>i.status==='ready').length,static:job.images.filter(i=>i.status==='static').length,failed:job.images.filter(i=>i.status==='failed').length,processing:job.images.filter(i=>i.status==='processing').length,cost:job.costs?Object.values(job.costs).reduce((n,c)=>n+c,0):job.images.reduce((n,i)=>n+i.cost,0),updatedAt:job.updatedAt,composition:job.composition};}
 async function changeJob(env:Env,id:number,change:(old:ArticleJob|null)=>ArticleJob|null):Promise<ArticleJob|null>{
   const key=PHOTO_AI_ROOT+'articles/'+id+'.json';
@@ -83,11 +83,12 @@ export async function photoAIView(env:Env):Promise<PhotoAIView>{
 }
 async function reserveDaily(env:Env,now:number){const key=PHOTO_AI_ROOT+'budgets/'+new Date(now).toISOString().slice(0,10),old=await env.IMAGES.get(key),budget=old?await old.json<{reserved:number}>():{reserved:0};if(budget.reserved>=PHOTO_AI_DAILY_MAX)return false;return !!await env.IMAGES.put(key,JSON.stringify({reserved:budget.reserved+1,reservedUsd:(budget.reserved+1)*.02,maxImages:PHOTO_AI_DAILY_MAX,maxReservedUsd:PHOTO_AI_DAILY_MAX*.02}),{...privateOptions,onlyIf:old?{etagMatches:old.etag}:{etagDoesNotMatch:'*'}});}
 interface CachedImage {status:'processing'|'ready'|'static'|'failed';owner:number;at:number;result?:PhotoAIResult;error?:string;partialCost?:number}
-export interface PhotoAIRunScope {articleIds:number[];sources:string[];maxConcurrent?:number;reserve:(source:string)=>Promise<boolean>}
-/** Bounded processor with serialized claims and at most four concurrent photos. Reservations survive errors and expired executions; uncertain API calls are never repeated. */
+export interface PhotoAIRunScope {articleIds:number[];sources:string[];maxConcurrent?:number;leaseKey?:string;holdLease?:boolean;reserve:(source:string)=>Promise<boolean>}
+/** Bounded processor with serialized claims and four normal analyses or the bounded authorized batch scope. Reservations survive errors and expired executions; uncertain API calls are never repeated. */
 export async function runPhotoAI(env:Env,now=Date.now(),analyze:typeof analyzePhoto=analyzePhoto,scope?:PhotoAIRunScope):Promise<{status:string;source?:string;articleId?:number;view?:PhotoAIView}>{
   const state=await read<State>(env,STATE);if(!state?.enabled)return {status:'disabled'};if(!env.OPENAI_API_KEY)return {status:'not_configured'};
-  const lock=await acquire(env,LEASE,now,180000);if(!lock)return {status:'limited'};
+  const leaseKey=scope?.leaseKey||LEASE;
+  const lock=await acquire(env,leaseKey,now,180000);if(!lock)return {status:'limited'};
   let released=false;
   try{
     const fresh=await read<State>(env,STATE);if(!fresh?.enabled)return {status:'disabled'};
@@ -109,13 +110,17 @@ export async function runPhotoAI(env:Env,now=Date.now(),analyze:typeof analyzePh
       if(!published){await changeJob(env,job.id,latest=>{if(!latest)return null;for(const pending of latest.images)if(pending.status==='queued'||pending.status==='processing'){pending.status='static';pending.reason='Artigo fora de publicação.';}return latest;});return {status:'unpublished'};}
       const source=await env.IMAGES.get(image.source.slice(5));if(!source){image.status='static';image.reason='Imagem local ainda indisponível.';await saveProgress(env,job,image);return {status:'static',source:image.source};}
       if((source as any).size>4000000){image.status='static';image.reason='Imagem acima do limite de análise.';await saveProgress(env,job,image);return {status:'static',source:image.source};}
-      if(scope&&!await scope.reserve(image.source))return {status:'batch_budget',source:image.source};
       if(!scope&&!await reserveDaily(env,now)){await mutate(env,s=>{s.error='Teto diário de 250 fotos atingido; a fila continua no próximo dia, sem gasto extra.';});return {status:'budget'};}
-      if(fresh.error?.startsWith('Teto diário'))await mutate(env,s=>{if(s.error?.startsWith('Teto diário'))delete s.error;});
       cached={status:'processing',owner:job.id,at:now};const reservation=await env.IMAGES.put(cacheKey,JSON.stringify(cached),{...privateOptions,onlyIf:{etagDoesNotMatch:'*'}});if(!reservation)return {status:'limited'};
+      // Independent batch partitions must win the source claim before reserving spend.
+      if(scope&&!await scope.reserve(image.source)){
+        cached={...cached,status:'failed',error:'Reserva anterior sem resultado confirmado; análise não repetida.'};await env.IMAGES.put(cacheKey,JSON.stringify(cached),privateOptions);
+        image.status='failed';image.reason=cached.error;image.at=now;await saveProgress(env,job,image);return {status:'batch_budget',source:image.source};
+      }
+      if(fresh.error?.startsWith('Teto diário'))await mutate(env,s=>{if(s.error?.startsWith('Teto diário'))delete s.error;});
       image.status='processing';image.at=now;await saveProgress(env,job,image);
       // The global lease serializes claims; the scope bounds concurrent persisted jobs (four normally).
-      await env.IMAGES.put(LEASE,JSON.stringify({until:0}),{...privateOptions,onlyIf:{etagMatches:lock}});released=true;
+      if(!scope?.holdLease){await env.IMAGES.put(leaseKey,JSON.stringify({until:0}),{...privateOptions,onlyIf:{etagMatches:lock}});released=true;}
       try{
         const result=await analyze(await source.arrayBuffer(),env.OPENAI_API_KEY);
         const shots=result.shots.length>=2?parseShots(result.shots):null;
@@ -135,7 +140,7 @@ export async function runPhotoAI(env:Env,now=Date.now(),analyze:typeof analyzePh
     await saveProgress(env,job,image);
     return {status:image.status,source:image.source,view:await photoAIView(env)};
   }catch(error){await mutate(env,s=>{s.error=error instanceof Error?error.message.slice(0,180):'Falha na fila.';});return {status:'error'};}
-  finally{if(!released)await env.IMAGES.put(LEASE,JSON.stringify({until:0}),{...privateOptions,onlyIf:{etagMatches:lock}});}
+  finally{if(!released)await env.IMAGES.put(leaseKey,JSON.stringify({until:0}),{...privateOptions,onlyIf:{etagMatches:lock}});}
 }
 /** Scheduled events have a longer execution window than publication waitUntil. Never drain without a bound. */
 export async function runScheduledPhotoAI(env:Env,run:typeof runPhotoAI=runPhotoAI):Promise<void>{
