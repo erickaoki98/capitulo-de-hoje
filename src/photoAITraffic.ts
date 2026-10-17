@@ -30,7 +30,7 @@ export async function runPhotoTraffic(env:Env,now=Date.now(),run:typeof runPhoto
  if(b.status==='complete')return {status:'complete'};
  if(now>b.expiresAt)return {status:'expired'};
  if(b.status!=='active')return {status:'preparing'};
- const result=await run(env,now,undefined,{articleIds:b.articleIds.filter(id=>!b.skippedIds.includes(id)),sources:b.sources,reserve:source=>change(env,b.id,x=>{if(x.status!=='active'||Date.now()>x.expiresAt||x.reservedSources.length>=x.sources.length||!x.sources.includes(source)||x.reservedSources.includes(source))return false;x.reservedSources.push(source);return true;})});
+ const result=await run(env,now,undefined,{articleIds:b.articleIds.filter(id=>!b.skippedIds.includes(id)),sources:b.sources,maxConcurrent:12,reserve:source=>change(env,b.id,x=>{if(x.status!=='active'||Date.now()>x.expiresAt||x.reservedSources.length>=x.sources.length||!x.sources.includes(source)||x.reservedSources.includes(source))return false;x.reservedSources.push(source);return true;})});
  if(result.status==='complete')await change(env,b.id,x=>{x.status='complete';return true;});
  if(result.status==='outside_scope'&&result.articleId){await change(env,b.id,x=>{x.skippedIds=[...new Set([...x.skippedIds,result.articleId!])];return true;});return {...result,status:'reconciled'};}
  return result;

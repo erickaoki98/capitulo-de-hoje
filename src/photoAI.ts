@@ -83,7 +83,7 @@ export async function photoAIView(env:Env):Promise<PhotoAIView>{
 }
 async function reserveDaily(env:Env,now:number){const key=PHOTO_AI_ROOT+'budgets/'+new Date(now).toISOString().slice(0,10),old=await env.IMAGES.get(key),budget=old?await old.json<{reserved:number}>():{reserved:0};if(budget.reserved>=PHOTO_AI_DAILY_MAX)return false;return !!await env.IMAGES.put(key,JSON.stringify({reserved:budget.reserved+1,reservedUsd:(budget.reserved+1)*.02,maxImages:PHOTO_AI_DAILY_MAX,maxReservedUsd:PHOTO_AI_DAILY_MAX*.02}),{...privateOptions,onlyIf:old?{etagMatches:old.etag}:{etagDoesNotMatch:'*'}});}
 interface CachedImage {status:'processing'|'ready'|'static'|'failed';owner:number;at:number;result?:PhotoAIResult;error?:string;partialCost?:number}
-export interface PhotoAIRunScope {articleIds:number[];sources:string[];reserve:(source:string)=>Promise<boolean>}
+export interface PhotoAIRunScope {articleIds:number[];sources:string[];maxConcurrent?:number;reserve:(source:string)=>Promise<boolean>}
 /** Bounded processor with serialized claims and at most four concurrent photos. Reservations survive errors and expired executions; uncertain API calls are never repeated. */
 export async function runPhotoAI(env:Env,now=Date.now(),analyze:typeof analyzePhoto=analyzePhoto,scope?:PhotoAIRunScope):Promise<{status:string;source?:string;articleId?:number;view?:PhotoAIView}>{
   const state=await read<State>(env,STATE);if(!state?.enabled)return {status:'disabled'};if(!env.OPENAI_API_KEY)return {status:'not_configured'};
@@ -96,7 +96,8 @@ export async function runPhotoAI(env:Env,now=Date.now(),analyze:typeof analyzePh
     if(!pending.length)return {status:'complete'};
     const processing=fresh.articles.reduce((n,a)=>n+a.processing,0);
     const stale=pending.find(a=>a.processing>0&&a.updatedAt<now-180000);
-    if(processing>=4&&!stale)return {status:'limited'};
+    const concurrency=scope?Math.min(12,Math.max(1,Math.floor(scope.maxConcurrent||4))):4;
+    if(processing>=concurrency&&!stale)return {status:'limited'};
     const next=stale||pending.find(a=>a.total>a.ready+a.static+a.failed+a.processing)||pending[0];
     const job=await read<ArticleJob>(env,PHOTO_AI_ROOT+'articles/'+next.id+'.json');if(!job)throw Error('Artigo da fila não encontrado.');
     const scopedImages=scope?job.images.filter(i=>scope.sources.includes(i.source)):job.images;
@@ -113,7 +114,7 @@ export async function runPhotoAI(env:Env,now=Date.now(),analyze:typeof analyzePh
       if(fresh.error?.startsWith('Teto diário'))await mutate(env,s=>{if(s.error?.startsWith('Teto diário'))delete s.error;});
       cached={status:'processing',owner:job.id,at:now};const reservation=await env.IMAGES.put(cacheKey,JSON.stringify(cached),{...privateOptions,onlyIf:{etagDoesNotMatch:'*'}});if(!reservation)return {status:'limited'};
       image.status='processing';image.at=now;await saveProgress(env,job,image);
-      // The global lease serializes claims; up to four persisted jobs may analyze concurrently.
+      // The global lease serializes claims; the scope bounds concurrent persisted jobs (four normally).
       await env.IMAGES.put(LEASE,JSON.stringify({until:0}),{...privateOptions,onlyIf:{etagMatches:lock}});released=true;
       try{
         const result=await analyze(await source.arrayBuffer(),env.OPENAI_API_KEY);

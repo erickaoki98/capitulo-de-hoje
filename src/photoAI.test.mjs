@@ -54,3 +54,12 @@ test('explicit traffic scope bypasses only the daily queue cap and never spends 
  scope.articleIds=[1];scope.reserve=async()=>false;assert.equal((await run()).status,'outside_scope');assert.equal(calls,1);
  scope.sources=['/img/source-0.png'];assert.equal((await run()).status,'batch_budget');assert.equal(calls,1);
 });
+
+test('fixed traffic batches allow up to twelve concurrent analyses while ordinary runs retain four',async()=>{
+ const {env,objects,posts}=harness(1);posts[0].content=Array.from({length:13},(_,i)=>`<img src="/img/batch-${i}.png">`).join('');await startPhotoBackfill(env);
+ for(let i=0;i<13;i++)objects.set('batch-'+i+'.png',{etag:'image',value:{}});
+ let active=0,max=0,calls=0;const releases=[];const analyze=async()=>{calls++;active++;max=Math.max(max,active);await new Promise(r=>releases.push(r));active--;return model()};
+ const scope={articleIds:[1],sources:Array.from({length:13},(_,i)=>'/img/batch-'+i+'.png'),maxConcurrent:12,reserve:async()=>true};
+ const pending=[];for(let i=0;i<13;i++){pending.push(runPhotoAI(env,Date.now(),analyze,scope));await new Promise(r=>setTimeout(r,5));}
+ assert.equal(calls,12);assert.equal(max,12);for(const release of releases)release();await Promise.all(pending);assert.equal((await photoAIView(env)).queued,1);
+});

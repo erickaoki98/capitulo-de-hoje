@@ -8,7 +8,7 @@
 - [ ] Adicionar `src/photoAITraffic.ts` e testes: manifesto R2 validado, preparação idempotente em blocos de oito, reserva CAS por fonte e limite/expiração, conclusão persistida.
 - [ ] Expor somente rotas autenticadas `/api/photo-ai/traffic-{prepare,run,status}`; nenhuma criação de lote ou chamada de modelo em GET público/administrativo.
 - [ ] Verificar testes, TypeScript, dry-run, diff e ancestralidade; publicar no Worker capitulo-de-hoje pela branch codex/photo-ab-retention-revenue.
-- [ ] Gravar um manifesto privado único para este pedido; executar através de helper temporário restrito e autenticado com a credencial já existente, no máximo quatro workers. Remover o helper após o lote, inclusive se houver falhas.
+- [ ] Gravar um manifesto privado único para este pedido; executar através de helper temporário restrito e autenticado com a credencial já existente, até doze workers somente neste lote; a fila normal continua limitada a quatro. Remover o helper após o lote, inclusive se houver falhas.
 - [ ] Confirmar resultado por artigo, fotos prontas/estáticas/falhas, custo confirmado e mapas servidos nas páginas públicas prioritárias; entregar lista para conferência.
 
 A coleta foi administrativa e pontual: índice cobrindo bucket/path/count, intervalo de hoje no fuso de São Paulo, 14.144 linhas lidas e zero escritas; conteúdo dos ids selecionados exigiu 354 leituras e zero escritas. Não há nova agregação nos leitores públicos nem cron de descoberta por tráfego.
