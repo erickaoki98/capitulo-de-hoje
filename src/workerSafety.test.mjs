@@ -54,3 +54,16 @@ test('Wrangler e CI exigem proteção antes de publicar',async()=>{
   assert.match(pkg.scripts.test,/src\/\*\.test\.mjs/);
   assert.match(pkg.scripts['test:d1-protection'],/workerSafety\.test\.mjs/);
 });
+
+test('cron aguarda tarefas anteriores liberarem conexões antes de descobrir e processar fotos',async()=>{
+  let release;const blocked=new Promise(resolve=>{release=resolve;});const queries=[];const tasks=[];
+  const env={DB:{prepare(sql){queries.push(sql);return {async all(){return {results:[]}},bind(){return this},async first(){return null}}}},IMAGES:{
+    async get(key){if(key==='_internal/d1-ranking-guard-v1.json'){await blocked;return {json:async()=>({nextAttemptAt:Date.now()+60000})}}if(key==='_internal/photo-ai-v3/state')return {json:async()=>({enabled:true,composition:'luna-shoulders-v1',articles:[]})};return null;},
+    async put(){return {etag:'test'};},
+  }};
+  await worker.scheduled({},env,{waitUntil(p){tasks.push(p)}});
+  await new Promise(resolve=>setTimeout(resolve,10));
+  const discovers=()=>queries.some(sql=>/ORDER BY p.pub_date DESC LIMIT 30/.test(sql));
+  try{assert.equal(discovers(),false,'IA deve esperar ranking, relatórios e migração');}finally{release();await Promise.all(tasks);}
+  assert.equal(discovers(),true);
+});

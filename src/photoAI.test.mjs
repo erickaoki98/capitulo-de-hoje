@@ -79,3 +79,16 @@ test('independent article leases permit real parallel work and block another own
  const pending=posts.map((_,i)=>runPhotoAI(env,Date.now(),analyze,scope(i)));await new Promise(r=>setTimeout(r,30));assert.equal(active,12);
  assert.equal((await runPhotoAI(env,Date.now(),analyze,scope(0))).status,'limited');assert.equal(active,12);releases.forEach(r=>r());await Promise.all(pending);assert.equal((await photoAIView(env)).ready,12);
 });
+
+test('the source body is consumed before a batch claim opens more storage operations',async()=>{
+ const {env,objects}=harness(1);await startPhotoBackfill(env);objects.set('source-0.png',{etag:'image',value:{}});let consumed=false;const get=env.IMAGES.get;
+ env.IMAGES.get=async key=>{const o=await get(key);return key==='source-0.png'?{...o,arrayBuffer:async()=>{consumed=true;return new ArrayBuffer(4)}}:o};
+ const scope={articleIds:[1],sources:['/img/source-0.png'],reserve:async()=>{assert.equal(consumed,true);return true}};
+ assert.equal((await runPhotoAI(env,Date.now(),model,scope)).status,'ready');
+});
+
+test('an oversized image closes its body without reserving or calling the model',async()=>{
+ const {env,objects}=harness(1);await startPhotoBackfill(env);objects.set('source-0.png',{etag:'image',value:{}});const get=env.IMAGES.get;let cancelled=false,calls=0;
+ env.IMAGES.get=async key=>{const o=await get(key);return key==='source-0.png'?{...o,size:5000000,body:{cancel:async()=>{cancelled=true}}}:o};
+ const result=await runPhotoAI(env,Date.now(),async()=>{calls++;return model()});assert.equal(result.status,'static');assert.equal(cancelled,true);assert.equal(calls,0);
+});

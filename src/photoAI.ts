@@ -109,7 +109,9 @@ export async function runPhotoAI(env:Env,now=Date.now(),analyze:typeof analyzePh
       const published=await env.DB.prepare(`SELECT p.id FROM posts AS p WHERE p.id=? AND ${publicPostVisibilitySql('p')}`).bind(job.id).first();
       if(!published){await changeJob(env,job.id,latest=>{if(!latest)return null;for(const pending of latest.images)if(pending.status==='queued'||pending.status==='processing'){pending.status='static';pending.reason='Artigo fora de publicação.';}return latest;});return {status:'unpublished'};}
       const source=await env.IMAGES.get(image.source.slice(5));if(!source){image.status='static';image.reason='Imagem local ainda indisponível.';await saveProgress(env,job,image);return {status:'static',source:image.source};}
-      if((source as any).size>4000000){image.status='static';image.reason='Imagem acima do limite de análise.';await saveProgress(env,job,image);return {status:'static',source:image.source};}
+      if((source as any).size>4000000){await source.body?.cancel?.();image.status='static';image.reason='Imagem acima do limite de análise.';await saveProgress(env,job,image);return {status:'static',source:image.source};}
+      // Close the R2 response before opening claims or waiting for model responses.
+      const input=await source.arrayBuffer();
       if(!scope&&!await reserveDaily(env,now)){await mutate(env,s=>{s.error='Teto diário de 250 fotos atingido; a fila continua no próximo dia, sem gasto extra.';});return {status:'budget'};}
       cached={status:'processing',owner:job.id,at:now};const reservation=await env.IMAGES.put(cacheKey,JSON.stringify(cached),{...privateOptions,onlyIf:{etagDoesNotMatch:'*'}});if(!reservation)return {status:'limited'};
       // Independent batch partitions must win the source claim before reserving spend.
@@ -122,7 +124,7 @@ export async function runPhotoAI(env:Env,now=Date.now(),analyze:typeof analyzePh
       // The global lease serializes claims; the scope bounds concurrent persisted jobs (four normally).
       if(!scope?.holdLease){await env.IMAGES.put(leaseKey,JSON.stringify({until:0}),{...privateOptions,onlyIf:{etagMatches:lock}});released=true;}
       try{
-        const result=await analyze(await source.arrayBuffer(),env.OPENAI_API_KEY);
+        const result=await analyze(input,env.OPENAI_API_KEY);
         const shots=result.shots.length>=2?parseShots(result.shots):null;
         if(result.shots.length>=2&&!shots)throw Error('A IA retornou enquadramentos inválidos.');
         cached={...cached,status:shots?'ready':'static',result};
@@ -148,4 +150,9 @@ export async function runScheduledPhotoAI(env:Env,run:typeof runPhotoAI=runPhoto
     const result=await run(env);
     if(!['ready','static','failed','unpublished','reconciled'].includes(result.status))break;
   }
+}
+
+/** Requeue only the explicitly identified, zero-recorded-cost connection failure. */
+export async function requeuePhotoConnectionFailure(env:Env,id:number,source:string):Promise<boolean>{
+ let changed=false;await changeJob(env,id,job=>{if(!job)return null;const image=job.images.find(i=>i.source===source);if(!image||image.status!=='failed'||image.reason!=='Response closed due to connection limit'||image.cost!==0)return null;image.status='queued';image.at=Date.now();delete image.reason;changed=true;return job;});return changed;
 }

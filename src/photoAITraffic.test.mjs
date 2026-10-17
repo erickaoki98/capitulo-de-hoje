@@ -41,8 +41,23 @@ test('fixed article partitions finish independently and only the final partition
 test('native scheduled execution reserves one minute globally and processes at most twenty-four photos',async()=>{
  const h=harness(12);await api.preparePhotoTraffic(h.env,now,async()=>{});await api.preparePhotoTraffic(h.env,now+1,async()=>{});
  let active=0,max=0;const seen=[];const run=async(_env,_now,_worker,_random,slot)=>{seen.push(slot);active++;max=Math.max(max,active);await new Promise(r=>setTimeout(r,1));active--;return {status:'ready'}};
- assert.equal(await api.runScheduledPhotoTraffic(h.env,now,run),true);assert.equal(seen.length,24);assert.equal(max,12);assert.equal(new Set(seen).size,12);
+ assert.equal(await api.runScheduledPhotoTraffic(h.env,now,run),true);assert.equal(seen.length,24);assert.equal(max,4);assert.equal(new Set(seen).size,12);
  await api.runScheduledPhotoTraffic(h.env,now+100,run);assert.equal(seen.length,24);
  await api.runScheduledPhotoTraffic(h.env,now+60000,run);assert.equal(seen.length,48);
  assert.equal(await api.runScheduledPhotoTraffic(h.env,now+6*3600000+1,run),false);assert.equal(seen.length,48);
+});
+
+test('explicit connection recovery archives failures once and stays inside the original total reservation cap',async()=>{
+ const h=harness(2),root='_internal/photo-ai-v3/';await api.preparePhotoTraffic(h.env,now,async()=>{});
+ const b=h.objects.get(api.PHOTO_TRAFFIC_KEY).value;b.status='preparing';b.connectionRecovery='requested';b.reservedSources=['/img/p-0.jpg'];b.completedSlots=[0];
+ h.env.IMAGES.delete=async key=>h.objects.delete(key);
+ const put=async(key,value)=>h.env.IMAGES.put(key,JSON.stringify(value));
+ await put(root+'state',{enabled:true,seededAt:1,backfillIds:[],articles:[{id:1,total:1,ready:0,static:0,failed:1,processing:0,cost:0}],lastUpdated:now});
+ await put(root+'articles/1.json',{id:1,slug:'p-0',title:'Title',images:[{source:'/img/p-0.jpg',status:'failed',at:now,cost:0,reason:'Response closed due to connection limit'}],maps:{},updatedAt:now,costs:{}});
+ const key=root+'images/luna-shoulders-v1/p-0.jpg.json';await put(key,{status:'failed',owner:1,at:now,error:'Response closed due to connection limit',partialCost:0});
+ const fixed=await api.recoverPhotoTrafficConnections(h.env,now);assert.equal(fixed.status,'active');assert.equal(h.objects.has(key),false);assert.ok([...h.objects.keys()].some(k=>k.includes('/connection-errors/')));
+ assert.equal(h.objects.get(root+'articles/1.json').value.images[0].status,'queued');assert.equal(h.objects.get(api.PHOTO_TRAFFIC_KEY).value.completedSlots.includes(0),false);
+ await api.recoverPhotoTrafficConnections(h.env,now+1);
+ await api.runPhotoTraffic(h.env,now+2,async(_env,_now,_analyze,scope)=>{assert.equal(await scope.reserve('/img/p-0.jpg'),true);assert.equal(await scope.reserve('/img/p-0.jpg'),false);assert.equal(await scope.reserve('/img/p-1.jpg'),false);return {status:'ready'}},()=>0);
+ const view=await api.photoTrafficView(h.env);assert.equal(view.reserved,2);assert.equal(view.recoveries,1);assert.equal(view.maxReservedUsd,.04);
 });

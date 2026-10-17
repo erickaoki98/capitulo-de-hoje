@@ -1463,12 +1463,11 @@ ${urls.join('\n')}
    */
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     // Reserva global de 30 min no R2; independente do cron de imagens e do tráfego.
-    ctx.waitUntil(refreshRankingSnapshot(env.IMAGES, env.DB));
+    const ranking = refreshRankingSnapshot(env.IMAGES, env.DB);
     // AdSense reserves globally at most one attempt/hour; no D1 history scans.
-    ctx.waitUntil(syncReports(env));
-    ctx.waitUntil(syncPhotoReports(env));
-    ctx.waitUntil(discoverPhotoPosts(env).then(async()=>{if(!await runScheduledPhotoTraffic(env))await runScheduledPhotoAI(env);}).catch(()=>console.error('[photo-ai] scheduled error')));
-    ctx.waitUntil((async () => {
+    const adsense = syncReports(env);
+    const photoReports = syncPhotoReports(env);
+    const migration = (async () => {
       try {
         // batch maior pra aproveitar a janela do worker no cron (sem cap de IP)
         const result = await runImageMigrationBatch(env, 50, { collectProgress: false });
@@ -1476,7 +1475,12 @@ ${urls.join('\n')}
       } catch (e) {
         console.error('[cron] migration error:', e);
       }
-    })());
+    })();
+    // The same cron invocation shares connections; drain existing IO before model calls.
+    ctx.waitUntil(Promise.allSettled([ranking, adsense, photoReports, migration]).then(async()=>{
+      await discoverPhotoPosts(env);
+      if(!await runScheduledPhotoTraffic(env))await runScheduledPhotoAI(env);
+    }).catch(()=>console.error('[photo-ai] scheduled error')));
   },
 };
 
