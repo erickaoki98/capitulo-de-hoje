@@ -106,6 +106,7 @@ export async function runPhotoAI(env:Env,now=Date.now(),analyze:typeof analyzePh
       const source=await env.IMAGES.get(image.source.slice(5));if(!source){image.status='static';image.reason='Imagem local ainda indisponível.';await saveProgress(env,job,image);return {status:'static',source:image.source};}
       if((source as any).size>4000000){image.status='static';image.reason='Imagem acima do limite de análise.';await saveProgress(env,job,image);return {status:'static',source:image.source};}
       if(!await reserveDaily(env,now)){await mutate(env,s=>{s.error='Teto diário de 250 fotos atingido; a fila continua no próximo dia, sem gasto extra.';});return {status:'budget'};}
+      if(fresh.error?.startsWith('Teto diário'))await mutate(env,s=>{if(s.error?.startsWith('Teto diário'))delete s.error;});
       cached={status:'processing',owner:job.id,at:now};const reservation=await env.IMAGES.put(cacheKey,JSON.stringify(cached),{...privateOptions,onlyIf:{etagDoesNotMatch:'*'}});if(!reservation)return {status:'limited'};
       image.status='processing';image.at=now;await saveProgress(env,job,image);
       // The global lease serializes claims; up to four persisted jobs may analyze concurrently.
