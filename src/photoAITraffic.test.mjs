@@ -37,3 +37,12 @@ test('fixed article partitions finish independently and only the final partition
  assert.equal((await api.photoTrafficView(h.env)).status,'active');
  assert.equal((await api.runPhotoTraffic(h.env,now+3,run,()=>0)).status,'complete');assert.equal(new Set(ids).size,12);assert.equal(new Set(leases).size,12);
 });
+
+test('native scheduled execution reserves one minute globally and processes at most twenty-four photos',async()=>{
+ const h=harness(12);await api.preparePhotoTraffic(h.env,now,async()=>{});await api.preparePhotoTraffic(h.env,now+1,async()=>{});
+ let active=0,max=0;const seen=[];const run=async(_env,_now,_worker,_random,slot)=>{seen.push(slot);active++;max=Math.max(max,active);await new Promise(r=>setTimeout(r,1));active--;return {status:'ready'}};
+ assert.equal(await api.runScheduledPhotoTraffic(h.env,now,run),true);assert.equal(seen.length,24);assert.equal(max,12);assert.equal(new Set(seen).size,12);
+ await api.runScheduledPhotoTraffic(h.env,now+100,run);assert.equal(seen.length,24);
+ await api.runScheduledPhotoTraffic(h.env,now+60000,run);assert.equal(seen.length,48);
+ assert.equal(await api.runScheduledPhotoTraffic(h.env,now+6*3600000+1,run),false);assert.equal(seen.length,48);
+});
