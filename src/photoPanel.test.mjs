@@ -43,3 +43,10 @@ test('active first-day test distinguishes unavailable reports from zero traffic 
   assert.doesNotMatch(tomorrow,/Primeiro dia do teste ainda em andamento/);assert.match(tomorrow,/Aguardando o relatório de dias encerrados/);
   data.config.enabled=false;assert.doesNotMatch(photoPanelBody(data),/Teste ativo com cobertura parcial/);
 });
+
+test('authorized traffic batch shows its own progress without pretending the daily queue is unlocked',()=>{
+ const data=base();data.config.enabled=true;data.ai={enabled:true,totalArticles:177,totalImages:1397,queued:1000,processing:2,ready:200,static:194,failed:1,estimatedCostUsd:.5,lastUpdated:Date.now(),error:'Teto diário de 250 fotos atingido; a fila continua no próximo dia, sem gasto extra.'};
+ data.trafficBatch={id:'traffic-test',day:'2026-10-17',status:'active',articles:177,images:1397,prepared:177,reserved:30,ready:200,static:194,failed:1,queued:1000,processing:2,expiresAt:Date.now()+3600000};
+ const html=photoPanelBody(data);assert.match(html,/Lote dos artigos com visualizações/);assert.match(html,/177 artigos/);assert.match(html,/1.397 fotos/);assert.match(html,/lote adicional autorizado continua/);
+ assert.doesNotMatch(html,/a fila continua no próximo dia, sem gasto extra/);
+});

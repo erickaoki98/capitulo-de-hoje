@@ -42,3 +42,15 @@ test('discovery revises at most eight tracked older articles and invalidates leg
  const now=Date.now();await discoverPhotoPosts(env,now);const revised=()=>older.filter(p=>objects.get(root+'articles/'+p.id+'.json').value.images[0].status==='queued').length;
  assert.equal(revised(),8);assert.equal(bumps,1);await discoverPhotoPosts(env,now+1000);assert.equal(revised(),8);await discoverPhotoPosts(env,now+300001);assert.equal(revised(),12);assert.equal(bumps,1);
 });
+
+test('explicit traffic scope bypasses only the daily queue cap and never spends outside its fixed ids and sources',async()=>{
+ const {env,objects,posts}=harness(2);posts[0].content+='<img src="/img/outside.png">';await startPhotoBackfill(env);
+ for(const key of ['source-0.png','source-1.png','outside.png'])objects.set(key,{etag:'image',value:{}});
+ const day=new Date().toISOString().slice(0,10);objects.set('_internal/photo-ai-v3/budgets/'+day,{etag:'daily',value:{reserved:250}});
+ let reservations=0,calls=0;const scope={articleIds:[2],sources:['/img/source-1.png'],reserve:async source=>{assert.equal(source,'/img/source-1.png');reservations++;return true}};
+ const run=()=>runPhotoAI(env,Date.now(),async()=>{assert.equal(reservations,1);calls++;return model()},scope);
+ await run();await run();assert.equal(calls,1);assert.equal((await photoAIView(env)).ready,1);assert.equal((await photoAIView(env)).queued,2);
+ assert.equal(objects.get('_internal/photo-ai-v3/budgets/'+day).value.reserved,250);
+ scope.articleIds=[1];scope.reserve=async()=>false;assert.equal((await run()).status,'outside_scope');assert.equal(calls,1);
+ scope.sources=['/img/source-0.png'];assert.equal((await run()).status,'batch_budget');assert.equal(calls,1);
+});

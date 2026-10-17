@@ -83,21 +83,24 @@ export async function photoAIView(env:Env):Promise<PhotoAIView>{
 }
 async function reserveDaily(env:Env,now:number){const key=PHOTO_AI_ROOT+'budgets/'+new Date(now).toISOString().slice(0,10),old=await env.IMAGES.get(key),budget=old?await old.json<{reserved:number}>():{reserved:0};if(budget.reserved>=PHOTO_AI_DAILY_MAX)return false;return !!await env.IMAGES.put(key,JSON.stringify({reserved:budget.reserved+1,reservedUsd:(budget.reserved+1)*.02,maxImages:PHOTO_AI_DAILY_MAX,maxReservedUsd:PHOTO_AI_DAILY_MAX*.02}),{...privateOptions,onlyIf:old?{etagMatches:old.etag}:{etagDoesNotMatch:'*'}});}
 interface CachedImage {status:'processing'|'ready'|'static'|'failed';owner:number;at:number;result?:PhotoAIResult;error?:string;partialCost?:number}
+export interface PhotoAIRunScope {articleIds:number[];sources:string[];reserve:(source:string)=>Promise<boolean>}
 /** Bounded processor with serialized claims and at most four concurrent photos. Reservations survive errors and expired executions; uncertain API calls are never repeated. */
-export async function runPhotoAI(env:Env,now=Date.now(),analyze:typeof analyzePhoto=analyzePhoto):Promise<{status:string;source?:string;view?:PhotoAIView}>{
+export async function runPhotoAI(env:Env,now=Date.now(),analyze:typeof analyzePhoto=analyzePhoto,scope?:PhotoAIRunScope):Promise<{status:string;source?:string;articleId?:number;view?:PhotoAIView}>{
   const state=await read<State>(env,STATE);if(!state?.enabled)return {status:'disabled'};if(!env.OPENAI_API_KEY)return {status:'not_configured'};
   const lock=await acquire(env,LEASE,now,180000);if(!lock)return {status:'limited'};
   let released=false;
   try{
     const fresh=await read<State>(env,STATE);if(!fresh?.enabled)return {status:'disabled'};
-    const pending=fresh.articles.filter(a=>a.total>a.ready+a.static+a.failed);
+    const pending=fresh.articles.filter(a=>a.total>a.ready+a.static+a.failed&&(!scope||scope.articleIds.includes(a.id)));
+    if(scope)pending.sort((a,b)=>scope.articleIds.indexOf(a.id)-scope.articleIds.indexOf(b.id));
     if(!pending.length)return {status:'complete'};
     const processing=fresh.articles.reduce((n,a)=>n+a.processing,0);
     const stale=pending.find(a=>a.processing>0&&a.updatedAt<now-180000);
     if(processing>=4&&!stale)return {status:'limited'};
     const next=stale||pending.find(a=>a.total>a.ready+a.static+a.failed+a.processing)||pending[0];
     const job=await read<ArticleJob>(env,PHOTO_AI_ROOT+'articles/'+next.id+'.json');if(!job)throw Error('Artigo da fila não encontrado.');
-    const image=job.images.find(i=>i.status==='processing'&&i.at<now-180000)||job.images.find(i=>i.status==='queued')||job.images.find(i=>i.status==='processing');if(!image)return {status:'reconciled'};
+    const scopedImages=scope?job.images.filter(i=>scope.sources.includes(i.source)):job.images;
+    const image=scopedImages.find(i=>i.status==='processing'&&i.at<now-180000)||scopedImages.find(i=>i.status==='queued')||scopedImages.find(i=>i.status==='processing');if(!image)return {status:scope?'outside_scope':'reconciled',articleId:job.id};
     const cacheKey=PHOTO_AI_ROOT+'images/'+PHOTO_AI_VERSION+'/'+image.source.slice(5)+'.json';let cached=await read<CachedImage>(env,cacheKey);
     if(cached?.status==='processing'&&cached.at>now-180000)return {status:'limited'};
     if(!cached){
@@ -105,7 +108,8 @@ export async function runPhotoAI(env:Env,now=Date.now(),analyze:typeof analyzePh
       if(!published){await changeJob(env,job.id,latest=>{if(!latest)return null;for(const pending of latest.images)if(pending.status==='queued'||pending.status==='processing'){pending.status='static';pending.reason='Artigo fora de publicação.';}return latest;});return {status:'unpublished'};}
       const source=await env.IMAGES.get(image.source.slice(5));if(!source){image.status='static';image.reason='Imagem local ainda indisponível.';await saveProgress(env,job,image);return {status:'static',source:image.source};}
       if((source as any).size>4000000){image.status='static';image.reason='Imagem acima do limite de análise.';await saveProgress(env,job,image);return {status:'static',source:image.source};}
-      if(!await reserveDaily(env,now)){await mutate(env,s=>{s.error='Teto diário de 250 fotos atingido; a fila continua no próximo dia, sem gasto extra.';});return {status:'budget'};}
+      if(scope&&!await scope.reserve(image.source))return {status:'batch_budget',source:image.source};
+      if(!scope&&!await reserveDaily(env,now)){await mutate(env,s=>{s.error='Teto diário de 250 fotos atingido; a fila continua no próximo dia, sem gasto extra.';});return {status:'budget'};}
       if(fresh.error?.startsWith('Teto diário'))await mutate(env,s=>{if(s.error?.startsWith('Teto diário'))delete s.error;});
       cached={status:'processing',owner:job.id,at:now};const reservation=await env.IMAGES.put(cacheKey,JSON.stringify(cached),{...privateOptions,onlyIf:{etagDoesNotMatch:'*'}});if(!reservation)return {status:'limited'};
       image.status='processing';image.at=now;await saveProgress(env,job,image);

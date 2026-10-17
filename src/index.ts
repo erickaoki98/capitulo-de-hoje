@@ -1,3 +1,4 @@
+import {preparePhotoTraffic,runPhotoTraffic,photoTrafficView} from './photoAITraffic.ts';
 import {startPhotoBackfill,discoverPhotoPosts,runPhotoAI,runScheduledPhotoAI,photoAIView,enqueuePhotoPost} from './photoAI.ts';
 import {parsePhotoConfig} from './photoExperiment.ts';
 import { handleAdSenseRoute } from './adsenseRoutes.ts';
@@ -1188,6 +1189,9 @@ ${urls.join('\n')}
         // Authenticated operational endpoints: queue state is persisted before any paid work.
         if(pathname==='/api/photo-ai/report-status'&&request.method==='GET')return json({experiment:parsePhotoConfig(await getSetting(env.DB,'photo.experiment')),reports:await photoReportsView(env)});
         if(pathname==='/api/photo-ai/sync-reports'&&request.method==='POST')return json({status:await syncPhotoReports(env),reports:await photoReportsView(env)});
+        if(pathname==='/api/photo-ai/traffic-status'&&request.method==='GET')return json(await photoTrafficView(env));
+        if(pathname==='/api/photo-ai/traffic-prepare'&&request.method==='POST')return json(await preparePhotoTraffic(env));
+        if(pathname==='/api/photo-ai/traffic-run'&&request.method==='POST')return json(await runPhotoTraffic(env));
         if(pathname==='/api/photo-ai/status'&&request.method==='GET')return json(await photoAIView(env));
         if(pathname==='/api/photo-ai/backfill'&&request.method==='POST')return json(await startPhotoBackfill(env));
         if(pathname==='/api/photo-ai/run'&&request.method==='POST')return json(await runPhotoAI(env));

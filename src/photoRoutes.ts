@@ -1,3 +1,4 @@
+import {photoTrafficView} from './photoAITraffic.ts';
 import {photoAIView} from './photoAI.ts';
 import type { Env } from './types';
 import { getSetting, setSetting } from './db';
@@ -10,7 +11,7 @@ import { ANALYTICS_SCOPE, photoReportsConfigured, photoReportsView, syncPhotoRep
 import { parsePhotoMaps, parseShots, validSource, type PhotoMaps } from './photoMaps.ts';
 
 export const PHOTO_PANEL_PATH = '/admin/teste-fotos';
-export interface PhotoPanelData { ai?: {enabled:boolean;totalArticles:number;totalImages:number;queued:number;processing:number;ready:number;static:number;failed:number;estimatedCostUsd:number;lastUpdated:number;error?:string}; config: PhotoExperimentConfig; maps: PhotoMaps; reports: PhotoReportsView; adArm: string; device: string }
+export interface PhotoPanelData { trafficBatch?: Awaited<ReturnType<typeof photoTrafficView>>; ai?: {enabled:boolean;totalArticles:number;totalImages:number;queued:number;processing:number;ready:number;static:number;failed:number;estimatedCostUsd:number;lastUpdated:number;error?:string}; config: PhotoExperimentConfig; maps: PhotoMaps; reports: PhotoReportsView; adArm: string; device: string }
 const headers = { 'Cache-Control':'private, no-store', 'Referrer-Policy':'same-origin', 'X-Content-Type-Options':'nosniff', 'X-Frame-Options':'SAMEORIGIN' };
 const redirect = (location: string, extra: Record<string,string> = {}) => new Response(null,{status:303,headers:{...headers,Location:location,...extra}});
 
@@ -27,7 +28,7 @@ export async function handlePhotoRoute(request: Request, env: Env, authed: boole
     if(reports.snapshot?.testId!==config.id) reports.snapshot=null;
     const messages: Record<string,string>={saved:'Configuração salva.',map_saved:'Mapa de enquadramentos aprovado e salvo.',map_locked:'Pause o teste antes de revisar os enquadramentos.',ready:'Conexão verificada. Os resultados disponíveis foram consultados; a comparação usa somente dias encerrados.',limited:'Aguarde antes de atualizar novamente.',error:'A atualização falhou. O último relatório válido foi preservado.',not_connected:'Conecte o Analytics para atualizar.',connected:'Analytics conectado para leitura. Atualize as métricas.',oauth_error:'A conexão não foi concluída. Use uma conta com acesso de leitura ao Analytics do Capítulo de Hoje.'};
     Object.assign(messages,{oauth_api_disabled:'Ative Google Analytics Admin API e Google Analytics Data API no projeto Google Cloud do aplicativo.',oauth_access_denied:'Esta conta não confirmou acesso de leitura à propriedade Analytics do Capítulo de Hoje. Conecte com a conta que já administra essa propriedade.',oauth_expired:'A autorização Google expirou. Inicie a conexão novamente pelo painel.'});
-    const data:PhotoPanelData={config,ai:await photoAIView(env),maps:parsePhotoMaps(rawMaps),reports,adArm:['adsense','nativo','(not set)'].includes(url.searchParams.get('anuncios')||'')?url.searchParams.get('anuncios')!:'',device:['mobile','desktop','tablet'].includes(url.searchParams.get('aparelho')||'')?url.searchParams.get('aparelho')!:''};
+    const data:PhotoPanelData={trafficBatch:await photoTrafficView(env),config,ai:await photoAIView(env),maps:parsePhotoMaps(rawMaps),reports,adArm:['adsense','nativo','(not set)'].includes(url.searchParams.get('anuncios')||'')?url.searchParams.get('anuncios')!:'',device:['mobile','desktop','tablet'].includes(url.searchParams.get('aparelho')||'')?url.searchParams.get('aparelho')!:''};
     return new Response(render(data,messages[url.searchParams.get('status')||'']),{headers:{...headers,'Content-Type':'text/html; charset=utf-8'}});
   }
   if(url.pathname===PHOTO_PANEL_PATH+'/config' && request.method==='POST') {
