@@ -69,7 +69,7 @@ test('aggregate computes ratios from sums with optional ad arm and device filter
 test('GET is storage-only, disconnected/unconfigured never calls Google and hides tokens',async()=>{
   await withFetch(()=>{throw Error('GET cannot call Google');},async()=>{
     const e=env();assert.equal((await api.photoReportsView(e)).connected,false);assert.equal(await api.syncPhotoReports(e,now),'not_connected');
-    await connected(e);const view=await api.photoReportsView(e);assert.equal(view.email,'private@example.com');assert.equal(view.connected,true);assert.ok(!JSON.stringify(view).includes('private-refresh'));
+    await connected(e);const view=await api.photoReportsView(e);assert.equal(view.email,'private@example.com');assert.equal(view.connected,true);assert.equal(view.timeZone,'America/Sao_Paulo');assert.ok(!JSON.stringify(view).includes('private-refresh'));
     const disabled={...e,ADSENSE_CLIENT_ID:undefined,IMAGES:{get(){throw Error('unconfigured must not read R2');}}};assert.equal((await api.photoReportsView(disabled)).configured,false);assert.equal(await api.syncPhotoReports(disabled,now),'not_connected');
   });
 });

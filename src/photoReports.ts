@@ -34,7 +34,7 @@ export interface PhotoReportSnapshot {
 }
 export interface PhotoSyncGuard { nextAttemptAt: number; startedAt: number; status: 'syncing' | 'ready' | 'error'; error?: string }
 export interface PhotoReportsView {
-  configured: boolean; connected: boolean; email?: string;
+  configured: boolean; connected: boolean; email?: string; timeZone?: string;
   snapshot: PhotoReportSnapshot | null; guard: PhotoSyncGuard | null; readiness: PhotoReadiness | null; error?: string;
 }
 export class PhotoReportsError extends Error {
@@ -183,7 +183,7 @@ export async function photoReportsView(env: Env): Promise<PhotoReportsView> {
     if (snapshot && (!readiness?.revenueLinked || snapshot.publisherId !== readiness.publisherId || snapshot.revenueValidFrom !== readiness.validFrom)) {
       snapshot = {...snapshot,revenueLinked:false,revenueStatus:readiness?.revenueLinked?'link_unverified':readiness?.revenueStatus??'link_unverified',rows:snapshot.rows.map(row=>({...row,revenue:null})),warnings:[...snapshot.warnings,'A verificação mais recente não confirma receita disponível para o vínculo e período deste relatório. Os dados de engajamento foram preservados.']};
     }
-    return {...base,connected:true,email:connection.email,snapshot,readiness:readiness?{checkedAt:readiness.checkedAt,revenueLinked:readiness.revenueLinked,validFrom:readiness.validFrom,publisherId:readiness.publisherId,revenueStatus:readiness.revenueStatus}:null,guard:guard?await guard.json<PhotoSyncGuard>():null};
+    return {...base,connected:true,email:connection.email,timeZone:connection.timeZone,snapshot,readiness:readiness?{checkedAt:readiness.checkedAt,revenueLinked:readiness.revenueLinked,validFrom:readiness.validFrom,publisherId:readiness.publisherId,revenueStatus:readiness.revenueStatus}:null,guard:guard?await guard.json<PhotoSyncGuard>():null};
   } catch (e) { return {...base,error:safeError(e)}; }
 }
 async function revenueLink(token: string, publisherId: string): Promise<{linked: boolean; status: RevenueStatus}> {

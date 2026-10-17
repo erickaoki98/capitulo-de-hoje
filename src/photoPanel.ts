@@ -1,10 +1,10 @@
 import type { PhotoPanelData } from './photoRoutes.ts';
-import { aggregatePhotoRows } from './photoReports.ts';
+import { aggregatePhotoRows, photoReportPeriod } from './photoReports.ts';
 
 const escape=(value:unknown)=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
 const n=(value:number|null|undefined)=>value==null?'—':value.toLocaleString('pt-BR',{maximumFractionDigits:2});
 const pct=(value:number|null)=>value==null?'—':value.toLocaleString('pt-BR',{style:'percent',maximumFractionDigits:1});
-export function photoPanelBody(data:PhotoPanelData,message?:string):string {
+export function photoPanelBody(data:PhotoPanelData,message?:string,now=Date.now()):string {
   const {config,reports,adArm,device}=data, snapshot=reports.snapshot;
   const totals=aggregatePhotoRows(snapshot?.rows??[],{adArm,device});
   const revenueRows=(snapshot?.rows??[]).filter(row=>row.revenue!==null&&(!adArm||row.adArm===adArm)&&(!device||row.device===device));
@@ -13,11 +13,13 @@ export function photoPanelBody(data:PhotoPanelData,message?:string):string {
   const totalSessions=totals.reduce((sum,total)=>sum+total.sessions,0);
   const stamp=(time:number)=>new Date(time).toLocaleString('pt-BR',{timeZone:'America/Sao_Paulo'});
   const money=(value:number|null|undefined)=>value==null||!snapshot?.currency?'—':value.toLocaleString('pt-BR',{style:'currency',currency:snapshot.currency});
-  const stale=!!snapshot && Date.now()-snapshot.generatedAt>2*3600000;
+  const stale=!!snapshot && now-snapshot.generatedAt>2*3600000;
   const readiness=reports.readiness, ai=data.ai;
   const revenueReady=!!readiness?.revenueLinked&&readiness.revenueStatus!=='revenue_restricted';
   const aiCost=ai&&(ai.estimatedCostUsd>0||ai.ready+ai.static+ai.failed>0)?ai.estimatedCostUsd.toLocaleString('pt-BR',{style:'currency',currency:'USD',minimumFractionDigits:4,maximumFractionDigits:4}):'—';
   const started=!!config.startedAt;
+  const firstDay=started&&reports.connected&&!!reports.timeZone&&!photoReportPeriod(reports.timeZone,config.startedAt,now);
+  const waiting=!started?'Aguardando início do teste e coleta.':!reports.connected?'Aguardando conexão de leitura com o Analytics para exibir os resultados.':firstDay?`Primeiro dia do teste ainda em andamento no fuso ${escape(reports.timeZone)}. A comparação inclui apenas dias encerrados e começará a ser consultada após a virada do dia; o Analytics pode atrasar o processamento. A ausência de relatório não significa ausência de acessos.`:'Aguardando o relatório de dias encerrados. O Analytics pode atrasar o processamento; use “Verificar conexão e atualizar” para consultar o estado.';
   const status=config.enabled?'Em andamento':started?'Pausado':'Ainda não iniciado';
   const select=(name:string,current:string,options:[string,string][])=>`<select name="${name}">${options.map(([value,label])=>`<option value="${escape(value)}"${value===current?' selected':''}>${escape(label)}</option>`).join('')}</select>`;
   const hasData=!!snapshot?.rows.length;
@@ -34,12 +36,13 @@ export function photoPanelBody(data:PhotoPanelData,message?:string):string {
       <section class="photo-card"><h3>Analytics</h3><p class="photo-big">${reports.connected?'Conectado':'A conectar'}</p><p class="photo-muted">${reports.email?escape(reports.email):'Leitura da propriedade Capítulo de Hoje.'}</p></section>
       <section class="photo-card"><h3>Receita AdSense por versão</h3><p class="photo-big">${revenueReady?'Vínculo verificado':'Indisponível'}</p><p class="photo-muted">${revenueReady?'Coleta após a preparação do vínculo; dias completos e com acesso à receita.':readiness?.revenueStatus==='revenue_restricted'?'A permissão desta conta restringe a leitura de receita. O engajamento continua disponível.':'O AdSense precisa estar vinculado à mesma propriedade do Analytics. Sem vínculo, não tratamos receita como zero.'}</p></section>
     </div>
+    ${config.enabled&&ai?`<div class="photo-note" role="status"><strong>${ai.queued+ai.processing>0?'Teste ativo com cobertura parcial':'Teste ativo nas fotos elegíveis'}</strong><p>${n(ai.ready)} de ${n(ai.totalImages)} fotos têm recortes aprovados para a versão B. ${n(ai.queued)} fotos aguardam e ${n(ai.processing)} estão em análise. As demais mantêm a original quando não há cortes seguros ou ocorre falha. A divisão 50% / 50% vale para navegadores; estar no grupo B não garante animação em toda foto.</p>${ai.error?`<p>${escape(ai.error)}</p>`:''}</div>`:''}
     ${(reports.error||reports.guard?.error)?`<div class="photo-note photo-error" role="alert">${escape(reports.error||reports.guard?.error)}</div>`:''}
     ${stale?'<div class="photo-note">Relatório anterior: a última atualização tem mais de duas horas. Confira a conexão antes de comparar resultados.</div>':''}
     ${snapshot?.warnings.map(w=>`<div class="photo-note">${escape(w)}</div>`).join('')||''}
     <section class="photo-card"><h2>Foto estática × recortes animados</h2>
       <form class="photo-filters" method="GET" action="/admin/teste-fotos"><label>Anúncios${select('anuncios',adArm,[['','Todos os grupos'],['adsense','Somente AdSense'],['nativo','Somente nativos'],['(not set)','Sem grupo de anúncios']])}</label><label>Aparelho${select('aparelho',device,[['','Todos'],['mobile','Celular'],['desktop','Computador'],['tablet','Tablet']])}</label><button type="submit">Aplicar filtros</button></form>
-      <p class="photo-muted">${snapshot?`Período: ${escape(snapshot.start)} a ${escape(snapshot.end)} · Atualizado em ${stamp(snapshot.generatedAt)}.`:`${!started?'Aguardando início do teste e coleta.':!reports.connected?'Aguardando conexão de leitura com o Analytics para exibir os resultados.':'Aguardando a primeira coleta de resultados.'} Os acessos anteriores sem grupo A/B ficam fora da comparação.`}</p>
+      <p class="photo-muted">${snapshot?`Período: ${escape(snapshot.start)} a ${escape(snapshot.end)} · Atualizado em ${stamp(snapshot.generatedAt)}.`:`${waiting} Os acessos anteriores sem grupo A/B ficam fora da comparação.`}</p>
       <div class="photo-table-wrap"><table><thead><tr><th scope="col">Métrica</th><th scope="col">A · Foto estática</th><th scope="col">B · Recortes animados</th></tr></thead><tbody>
       ${row('Visualizações',values(t=>n(t.views)))}
       ${row('Sessões',values(t=>n(t.sessions)))}
@@ -51,7 +54,7 @@ export function photoPanelBody(data:PhotoPanelData,message?:string):string {
       ${row('Taxa de engajamento',values(t=>pct(t.engagementRate)))}
       ${row('Páginas por sessão',values(t=>n(t.sessions?t.views/t.sessions:null)))}
       </tbody></table></div>
-      <p class="photo-muted">${hasData?'Resultados descritivos; ainda não declaramos um vencedor ou significância estatística.':'Ainda não há amostra para comparar as versões.'} Tempo de engajamento considera uso em primeiro plano; trocar um enquadramento não conta como interação.</p>
+      <p class="photo-muted">${hasData?'Resultados descritivos; ainda não declaramos um vencedor ou significância estatística.':snapshot?'O relatório consultado ainda não contém sessões dos grupos nos filtros selecionados.':'O relatório ainda não está disponível para comparar as versões.'} Tempo de engajamento considera uso em primeiro plano; trocar um enquadramento não conta como interação.</p>
       <p class="photo-muted">A divisão observada usa sessões; um navegador pode iniciar várias sessões. Engajamento e permanência são indicadores indiretos: este relatório não mede a retenção de retorno.</p>
       <p class="photo-muted">${revenueDays.length?`Receita: ${escape(revenueDays[0])} a ${escape(revenueDays.at(-1))}, somente nas datas válidas disponíveis. Os cálculos de receita por mil usam visualizações e sessões dessas mesmas datas.`:'Receita indisponível até haver dias completos com vínculo e permissão confirmados.'} Não há rateio ou estimativa de receita entre versões.</p>
       <p class="photo-muted">A receita por mil usa visualizações do Analytics. O teste de anúncios continua separado; use o filtro “Somente AdSense” para comparar fotos dentro do mesmo tipo de monetização. Vendas e receita dos banners próprios não são atribuídas por este relatório.</p>
@@ -61,7 +64,7 @@ export function photoPanelBody(data:PhotoPanelData,message?:string):string {
       <form method="POST" action="/admin/teste-fotos/sync"><button type="submit"${!reports.connected?' disabled':''}>Verificar conexão e atualizar</button></form>
       <a class="photo-link" href="/admin/teste-fotos">Atualizar estado do painel</a>
       <a class="photo-link" href="/admin/adsense">Receita geral do AdSense</a>
-    </div><p class="photo-muted">${reports.configured?'A conexão solicita somente leitura do Analytics e usa a mesma conta que tem acesso à propriedade do blog.':'O cliente Google do blog ainda precisa estar configurado para conectar o Analytics.'} Atualização automática por hora; falhas preservam o último relatório válido.</p>
+    </div><p class="photo-muted">${reports.configured?'A conexão solicita somente leitura do Analytics e usa a mesma conta que tem acesso à propriedade do blog.':'O cliente Google do blog ainda precisa estar configurado para conectar o Analytics.'} Atualização automática por hora; falhas preservam o último relatório válido. ${reports.guard?.status==='ready'?'Última verificação da conexão: '+stamp(reports.guard.startedAt)+'. Uma verificação bem-sucedida pode ainda não ter um relatório disponível.':''}</p>
     </section>
     <section class="photo-card"><h2>Enquadramento automático</h2>
       <p>${ai?.enabled?'Análise automática ativa.':'Aguardando a preparação automática.'} Padrão aprovado: retratos do ombro para cima, rosto centralizado e margem abaixo do queixo. Os enquadramentos ficam persistidos no servidor e são reutilizados nas visitas. Durante a revisão dos mapas antigos, a foto original é preservada.</p>

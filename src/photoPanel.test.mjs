@@ -29,3 +29,17 @@ test('AI cost is unavailable before any analysis and preserves real zero after c
   Object.assign(data.ai,{queued:1,static:1});
   assert.match(photoPanelBody(data),/Custo estimado acumulado de análise \(uso confirmado\): US\$\s*0,0000/);
 });
+
+
+test('active first-day test distinguishes unavailable reports from zero traffic and partial animation coverage',()=>{
+  const data=base();data.config={enabled:true,id:'photo-v1',startedAt:Date.parse('2026-10-16T20:49:20Z'),share:50};
+  data.reports={...data.reports,configured:true,connected:true,timeZone:'America/Sao_Paulo',guard:{status:'ready',startedAt:Date.parse('2026-10-17T01:00:00Z')}};
+  data.ai={enabled:true,totalArticles:53,totalImages:424,queued:250,processing:0,ready:22,static:151,failed:1,estimatedCostUsd:.3748,lastUpdated:Date.now(),error:'Teto diário de 250 fotos atingido; a fila continua no próximo dia, sem gasto extra.'};
+  const html=photoPanelBody(data,undefined,Date.parse('2026-10-17T01:53:00Z'));
+  assert.match(html,/Teste ativo com cobertura parcial/);assert.match(html,/22 de 424 fotos/);assert.match(html,/250 fotos aguardam/);
+  assert.match(html,/Primeiro dia do teste ainda em andamento/);assert.match(html,/America\/Sao_Paulo/);assert.match(html,/ausência de relatório não significa ausência de acessos/);
+  assert.doesNotMatch(html,/Ainda não há amostra|Métricas atualizadas/);
+  const tomorrow=photoPanelBody(data,undefined,Date.parse('2026-10-17T04:00:00Z'));
+  assert.doesNotMatch(tomorrow,/Primeiro dia do teste ainda em andamento/);assert.match(tomorrow,/Aguardando o relatório de dias encerrados/);
+  data.config.enabled=false;assert.doesNotMatch(photoPanelBody(data),/Teste ativo com cobertura parcial/);
+});

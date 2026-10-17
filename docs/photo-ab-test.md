@@ -67,3 +67,9 @@ Os mapas legados não possuem as caixas semânticas da cabeça e não podem ser 
 O A/B conserva seu identificador, divisão e histórico. O período de troca da composição inclui fotos estáticas temporárias e deve ser tratado como transição ao interpretar resultados; a mudança de enquadramento não prova melhora de engajamento ou receita.
 
 Publicação inicial confirmada pelo workflow oficial `38988534467` (`7398049`). O artigo `30816` passou a servir um mapa `luna-shoulders-v1` com três quadros; o artigo canônico mostrado pelo usuário deixou de servir mapas legados enquanto aguarda revisão. Verificação final: 230 testes e TypeScript, dry-run e paridade geométrica com todos os 19 candidatos da prévia aprovada. A conferência também corrigiu o aviso de orçamento do dia anterior: uma nova reserva diária válida remove somente esse aviso antigo, preservando outros erros e os limites de gasto.
+
+### Diagnóstico do painel em 16/10/2026, 22:53 (São Paulo)
+
+O A/B estava habilitado e a página pública do artigo 30816 confirmou troca real entre os quadros aprovados. A cobertura após a revisão era parcial: 22 fotos animáveis, 250 na fila, 151 estáticas e uma falha, entre 424 fotos de 53 artigos. A reserva de 250 análises do dia UTC 2026-10-17 já estava consumida; a próxima janela abre em 17/10 às 21h de São Paulo. O limite foi preservado, sem disparar novas chamadas de diagnóstico ou reiniciar o teste.
+
+A tabela vazia ainda não era uma medição de zero acessos: não havia dia encerrado desde o início do experimento no fuso da propriedade. O painel agora separa teste ativo, cobertura das fotos, disponibilidade dos relatórios e vínculo de receita. Explica o primeiro dia e mostra a última verificação da conexão, sem chamá-la de métricas atualizadas quando não há relatório. O AdSense continua sem vínculo confirmado. Verificação da alteração: 231 testes, TypeScript e dry-run aprovados.
