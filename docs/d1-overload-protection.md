@@ -26,3 +26,5 @@ Filtrar logs por `[d1-pressure]`, motivos `budget`, `slow`, `overload`, `error`;
 - Produção: EXPLAIN confirmou `SCAN posts USING COVERING INDEX idx_posts_ranking_metadata`; consulta limitada retornou 13.879 registros em 37,24 ms. Comparação indicativa com média histórica de 1.346 ms; não é garantia para toda carga futura.
 
 - O painel distingue a mensagem D1 persistida na fila de uma verificação de saúde atual. O registro original e as falhas das análises são preservados, sem nova cobrança.
+
+- Publicado via Wrangler com check:deploy obrigatório: Worker `1090d848-58db-44f0-8997-f60075c4a8dd`, código `b0af58f`. Página inicial, artigo com 5 cards e alternativas de imagem, e painel autenticado verificados no navegador. As execuções GitHub ficaram na fila; foram solicitados cancelamentos das execuções desta tarefa para evitar deploy duplicado.
