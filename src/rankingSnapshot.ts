@@ -25,7 +25,7 @@ const EMPTY: RankingSnapshot = { generatedAt: 0, top48h: [], top24h: [] };
 export const VIEW_SQL = `SELECT bucket, path, count
   FROM pageviews_hourly INDEXED BY idx_ph_bucket_path_count
   WHERE bucket >= ? ORDER BY bucket DESC LIMIT ?`;
-export const POST_SQL = `SELECT slug, category, draft FROM posts ORDER BY id LIMIT ?`;
+export const POST_SQL = `SELECT slug, category, draft FROM posts INDEXED BY idx_posts_ranking_metadata ORDER BY id LIMIT ?`;
 export const ARCHIVE_SQL = `SELECT category_key FROM archived_categories LIMIT ?`;
 
 function bounded<T>(rows: T[], limit: number): T[] {

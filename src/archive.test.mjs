@@ -295,7 +295,7 @@ test('rotas públicas usam getters e rankings públicos, enquanto admin mantém 
   assert.match(publicPage, /getPublicPostBySlug\(env\.DB,\s*slug\)/);
   assert.doesNotMatch(publicPage, /topPublicPostsByViews\(env\.DB/);
   assert.match(publicPage, /readRankingSnapshot\(env\.IMAGES/);
-  assert.equal((publicPage.match(/getPublicPostsBySlugList\(env\.DB/g) ?? []).length, 2);
+  assert.equal((publicPage.match(/getPublicPostsBySlugList\(env\.DB/g) ?? []).length, 3);
   assert.doesNotMatch(publicPage, /\btopPostsByViews\(env\.DB/);
 
   const dashboard = section(source, '// ===== Admin: login', '// ===== Admin: Posts list');

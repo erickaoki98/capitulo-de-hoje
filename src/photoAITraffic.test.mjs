@@ -1,7 +1,9 @@
-import test from 'node:test';import assert from 'node:assert/strict';import {build} from 'esbuild';import {createHash} from 'node:crypto';
+import test, {beforeEach} from 'node:test';import assert from 'node:assert/strict';import {build} from 'esbuild';import {createHash} from 'node:crypto';
 const built=await build({entryPoints:['src/photoAITraffic.ts'],bundle:true,write:false,format:'esm',platform:'neutral',mainFields:['module','main'],plugins:[{name:'no-live-images',setup(b){b.onResolve({filter:/^@cf-wasm\/photon$/},()=>({path:'photon',namespace:'test'}));b.onLoad({filter:/.*/,namespace:'test'},()=>({contents:'export class PhotonImage {} export const SamplingFilter={};export function crop(){}export function resize(){}',loader:'js'}));}}]});
 const api=await import('data:text/javascript;base64,'+Buffer.from(built.outputFiles[0].text).toString('base64'));
 const now=Date.parse('2026-10-17T18:00:00Z');
+// The fixture expires in six hours; runtime uses Date.now again at reservation.
+beforeEach(t=>t.mock.timers.enable({apis:['Date'],now}));
 function harness(n=10){const objects=new Map();const posts=Array.from({length:n},(_,i)=>({id:i+1,slug:'p-'+i,title:'Title',draft:0,pub_date:now-86400000,content:`<img src="/img/p-${i}.jpg">`}));
  const manifest={id:'traffic-test',day:'2026-10-17',createdAt:now,expiresAt:now+6*3600000,articleIds:posts.map(p=>p.id),sources:posts.map((_,i)=>'/img/p-'+i+'.jpg'),preparedIds:[],reservedSources:[],skippedIds:[],status:'requested'};
  const bucket={async get(k){const o=objects.get(k);return o?{etag:o.etag,json:async()=>structuredClone(o.value)}:null},async put(k,v,opts){const old=objects.get(k);if(opts?.onlyIf?.etagMatches&&old?.etag!==opts.onlyIf.etagMatches||opts?.onlyIf?.etagDoesNotMatch==='*'&&old)return null;const item={etag:createHash('sha256').update(v).digest('hex'),value:JSON.parse(v)};objects.set(k,item);return item}};

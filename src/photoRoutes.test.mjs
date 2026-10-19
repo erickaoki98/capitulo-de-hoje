@@ -9,7 +9,7 @@ const built = await build({entryPoints:['src/index.ts'],bundle:true,write:false,
 const {default:worker} = await import('data:text/javascript;base64,'+Buffer.from(built.outputFiles[0].text).toString('base64'));
 function harness(){
   const settings=new Map(), reads=[];
-  const env={SESSION_SECRET:'test-only-session',SITE_TITLE:'Capítulo de Hoje',SITE_DESCRIPTION:'Teste',CANONICAL_URL:'https://example.com',DB:{prepare(sql){reads.push(sql);let args=[];return {bind(...a){args=a;return this;},async first(){return settings.has(args[0])?{value:settings.get(args[0])}:null;},async all(){return {results:[]};},async run(){if(/INSERT.*settings/is.test(sql))settings.set(args[0],args[1]);return {meta:{}};}};}},IMAGES:{async get(){return null;}}};
+  const env={SESSION_SECRET:'test-only-session',SITE_TITLE:'Capítulo de Hoje',SITE_DESCRIPTION:'Teste',CANONICAL_URL:'https://example.com',DB:{prepare(sql){reads.push(sql);let args=[];return {bind(...a){args=a;return this;},async first(){return settings.has(args[0])?{value:settings.get(args[0])}:null;},async all(){return {results:/SELECT value FROM settings/i.test(sql)&&settings.has(args[0])?[{value:settings.get(args[0])}]:[]};},async run(){if(/INSERT.*settings/is.test(sql))settings.set(args[0],args[1]);return {meta:{}};}};}},IMAGES:{async get(){return null;}}};
   return {env,settings,reads};
 }
 const context={waitUntil(){throw Error('GET must not launch work');}};

@@ -32,10 +32,12 @@ test('fetch real: cache indisponível e URLs únicas não executam agregações 
   try{
     for(let i=0;i<25;i++){
       const tasks=[];
+      const before=queries.length;
       const res=await worker.fetch(new Request(`https://example.com/artigo?fbclid=${i}&utm_source=teste`),env,{waitUntil(p){tasks.push(p);}});
       assert.equal(res.status,200);
       assert.match(await res.text(),/Conteúdo público/);
       await Promise.all(tasks);
+      assert.ok(queries.length-before<=40,'orçamento público: no máximo 40 consultas mesmo sem cache/R2');
     }
     assert.ok(queries.length>0);
     assert.equal(queries.filter(sql=>/\bFROM\s+pageviews_hourly\b/i.test(sql)).length,0,'request de leitor jamais pode consultar histórico de pageviews');
@@ -66,4 +68,39 @@ test('cron aguarda tarefas anteriores liberarem conexões antes de descobrir e p
   const discovers=()=>queries.some(sql=>/ORDER BY p.pub_date DESC LIMIT 30/.test(sql));
   try{assert.equal(discovers(),false,'IA deve esperar ranking, relatórios e migração');}finally{release();await Promise.all(tasks);}
   assert.equal(discovers(),true);
+});
+
+
+test('heartbeat real não executa DDL e requisições repetidas não regravam visitante',async()=>{
+  const sqlite=new DatabaseSync(':memory:');
+  sqlite.exec(await readFile(new URL('../schema.sql',import.meta.url),'utf8'));
+  sqlite.exec(await readFile(new URL('../migrations/0003-settings-analytics-api.sql',import.meta.url),'utf8'));
+  sqlite.exec(await readFile(new URL('../migrations/0007_d1_cost_guard.sql',import.meta.url),'utf8'));
+  const queries=[];
+  const DB={prepare(sql){queries.push(sql);let args=[];const stmt={bind(...v){args=v;return stmt;},async run(){return {meta:sqlite.prepare(sql).run(...args)};}};return stmt;}};
+  const env={DB,SESSION_SECRET:'test',CANONICAL_URL:'https://example.com'};
+  try{
+    const before=sqlite.prepare('SELECT total_changes() AS n').get().n;
+    for(let i=0;i<20;i++){
+      const tasks=[];
+      const res=await worker.fetch(new Request('https://example.com/api/heartbeat',{method:'POST',body:JSON.stringify({vid:'visitor',path:'/artigo'})}),env,{waitUntil(p){tasks.push(p)}});
+      assert.equal(res.status,200);await Promise.all(tasks);
+    }
+    assert.equal(queries.filter(sql=>/CREATE|ALTER|DROP/i.test(sql)).length,0);
+    assert.equal(sqlite.prepare('SELECT total_changes() AS n').get().n-before,1);
+    assert.equal(sqlite.prepare('SELECT path FROM active_visitors').get().path,'/artigo');
+    assert.equal(env.DB,DB,'bindings compartilhados nunca são substituídos por proxies');
+  }finally{sqlite.close()}
+});
+
+test('pressão D1 é visível mesmo quando heartbeat preserva a resposta pública',async()=>{
+  const previous=console.warn,logs=[];console.warn=(...args)=>logs.push(args);
+  let calls=0;const tasks=[];
+  try{
+    const env={DB:{prepare(){return {bind(){return this},async run(){calls++;throw new Error('D1 DB is overloaded. private data')}}}}};
+    const res=await worker.fetch(new Request('https://example.com/api/heartbeat',{method:'POST',body:JSON.stringify({vid:'private-visitor',path:'/private-path'})}),env,{waitUntil(p){tasks.push(p)}});
+    await Promise.all(tasks);assert.equal(res.status,200);assert.equal(calls,1);
+    assert.ok(logs.some(args=>args[0]==='[d1-pressure]'&&JSON.parse(args[1]).reason==='overload'));
+    assert.doesNotMatch(JSON.stringify(logs),/private/);
+  }finally{console.warn=previous}
 });

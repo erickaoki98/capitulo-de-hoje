@@ -1,3 +1,4 @@
+import { heartbeatScript } from './heartbeat.ts';
 import { cleanTitle } from './articleTitle.ts';
 import { injectSectionRecommendations, selectSectionCandidates } from './sectionRecommendations.ts';
 import type { Env, Post, PostCard } from './types';
@@ -451,16 +452,7 @@ ${!isAdmin && cookieBanner ? `<div id="cookie-consent" style="display:none;posit
   };
 })();
 </script>` : ''}
-${!isAdmin ? `<script>
-(function(){
-  var vid = localStorage.getItem('_vid');
-  if (!vid) { vid = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem('_vid', vid); }
-  function hb(){ try { navigator.sendBeacon('/api/heartbeat', JSON.stringify({ vid: vid, path: location.pathname })); } catch(e){} }
-  hb();
-  setInterval(hb, 60000);
-  document.addEventListener('visibilitychange', function(){ if (!document.hidden) hb(); });
-})();
-</script>` : ''}
+${!isAdmin ? `<script>${heartbeatScript}</script>` : ''}
 <script>
 (function(){
   // === 0. STICKY FOOTER AD — close button + cooldown 24h ===

@@ -129,6 +129,7 @@ test('SQLite real: consulta usa índice de cobertura e LIMIT na entrada, nunca o
   assert.ok(plan.every(r=>!/TEMP B-TREE/.test(r.detail)));
   sqlite.exec("INSERT INTO pageviews_hourly VALUES ('2026-09-12T12','/a',1),('2026-09-12T11','/b',2),('2026-09-01T12','/old',1);");
   assert.equal(sqlite.prepare(VIEW_SQL).all('2026-09-10T12',1).length,1);
+  sqlite.exec('CREATE INDEX idx_posts_ranking_metadata ON posts(id,slug,category,draft)');
   const postPlan=sqlite.prepare('EXPLAIN QUERY PLAN '+POST_SQL).all(MAX_POST_ROWS+1);
   assert.ok(postPlan.every(r=>!/TEMP B-TREE/.test(r.detail)));
   sqlite.exec('DROP INDEX idx_ph_bucket_path_count');

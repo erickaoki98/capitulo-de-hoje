@@ -1,3 +1,5 @@
+import { selectSectionCandidates } from './sectionRecommendations.ts';
+import { withD1Telemetry } from './d1Telemetry.ts';
 import {preparePhotoTraffic,runPhotoTraffic,photoTrafficView,runScheduledPhotoTraffic} from './photoAITraffic.ts';
 import {startPhotoBackfill,discoverPhotoPosts,runPhotoAI,runScheduledPhotoAI,photoAIView,enqueuePhotoPost} from './photoAI.ts';
 import {parsePhotoConfig} from './photoExperiment.ts';
@@ -22,7 +24,7 @@ import {
   listApiKeys, insertApiKey, findApiKeyByHash, touchApiKey, deleteApiKey,
   countPublishedPosts, countPostsSummary, listPostsForSitemap,
   isCategoryArchived, listArchivedCategoryKeys,
-  ensureActiveVisitorsTable, recordHeartbeat, countActiveVisitors, cleanupStaleVisitors,
+  recordHeartbeat, countActiveVisitors, cleanupStaleVisitors,
   getSettingsByKeys, recordAdMixEvents, adMixStats,
 } from './db';
 import {
@@ -119,6 +121,7 @@ function validatePostInput(input: PostInput): string | null {
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    env = { ...env, DB: withD1Telemetry(env.DB, 'fetch') };
     const url = new URL(request.url);
     const { pathname } = url;
 
@@ -486,7 +489,6 @@ ${urls.join('\n')}
           return new Response(renderLogin(env, request), { headers: NO_CACHE_HEADERS });
         }
         // Carrega dados pro dashboard em paralelo
-        await ensureActiveVisitorsTable(env.DB);
         const [recent, postCounts, summary24h, top24h, activeNow] = await Promise.all([
           listPosts(env.DB, { includeDrafts: true, limit: 6 }),
           // Contagem via SQL (não derivar de uma lista limitada — travava em 500).
@@ -1045,7 +1047,6 @@ ${urls.join('\n')}
       // ============= Admin: Analytics =============
       if (pathname === '/admin/analytics' && request.method === 'GET') {
         if (!authed) return redirectToLogin();
-        await ensureActiveVisitorsTable(env.DB);
         const [s24, s7d, s30d, daily, activeNow] = await Promise.all([
           pageviewsSummary(env.DB, 24),
           pageviewsSummary(env.DB, 24 * 7),
@@ -1132,9 +1133,7 @@ ${urls.join('\n')}
           const vid = typeof body.vid === 'string' ? body.vid.slice(0, 64) : '';
           const p = typeof body.path === 'string' ? body.path.slice(0, 256) : '/';
           if (vid) {
-            ctx.waitUntil(ensureActiveVisitorsTable(env.DB).then(() =>
-              recordHeartbeat(env.DB, vid, p),
-            ).catch(() => {}));
+            ctx.waitUntil(recordHeartbeat(env.DB, vid, p).catch(() => {}));
           }
         } catch { /* ignora corpo malformado */ }
         return new Response('ok', { headers: { 'Access-Control-Allow-Origin': '*' } });
@@ -1165,7 +1164,6 @@ ${urls.join('\n')}
       if (pathname === '/api/active-visitors' && request.method === 'GET') {
         const authedApi = await requireAuth(request, env.SESSION_SECRET);
         if (!authedApi) return json({ error: 'Unauthorized' }, 401);
-        await ensureActiveVisitorsTable(env.DB);
         const count = await countActiveVisitors(env.DB);
         ctx.waitUntil(cleanupStaleVisitors(env.DB).catch(() => {}));
         return new Response(JSON.stringify({ active: count }), {
@@ -1208,7 +1206,7 @@ ${urls.join('\n')}
           'Access-Control-Allow-Headers': 'Authorization, Content-Type',
         };
 
-        const formatPost = (p: Post, views?: number) => ({
+        const formatPost = (p: Omit<Post, 'content'>, views?: number) => ({
           id: p.id,
           slug: p.slug,
           title: p.title,
@@ -1415,7 +1413,7 @@ ${urls.join('\n')}
             // Related section cards: shared 24h ranking, independent of novela.
             const trendSlugs = top24h.map((v) => v.path.replace(/^\//, ''));
             let trendingPosts = trendSlugs.length > 0
-              ? await getPublicPostsBySlugList(env.DB, trendSlugs)
+              ? await getPublicPostsBySlugList(env.DB, trendSlugs, { includeContent: true })
               : [];
             const trendOrder = new Map(trendSlugs.map((s, i) => [s, i]));
             trendingPosts = trendingPosts
@@ -1429,6 +1427,15 @@ ${urls.join('\n')}
                   if (relatedPosts.length >= 12) break;
                 }
               }
+            }
+            // Section cards need body images for missing/broken hero recovery. Footer
+            // cards only need metadata. Preserve the fallback when the 24h rank is empty/stale.
+            if (!selectSectionCandidates(trendingPosts, post.slug).length) {
+              const sectionSlugs = selectSectionCandidates(relatedPosts, post.slug).map(p => p.slug);
+              const withImages = sectionSlugs.length
+                ? await getPublicPostsBySlugList(env.DB, sectionSlugs, { includeContent: true }) : [];
+              const bySlug = new Map(withImages.map(p => [p.slug, p]));
+              relatedPosts = relatedPosts.map(p => bySlug.get(p.slug) ?? p);
             }
             ctx.waitUntil(recordPageview(env.DB, pathname).catch(() => {}));
             const resp = new Response(
@@ -1463,6 +1470,7 @@ ${urls.join('\n')}
    */
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     // Reserva global de 30 min no R2; independente do cron de imagens e do tráfego.
+    env = { ...env, DB: withD1Telemetry(env.DB, 'scheduled') };
     const ranking = refreshRankingSnapshot(env.IMAGES, env.DB);
     // AdSense reserves globally at most one attempt/hour; no D1 history scans.
     const adsense = syncReports(env);

@@ -7,6 +7,7 @@ import type {
 import type { MixEventRow, MixStatRow } from './nativeAds.ts';
 import { normalizeCategoryKey, publicPostVisibilitySql } from './archive.ts';
 
+const POST_METADATA = 'id, slug, title, description, category, tags, author, hero_image, draft, pub_date, updated_date, source_url';
 const PUBLIC_POST_VISIBILITY_SQL = publicPostVisibilitySql('p');
 
 export async function listPosts(
@@ -350,23 +351,25 @@ export async function topPublicPostsByViews(
 }
 
 /** Busca posts por slug (sem todo o content — só metadados pro card) */
-export async function getPostsBySlugList(db: D1Database, slugs: string[]): Promise<Post[]> {
+export async function getPostsBySlugList(db: D1Database, slugs: string[]): Promise<Omit<Post, 'content'>[]> {
   if (slugs.length === 0) return [];
   const placeholders = slugs.map(() => '?').join(',');
   const { results } = await db.prepare(
-    `SELECT * FROM posts WHERE slug IN (${placeholders}) AND draft = 0`,
-  ).bind(...slugs).all<Post>();
+    `SELECT ${POST_METADATA} FROM posts WHERE slug IN (${placeholders}) AND draft = 0`,
+  ).bind(...slugs).all<Omit<Post, 'content'>>();
   return results ?? [];
 }
 
 /** Busca cards públicos por slug, omitindo rascunhos e categorias arquivadas. */
-export async function getPublicPostsBySlugList(db: D1Database, slugs: string[]): Promise<Post[]> {
+export async function getPublicPostsBySlugList(
+  db: D1Database, slugs: string[], { includeContent = false }: { includeContent?: boolean } = {},
+): Promise<Omit<Post, 'content'>[]> {
   if (slugs.length === 0) return [];
   const placeholders = slugs.map(() => '?').join(',');
   const { results } = await db.prepare(
-    `SELECT p.* FROM posts AS p
+    `SELECT ${POST_METADATA.split(', ').map(c => 'p.' + c).join(', ')}${includeContent ? ', p.content' : ''} FROM posts AS p
      WHERE p.slug IN (${placeholders}) AND ${PUBLIC_POST_VISIBILITY_SQL}`,
-  ).bind(...slugs).all<Post>();
+  ).bind(...slugs).all<Omit<Post, 'content'>>();
   return results ?? [];
 }
 
@@ -804,7 +807,9 @@ export async function recordHeartbeat(db: D1Database, visitorId: string, path: s
   const now = Date.now();
   await db.prepare(
     `INSERT INTO active_visitors (visitor_id, path, last_seen) VALUES (?, ?, ?)
-     ON CONFLICT(visitor_id) DO UPDATE SET path = excluded.path, last_seen = excluded.last_seen`,
+     ON CONFLICT(visitor_id) DO UPDATE SET path = excluded.path, last_seen = excluded.last_seen
+     WHERE active_visitors.last_seen <= excluded.last_seen - 55000
+        OR active_visitors.path != excluded.path`,
   ).bind(visitorId, path, now).run();
 }
 
