@@ -16,7 +16,10 @@ export function photoPanelBody(data:PhotoPanelData,message?:string,now=Date.now(
   const stale=!!snapshot && now-snapshot.generatedAt>2*3600000;
   const readiness=reports.readiness, ai=data.ai, batch=data.trafficBatch;
   const batchActive=batch?.status==='active'&&now<batch.expiresAt;
-  const aiError=batchActive&&ai?.error?.startsWith('Teto diário')?'A fila diária está no limite; o lote adicional autorizado continua nas fotos selecionadas.':ai?.error;
+  const queueError=batchActive&&ai?.error?.startsWith('Teto diário')?'A fila diária está no limite; o lote adicional autorizado continua nas fotos selecionadas.':ai?.error;
+  const aiError=queueError&&/D1.*overloaded/i.test(queueError)
+    ? 'Registro de erro preservado da fila: '+queueError+' Este registro não confirma sobrecarga atual do banco. As análises com falha não são reiniciadas automaticamente.'
+    : queueError;
   const revenueReady=!!readiness?.revenueLinked&&readiness.revenueStatus!=='revenue_restricted';
   const aiCost=ai&&(ai.estimatedCostUsd>0||ai.ready+ai.static+ai.failed>0)?ai.estimatedCostUsd.toLocaleString('pt-BR',{style:'currency',currency:'USD',minimumFractionDigits:4,maximumFractionDigits:4}):'—';
   const started=!!config.startedAt;

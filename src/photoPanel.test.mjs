@@ -50,3 +50,10 @@ test('authorized traffic batch shows its own progress without pretending the dai
  const html=photoPanelBody(data);assert.match(html,/Lote dos artigos com visualizações/);assert.match(html,/177 artigos/);assert.match(html,/1.397 fotos/);assert.match(html,/lote adicional autorizado continua/);
  assert.doesNotMatch(html,/a fila continua no próximo dia, sem gasto extra/);
 });
+
+test('persisted D1 overload is identified as a historical queue record, never a live health check',()=>{
+ const data=base();data.config.enabled=true;data.ai={enabled:true,totalArticles:1,totalImages:1,queued:0,processing:0,ready:1,static:0,failed:0,estimatedCostUsd:.01,lastUpdated:Date.parse('2026-10-17T23:00:00Z'),error:'D1_ERROR: D1 DB is overloaded. Requests queued for too long.'};
+ const html=photoPanelBody(data);
+ assert.match(html,/Registro de erro preservado da fila/);assert.match(html,/não confirma sobrecarga atual/);assert.match(html,/D1_ERROR/);
+ assert.doesNotMatch(html,/banco recuperado|problema resolvido/i);
+});

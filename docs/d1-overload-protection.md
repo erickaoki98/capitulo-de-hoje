@@ -20,7 +20,9 @@ Alvo: Worker `capitulo-de-hoje`, domínio `capitulodehoje.com.br`, D1 `e8eae0e1-
 Filtrar logs por `[d1-pressure]`, motivos `budget`, `slow`, `overload`, `error`; cruzar `queryKey` (FNV-1a hexadecimal do SQL do código, sem parâmetros) com o trecho correspondente. Usar D1 Insights para atribuir custo/latência e identificar picos. O monitoramento não cria notificações externas ou automações.
 
 ## Validação desta entrega
-- 259 testes aprovados, checagem TypeScript dos módulos protegidos e dry-run completos aprovados.
+- 260 testes aprovados, checagem TypeScript dos módulos protegidos e dry-run completos aprovados.
 - Revisão independente encontrou o fallback de fotos e a correção foi testada antes da publicação.
 - Migration 0008 aplicada: 13.880 escritas de índice, sem alteração editorial.
 - Produção: EXPLAIN confirmou `SCAN posts USING COVERING INDEX idx_posts_ranking_metadata`; consulta limitada retornou 13.879 registros em 37,24 ms. Comparação indicativa com média histórica de 1.346 ms; não é garantia para toda carga futura.
+
+- O painel distingue a mensagem D1 persistida na fila de uma verificação de saúde atual. O registro original e as falhas das análises são preservados, sem nova cobrança.
