@@ -62,14 +62,14 @@ test('escapa título, recusa URL de imagem perigosa e não insere Teoria ou slid
  assert.match(result.html,/section-rec--text-only/);
 });
 
-test('render real substitui Em Alta, insere script uma vez e não repete cards no rodapé',async()=>{
+test('render real substitui Em Alta e não repete cards no rodapé',async()=>{
  const built=await build({entryPoints:['src/render.ts'],bundle:true,write:false,format:'esm',platform:'neutral',mainFields:['module','main']});
  const {renderPost}=await import('data:text/javascript;base64,'+Buffer.from(built.outputFiles[0].text).toString('base64'));
  const article={id:1,slug:'atual',title:'Atual',description:'Descrição',content:'<h2>Um</h2><p>Texto um.</p><h2>Dois</h2><p>Texto dois.</p>',category:'Novela A',tags:'',author:'Autor',hero_image:null,draft:0,pub_date:Date.now(),updated_date:Date.now(),source_url:null};
  const candidates=[post('a',{pub_date:Date.now()}),post('b',{pub_date:Date.now()})];
  const html=renderPost({SITE_TITLE:'Site',SITE_DESCRIPTION:'Teste'},new Request('https://example.com/atual'),article,candidates,undefined,undefined,candidates);
  assert.equal((html.match(/data-related-card/g)||[]).length,2);
- assert.equal((html.match(/src="\/related-faces.js\?v=/g)||[]).length,1);
+ assert.doesNotMatch(html, /related-faces|data-face-|section-rec__pause/);
  assert.doesNotMatch(html,/class="trend"|>Em Alta</);
  assert.equal((html.match(/href="\/a"/g)||[]).length,1);
  assert.equal((html.match(/href="\/b"/g)||[]).length,1);
@@ -151,4 +151,28 @@ test('sempre aplica dois grifos na ordem vermelho/preto nos dez títulos reais e
   assert.ok(marked.join(' ').split(/\s+/).length<title.split(/\s+/).length,title);
   assert.equal(renderSectionCard(post('amostra',{title}),1),html);
  }
+});
+
+test('foto estática tenta a alternativa uma vez e mantém o card em texto se ambas falham',async()=>{
+ const {runInNewContext}=await import('node:vm');
+ const built=await build({entryPoints:['src/render.ts'],bundle:true,write:false,format:'esm',platform:'neutral',mainFields:['module','main']});
+ const {renderPost,renderAdminAdSense,renderHome}=await import('data:text/javascript;base64,'+Buffer.from(built.outputFiles[0].text).toString('base64'));
+ const env={SITE_TITLE:'Site',SITE_DESCRIPTION:'Teste'};
+ const article=post('atual',{id:1,description:'Descrição',tags:'',author:'Autor',content:'<p>Texto.</p>',pub_date:Date.now(),updated_date:Date.now(),draft:0,category:'Novela',source_url:null});
+ const html=renderPost(env,new Request('https://example.com/atual'),article,[post('recomendado',{pub_date:Date.now(),content:'<img src="/img/alternativa.jpg">'})]);
+ const script=[...html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/g)].map(m=>m[1]).find(s=>s.includes("document.querySelectorAll('.section-rec__image')"));
+ const fallback=script.slice(script.indexOf("    document.querySelectorAll('.section-rec__image')"),script.indexOf("    var hero ="));
+ for(const alreadyBroken of [false,true]){
+  const classes=new Set(),listeners={};
+  const img={src:'/img/primeira.jpg',complete:alreadyBroken,naturalWidth:alreadyBroken?0:1024,getAttribute:()=>'/img/alternativa.jpg',addEventListener:(event,fn)=>{listeners[event]=fn},closest:()=>({classList:{add:c=>classes.add(c)}})};
+  runInNewContext(fallback,{document:{querySelectorAll:()=>[img]}});
+  if(!alreadyBroken)assert.equal(img.src,'/img/primeira.jpg');
+  if(!alreadyBroken)listeners.error();
+  assert.equal(img.src,'/img/alternativa.jpg');assert.equal(classes.size,0);
+  listeners.error();assert.ok(classes.has('section-rec--text-only'));
+ }
+ const admin=renderAdminAdSense(env,{configured:false,connected:false});
+ assert.doesNotMatch(admin,/teste-fotos|Teste de fotos/);
+ assert.match(admin,/Receita do AdSense/);
+ assert.doesNotMatch(renderHome(env,new Request('https://example.com/'),[article]),/cdh-photo|photo_ab|photo-motion/);
 });

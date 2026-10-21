@@ -3,14 +3,13 @@ import { getSessionFromRequest } from './auth';
 import { getSetting } from './db';
 import { ADSENSE_SCOPE, AdSenseError, callbackUrl, digest, exchangeToken, isConfigured, randomToken, reportsView, saveConnection, seal, syncReports, unseal } from './adsenseReports.ts';
 import type { ReportsView } from './adsenseReports.ts';
-import { ANALYTICS_SCOPE, PhotoReportsError, photoReportsConfigured, savePhotoConnection } from './photoReports.ts';
 
 const PATH = '/admin/adsense';
 const COOKIE = '__Secure-adsense-oauth';
 const headers = { 'Cache-Control': 'private, no-store', 'Referrer-Policy': 'no-referrer', 'X-Content-Type-Options': 'nosniff', 'X-Frame-Options': 'DENY' };
 const cookie = (value: string, age: number) => `${COOKIE}=${value}; Path=${PATH}; HttpOnly; Secure; SameSite=Lax; Max-Age=${age}`;
 const redirect = (location: string, extra: Record<string, string> = {}) => new Response(null, { status: 303, headers: { ...headers, Location: location, ...extra } });
-interface OAuthState { nonce: string; verifier: string; session: string; expires: number; service?: 'photo_analytics' }
+interface OAuthState { nonce: string; verifier: string; session: string; expires: number; service?: string }
 export async function handleAdSenseRoute(request: Request, env: Env, authed: boolean, render: (view: ReportsView, message?: string) => string): Promise<Response> {
   if (!authed) return redirect('/admin');
   const url = new URL(request.url);
@@ -37,29 +36,22 @@ export async function handleAdSenseRoute(request: Request, env: Env, authed: boo
   }
   if (url.pathname === PATH + '/callback' && request.method === 'GET') {
     let response: Response;
-    let destination=PATH;
     try {
-      if (!photoReportsConfigured(env) || url.origin !== new URL(env.CANONICAL_URL!).origin) throw new AdSenseError('Abra o painel no domínio principal.');
+      if (!isConfigured(env) || url.origin !== new URL(env.CANONICAL_URL!).origin) throw new AdSenseError('Abra o painel no domínio principal.');
       const raw = request.headers.get('Cookie')?.split(';').map(s => s.trim()).find(s => s.startsWith(COOKIE + '='))?.slice(COOKIE.length + 1);
       if (!raw) throw new AdSenseError('A conexão expirou. Inicie novamente pelo painel.');
       let state: OAuthState;
       try { state = await unseal<OAuthState>(env, 'oauth-state', raw); } catch { throw new AdSenseError('A conexão expirou. Inicie novamente pelo painel.'); }
       if (state.expires < Date.now() || state.nonce !== url.searchParams.get('state') || state.session !== await digest(getSessionFromRequest(request)!)) throw new AdSenseError('A conexão não corresponde à sessão administrativa atual.');
-      if(state.service==='photo_analytics') destination='/admin/teste-fotos';
-      else if(!isConfigured(env)) throw new AdSenseError('Configure a conta AdSense.');
+      if (state.service) throw new AdSenseError('A conexão expirou. Inicie novamente pelo painel.');
       if (url.searchParams.has('error')) throw new AdSenseError('A autorização Google não foi concluída. Você pode tentar novamente.');
       const code = url.searchParams.get('code');
       if (!code) throw new AdSenseError('O Google não retornou o código de autorização.');
       const token = await exchangeToken(env, { grant_type: 'authorization_code', code, redirect_uri: callbackUrl(env), code_verifier: state.verifier });
-      if(state.service==='photo_analytics') {
-        if(!token.scope?.split(' ').includes(ANALYTICS_SCOPE)) throw new AdSenseError('A permissão de leitura do Analytics não foi concedida.');
-        await savePhotoConnection(env,token);
-      } else {
-        if (!token.scope?.split(' ').includes(ADSENSE_SCOPE)) throw new AdSenseError('A permissão de leitura do AdSense não foi concedida.');
-        await saveConnection(env, token, await getSetting(env.DB, 'adsense.publisher_id') ?? '');
-      }
-      response = redirect(`${destination}?status=connected`);
-    } catch(error) { response = redirect(`${destination}?status=${error instanceof PhotoReportsError?error.oauthCode:'oauth_error'}`); }
+      if (!token.scope?.split(' ').includes(ADSENSE_SCOPE)) throw new AdSenseError('A permissão de leitura do AdSense não foi concedida.');
+      await saveConnection(env, token, await getSetting(env.DB, 'adsense.publisher_id') ?? '');
+      response = redirect(`${PATH}?status=connected`);
+    } catch { response = redirect(`${PATH}?status=oauth_error`); }
     response.headers.set('Set-Cookie', cookie('', 0));
     return response;
   }

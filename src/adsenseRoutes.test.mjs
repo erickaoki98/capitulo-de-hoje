@@ -67,12 +67,12 @@ test('successful callback validates identity, stores encrypted connection and on
  }finally{globalThis.fetch=old;}
 });
 
-test('Analytics callback distinguishes denied property access without exposing upstream details or replacing AdSense',async()=>{
- const state=await seal(e,'oauth-state',{nonce:'nonce',verifier:'pkce',expires:Date.now()+60000,session:await digest(session),service:'photo_analytics'});
- const old=globalThis.fetch;
- globalThis.fetch=async url=>String(url).includes('/token')?Response.json({access_token:'private-access',refresh_token:'private-refresh',scope:'openid email https://www.googleapis.com/auth/analytics.readonly'}):String(url).includes('userinfo')?Response.json({email:'reader@example.com',email_verified:true}):Response.json({error:{message:'upstream private details'}},{status:403});
+test('callback rejects retired service state before token exchange',async()=>{
+ const state=await seal(e,'oauth-state',{nonce:'nonce',verifier:'pkce',expires:Date.now()+60000,session:await digest(session),service:'retired-service'});
+ const old=globalThis.fetch;let calls=0;
+ globalThis.fetch=async()=>{calls++;throw Error('must not fetch');};
  try {
   const res=await handleAdSenseRoute(new Request('https://example.com/admin/adsense/callback?state=nonce&code=private-code',{headers:{Cookie:cookie+'; __Secure-adsense-oauth='+state}}),e,true,render);
-  assert.equal(res.headers.get('location'),'/admin/teste-fotos?status=oauth_access_denied');assert.equal(await res.text(),'');assert.match(res.headers.get('set-cookie'),/Max-Age=0/);
+  assert.equal(res.headers.get('location'),'/admin/adsense?status=oauth_error');assert.equal(calls,0);assert.match(res.headers.get('set-cookie'),/Max-Age=0/);
  }finally{globalThis.fetch=old;}
 });
