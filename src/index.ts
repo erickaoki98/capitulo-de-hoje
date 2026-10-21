@@ -1,3 +1,4 @@
+import { cachedImageResponse } from './imageCache.ts';
 import { selectSectionCandidates } from './sectionRecommendations.ts';
 import { withD1Telemetry } from './d1Telemetry.ts';
 import { handleAdSenseRoute } from './adsenseRoutes.ts';
@@ -13,7 +14,7 @@ import {
   createPostsBatch, upsertRedirectsBatch, existingSlugs,
   getSetting, setSetting, getAllSettings,
   recordPageview, topPostsByViews, topPublicPostsByViews,
-  getPostsBySlugList, getPublicPostsBySlugList, viewsForPath, totalViewsByPath,
+  getPostsBySlugList, getPublicPostsBySlugList, viewsForPath, viewsForPaths, totalViewsByPath,
   pageviewsSummary, pageviewsByDay,
   listApiKeys, insertApiKey, findApiKeyByHash, touchApiKey, deleteApiKey,
   countPublishedPosts, countPostsSummary, listPostsForSitemap,
@@ -149,88 +150,90 @@ export default {
         if (!key || key.includes('/') || key.includes('..')) {
           return new Response('Not found', { status: 404 });
         }
-        const ifNoneMatch = request.headers.get('If-None-Match');
-        const acceptsWebp = (request.headers.get('Accept') || '').includes('image/webp');
-        const noOpt = url.searchParams.get('orig') === '1';
-        const isPng = /\.png$/i.test(key);
-        // Chave do derivado otimizado no R2. Versão 3 (_opt3) força regeneração dos
-        // derivados: a v2 gerava WebP lossless (~1MB em fotos); a v3 também tenta
-        // JPEG q80 para PNGs opacos, escolhendo o menor (heroes ~1MB → ~150KB).
-        // Bump de versão = não-destrutivo; os _opt2 antigos viram órfãos inofensivos.
-        const optKey = `_opt3/${key}.webp`;
+        return cachedImageResponse(request, ctx, async () => {
+          const ifNoneMatch = request.headers.get('If-None-Match');
+          const acceptsWebp = (request.headers.get('Accept') || '').includes('image/webp');
+          const noOpt = url.searchParams.get('orig') === '1';
+          const isPng = /\.png$/i.test(key);
+          // Chave do derivado otimizado no R2. Versão 3 (_opt3) força regeneração dos
+          // derivados: a v2 gerava WebP lossless (~1MB em fotos); a v3 também tenta
+          // JPEG q80 para PNGs opacos, escolhendo o menor (heroes ~1MB → ~150KB).
+          // Bump de versão = não-destrutivo; os _opt2 antigos viram órfãos inofensivos.
+          const optKey = `_opt3/${key}.webp`;
 
-        if (request.method === 'HEAD') {
-          const meta = await env.IMAGES.head(key);
-          if (!meta) return new Response(null, { status: 404 });
-          const h = new Headers();
-          meta.writeHttpMetadata(h);
-          h.set('etag', meta.httpEtag);
-          h.set('Cache-Control', 'public, max-age=31536000, immutable');
-          h.set('Content-Length', String(meta.size));
-          if (ifNoneMatch === meta.httpEtag) return new Response(null, { status: 304, headers: h });
-          return new Response(null, { status: 200, headers: h });
-        }
-
-        // 1) Browser moderno (WebP) e não pediu original explicitamente:
-        //    tenta servir o derivado otimizado já cacheado no R2.
-        if (acceptsWebp && !noOpt) {
-          const cachedOpt = await env.IMAGES.get(optKey);
-          if (cachedOpt) {
+          if (request.method === 'HEAD') {
+            const meta = await env.IMAGES.head(key);
+            if (!meta) return new Response(null, { status: 404 });
             const h = new Headers();
-            cachedOpt.writeHttpMetadata(h);
-            h.set('etag', cachedOpt.httpEtag);
+            meta.writeHttpMetadata(h);
+            h.set('etag', meta.httpEtag);
+            h.set('Cache-Control', 'public, max-age=31536000, immutable');
+            h.set('Content-Length', String(meta.size));
+            if (ifNoneMatch === meta.httpEtag) return new Response(null, { status: 304, headers: h });
+            return new Response(null, { status: 200, headers: h });
+          }
+
+          // 1) Browser moderno (WebP) e não pediu original explicitamente:
+          //    tenta servir o derivado otimizado já cacheado no R2.
+          if (acceptsWebp && !noOpt) {
+            const cachedOpt = await env.IMAGES.get(optKey);
+            if (cachedOpt) {
+              const h = new Headers();
+              cachedOpt.writeHttpMetadata(h);
+              h.set('etag', cachedOpt.httpEtag);
+              h.set('Cache-Control', 'public, max-age=31536000, immutable');
+              h.set('Vary', 'Accept');
+              h.set('X-Image-Opt', 'hit');
+              if (ifNoneMatch === cachedOpt.httpEtag) return new Response(null, { status: 304, headers: h });
+              return new Response(cachedOpt.body, { headers: h });
+            }
+          }
+
+          // 2) Carrega a original.
+          const obj = await env.IMAGES.get(key);
+          if (!obj) return new Response('Not found', { status: 404 });
+
+          // 3) Se elegível, otimiza on-the-fly, guarda o derivado no R2 e serve.
+          //    IMPORTANTE: ler obj.arrayBuffer() consome obj.body — por isso, se a
+          //    otimização não compensar, servimos `buf` (bytes já lidos), NUNCA obj.body.
+          if (acceptsWebp && !noOpt && shouldOptimize(key, obj.size, acceptsWebp)) {
+            const buf = await obj.arrayBuffer();
+            let opt: ReturnType<typeof optimizeImage> = null;
+            try { opt = optimizeImage(buf, isPng); } catch { opt = null; }
+            if (opt) {
+              ctx.waitUntil(
+                env.IMAGES.put(optKey, opt.bytes, {
+                  httpMetadata: { contentType: opt.contentType, cacheControl: 'public, max-age=31536000, immutable' },
+                }).catch(() => {}),
+              );
+              const h = new Headers();
+              h.set('Content-Type', opt.contentType);
+              h.set('Cache-Control', 'public, max-age=31536000, immutable');
+              h.set('Vary', 'Accept');
+              h.set('X-Image-Opt', 'miss');
+              return new Response(opt.bytes, { headers: h });
+            }
+            // Otimização não compensou/falhou → serve os bytes originais já lidos.
+            const h = new Headers();
+            obj.writeHttpMetadata(h);
+            h.set('etag', obj.httpEtag);
             h.set('Cache-Control', 'public, max-age=31536000, immutable');
             h.set('Vary', 'Accept');
-            h.set('X-Image-Opt', 'hit');
-            if (ifNoneMatch === cachedOpt.httpEtag) return new Response(null, { status: 304, headers: h });
-            return new Response(cachedOpt.body, { headers: h });
+            h.set('X-Image-Opt', 'skip');
+            return new Response(buf, { headers: h });
           }
-        }
 
-        // 2) Carrega a original.
-        const obj = await env.IMAGES.get(key);
-        if (!obj) return new Response('Not found', { status: 404 });
-
-        // 3) Se elegível, otimiza on-the-fly, guarda o derivado no R2 e serve.
-        //    IMPORTANTE: ler obj.arrayBuffer() consome obj.body — por isso, se a
-        //    otimização não compensar, servimos `buf` (bytes já lidos), NUNCA obj.body.
-        if (acceptsWebp && !noOpt && shouldOptimize(key, obj.size, acceptsWebp)) {
-          const buf = await obj.arrayBuffer();
-          let opt: ReturnType<typeof optimizeImage> = null;
-          try { opt = optimizeImage(buf, isPng); } catch { opt = null; }
-          if (opt) {
-            ctx.waitUntil(
-              env.IMAGES.put(optKey, opt.bytes, {
-                httpMetadata: { contentType: opt.contentType, cacheControl: 'public, max-age=31536000, immutable' },
-              }).catch(() => {}),
-            );
-            const h = new Headers();
-            h.set('Content-Type', opt.contentType);
-            h.set('Cache-Control', 'public, max-age=31536000, immutable');
-            h.set('Vary', 'Accept');
-            h.set('X-Image-Opt', 'miss');
-            return new Response(opt.bytes, { headers: h });
+          // 4) Não elegível (SVG/GIF/pequena/sem webp): serve a original (stream intacto).
+          const headers = new Headers();
+          obj.writeHttpMetadata(headers);
+          headers.set('etag', obj.httpEtag);
+          headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+          headers.set('Vary', 'Accept');
+          if (ifNoneMatch === obj.httpEtag) {
+            return new Response(null, { status: 304, headers });
           }
-          // Otimização não compensou/falhou → serve os bytes originais já lidos.
-          const h = new Headers();
-          obj.writeHttpMetadata(h);
-          h.set('etag', obj.httpEtag);
-          h.set('Cache-Control', 'public, max-age=31536000, immutable');
-          h.set('Vary', 'Accept');
-          h.set('X-Image-Opt', 'skip');
-          return new Response(buf, { headers: h });
-        }
-
-        // 4) Não elegível (SVG/GIF/pequena/sem webp): serve a original (stream intacto).
-        const headers = new Headers();
-        obj.writeHttpMetadata(headers);
-        headers.set('etag', obj.httpEtag);
-        headers.set('Cache-Control', 'public, max-age=31536000, immutable');
-        headers.set('Vary', 'Accept');
-        if (ifNoneMatch === obj.httpEtag) {
-          return new Response(null, { status: 304, headers });
-        }
-        return new Response(obj.body, { headers });
+          return new Response(obj.body, { headers });
+        });
       }
 
       // ===== Public: home =====
@@ -1115,6 +1118,11 @@ ${urls.join('\n')}
 
       // ===== Heartbeat do contador ao vivo (público, sem auth) =====
       if (pathname === '/api/heartbeat' && request.method === 'POST') {
+        const origin = request.headers.get('Origin');
+        const site = request.headers.get('Sec-Fetch-Site');
+        if ((origin && origin !== url.origin) || (site && site !== 'same-origin')) {
+          return new Response('Forbidden', { status: 403, headers: { 'Cache-Control': 'no-store' } });
+        }
         try {
           const body = await request.json() as { vid?: string; path?: string };
           const vid = typeof body.vid === 'string' ? body.vid.slice(0, 64) : '';
@@ -1123,7 +1131,7 @@ ${urls.join('\n')}
             ctx.waitUntil(recordHeartbeat(env.DB, vid, p).catch(() => {}));
           }
         } catch { /* ignora corpo malformado */ }
-        return new Response('ok', { headers: { 'Access-Control-Allow-Origin': '*' } });
+        return new Response('ok', { headers: { 'Cache-Control': 'no-store' } });
       }
 
       // ===== Eventos do teste banners nativos × AdSense (público, sem auth) =====
@@ -1152,7 +1160,6 @@ ${urls.join('\n')}
         const authedApi = await requireAuth(request, env.SESSION_SECRET);
         if (!authedApi) return json({ error: 'Unauthorized' }, 401);
         const count = await countActiveVisitors(env.DB);
-        ctx.waitUntil(cleanupStaleVisitors(env.DB).catch(() => {}));
         return new Response(JSON.stringify({ active: count }), {
           headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
         });
@@ -1237,15 +1244,11 @@ ${urls.join('\n')}
           const limit = Math.min(100, Math.max(1, Number(url.searchParams.get('limit') ?? 20)));
           const includeViews = url.searchParams.get('views') === '1';
           const items = await listPosts(env.DB, { includeDrafts: false, limit });
-          // se views=1, busca contadores em paralelo
+          // Mesmo resultado, com uma consulta de contadores por até 99 artigos.
           let viewsMap: Map<string, number> | null = null;
           if (includeViews) {
-            viewsMap = new Map();
-            const promises = items.map(async (p) => {
-              const v = await viewsForPath(env.DB, '/' + p.slug, 24);
-              viewsMap!.set(p.slug, v);
-            });
-            await Promise.all(promises);
+            const byPath = await viewsForPaths(env.DB, items.map(p => '/' + p.slug), 24);
+            viewsMap = new Map(items.map(p => [p.slug, byPath.get('/' + p.slug) ?? 0]));
           }
           return new Response(JSON.stringify({
             count: items.length,
@@ -1427,7 +1430,7 @@ ${urls.join('\n')}
       return new Response(render404(env, request, await loadCookieBanner(env)), { status: 404, headers: HTML_HEADERS });
     } catch (err) {
       console.error('Worker error:', err);
-      return new Response(`<h1>Erro interno</h1><pre>${String(err)}</pre>`, {
+      return new Response('<h1>Erro interno</h1><pre>Tente novamente mais tarde.</pre>', {
         status: 500,
         headers: HTML_HEADERS,
       });
@@ -1442,6 +1445,8 @@ ${urls.join('\n')}
   async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
     // Reserva global de 30 min no R2; independente do cron de imagens e do tráfego.
     env = { ...env, DB: withD1Telemetry(env.DB, 'scheduled') };
+    // Expired visitors never affect the live count; remove at most 500 per tick.
+    ctx.waitUntil(cleanupStaleVisitors(env.DB).catch(() => {}));
     const ranking = refreshRankingSnapshot(env.IMAGES, env.DB);
     // AdSense reserves globally at most one attempt/hour; no D1 history scans.
     const adsense = syncReports(env);
