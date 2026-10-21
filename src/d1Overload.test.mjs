@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
 import {readFileSync} from 'node:fs';
-import {getPublicPostsBySlugList, getPostsBySlugList, recordHeartbeat} from './db.ts';
+import {getPublicPostsBySlugList, getPostsBySlugList, recordHeartbeat, cleanupStaleVisitors} from './db.ts';
 import {POST_SQL} from './rankingSnapshot.ts';
 function harness(){
  const sql=new DatabaseSync(':memory:');sql.exec(readFileSync('schema.sql','utf8'));sql.exec(readFileSync('migrations/0003-settings-analytics-api.sql','utf8'));sql.exec(readFileSync('migrations/0007_d1_cost_guard.sql','utf8'));
@@ -32,6 +32,23 @@ test('ranking metadata scan must be covered and bounded',()=>{
  const migration=readFileSync('migrations/0008_d1_overload.sql','utf8');h.sql.exec(migration);h.sql.exec(migration);
  const plan=h.sql.prepare('EXPLAIN QUERY PLAN '+POST_SQL).all(20001);
  assert.ok(plan.some(r=>/COVERING INDEX idx_posts_ranking_metadata/.test(r.detail)));assert.ok(plan.every(r=>!/TEMP B-TREE/.test(r.detail)));
+ }finally{h.sql.close()}
+});
+
+test('visitor cleanup deletes at most 500 expired rows with the existing index and preserves live visitors',async()=>{
+ const h=harness();try{
+ const now=Date.now();const insert=h.sql.prepare('INSERT INTO active_visitors VALUES (?,?,?)');
+ for(let i=0;i<620;i++)insert.run(`expired-${i}`,'/article',now-600000-i);
+ for(let i=0;i<2;i++)insert.run(`live-${i}`,'/article',now);
+ await cleanupStaleVisitors(h.db);
+ assert.equal(h.sql.prepare('SELECT COUNT(*) AS n FROM active_visitors').get().n,122);
+ assert.equal(h.sql.prepare("SELECT COUNT(*) AS n FROM active_visitors WHERE visitor_id LIKE 'live-%'").get().n,2);
+ const query=h.calls.at(-1),plan=h.sql.prepare('EXPLAIN QUERY PLAN '+query).all(now-300000);
+ assert.match(JSON.stringify(plan),/idx_active_visitors_last_seen/);
+ assert.doesNotMatch(JSON.stringify(plan),/SCAN active_visitors/);
+ await cleanupStaleVisitors(h.db);
+ assert.equal(h.sql.prepare('SELECT COUNT(*) AS n FROM active_visitors').get().n,2);
+ assert.equal(h.calls.length,2);
  }finally{h.sql.close()}
 });
 

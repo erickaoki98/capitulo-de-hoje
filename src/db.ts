@@ -382,6 +382,22 @@ export async function viewsForPath(db: D1Database, path: string, hours: number):
   return row?.views ?? 0;
 }
 
+/** Same totals as viewsForPath; 99 paths + the window stay within D1's 100 bindings. */
+export async function viewsForPaths(db: D1Database, paths: string[], hours: number): Promise<Map<string, number>> {
+  const unique = [...new Set(paths)];
+  const views = new Map<string, number>(unique.map(path => [path, 0]));
+  const since = new Date(Date.now() - hours * 3600_000).toISOString().slice(0, 13);
+  for (let offset = 0; offset < unique.length; offset += 99) {
+    const batch = unique.slice(offset, offset + 99);
+    const { results } = await db.prepare(
+      `SELECT path, SUM(count) AS views FROM pageviews_hourly
+       WHERE path IN (${batch.map(() => '?').join(',')}) AND bucket >= ? GROUP BY path`,
+    ).bind(...batch, since).all<{ path: string; views: number }>();
+    for (const row of results ?? []) views.set(row.path, row.views ?? 0);
+  }
+  return views;
+}
+
 /** Total de views (todas as horas) por path. Uma única query → Map path → views.
  *  Usado na lista do admin pra mostrar as views de cada artigo sem N queries. */
 export async function totalViewsByPath(db: D1Database): Promise<Map<string, number>> {
@@ -823,5 +839,8 @@ export async function countActiveVisitors(db: D1Database, windowMs = 300_000): P
 
 export async function cleanupStaleVisitors(db: D1Database, windowMs = 300_000): Promise<void> {
   const since = Date.now() - windowMs;
-  await db.prepare('DELETE FROM active_visitors WHERE last_seen < ?').bind(since).run();
+  await db.prepare(`DELETE FROM active_visitors WHERE visitor_id IN (
+    SELECT visitor_id FROM active_visitors INDEXED BY idx_active_visitors_last_seen
+    WHERE last_seen < ? ORDER BY last_seen LIMIT 500
+  )`).bind(since).run();
 }

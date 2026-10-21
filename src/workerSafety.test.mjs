@@ -60,9 +60,9 @@ test('Wrangler e CI exigem proteção antes de publicar',async()=>{
   assert.match(pkg.scripts['test:d1-protection'],/workerSafety\.test\.mjs/);
 });
 
-test('cron only runs protected rankings, AdSense reports and image migration',async()=>{
+test('cron preserves rankings, AdSense reports and image migration without retired photo work',async()=>{
   const keys=[],queries=[],tasks=[];
-  const env={DB:{prepare(sql){queries.push(sql);return {async all(){return {results:[]}},bind(){return this},async first(){return null}}}},IMAGES:{
+  const env={DB:{prepare(sql){queries.push(sql);return {async all(){return {results:[]}},bind(){return this},async first(){return null},async run(){return {meta:{}}}}}},IMAGES:{
     async get(key){keys.push(key);if(key==='_internal/d1-ranking-guard-v1.json')return {json:async()=>({nextAttemptAt:Date.now()+60000})};return null;},
     async put(key){keys.push(key);return {etag:'test'};},
   }};
@@ -108,4 +108,72 @@ test('pressão D1 é visível mesmo quando heartbeat preserva a resposta públic
     assert.ok(logs.some(args=>args[0]==='[d1-pressure]'&&JSON.parse(args[1]).reason==='overload'));
     assert.doesNotMatch(JSON.stringify(logs),/private/);
   }finally{console.warn=previous}
+});
+
+test('heartbeat blocks cross-site writes while preserving same-origin sendBeacon and legacy clients',async()=>{
+ let writes=0;const tasks=[];
+ const env={DB:{prepare(){return {bind(){return this},async run(){writes++;return {meta:{rows_written:1}}}}}}};
+ for(const headers of [
+  {Origin:'https://other.example','Sec-Fetch-Site':'cross-site'},
+  {'Sec-Fetch-Site':'cross-site'},
+  {Origin:'https://other.example'},
+  {Origin:'null'},
+ ]){
+  const res=await worker.fetch(new Request('https://example.com/api/heartbeat',{method:'POST',headers,body:JSON.stringify({vid:'visitor',path:'/article'})}),env,{waitUntil(p){tasks.push(p)}});
+  assert.equal(res.status,403);
+ }
+ assert.equal(writes,0);assert.equal(tasks.length,0);
+ for(const headers of [
+  {Origin:'https://example.com','Sec-Fetch-Site':'same-origin','Content-Type':'text/plain;charset=UTF-8'},
+  {'Sec-Fetch-Site':'same-origin'},
+  {},
+ ]){
+  const res=await worker.fetch(new Request('https://example.com/api/heartbeat',{method:'POST',headers,body:JSON.stringify({vid:'visitor',path:'/article'})}),env,{waitUntil(p){tasks.push(p)}});
+  assert.equal(res.status,200);assert.equal(await res.text(),'ok');
+ }
+ await Promise.all(tasks);assert.equal(writes,3);
+});
+
+test('500 keeps the existing error markup but never exposes internal error text or HTML',async()=>{
+ const previousCache=globalThis.caches,previousError=console.error,logs=[];
+ globalThis.caches={default:{async match(){return null},async put(){}}};
+ console.error=(...args)=>logs.push(args);
+ const error=new Error('private SQL <img src=x onerror=alert(1)>');
+ try{
+  const env={DB:{prepare(){return {bind(){return this},async all(){throw error}}}}};
+  const res=await worker.fetch(new Request('https://example.com/'),env,{waitUntil(){}});
+  assert.equal(res.status,500);
+  assert.equal(await res.text(),'<h1>Erro interno</h1><pre>Tente novamente mais tarde.</pre>');
+  assert.ok(logs.some(args=>args.includes(error)),'error remains available in server logs');
+ }finally{globalThis.caches=previousCache;console.error=previousError}
+});
+
+test('real image route caches original bytes after skipped optimization, avoiding repeated R2 reads',async()=>{
+ const previous=globalThis.caches,entries=new Map(),reads=[],tasks=[];
+ globalThis.caches={default:{async match(key){return entries.get(key.url)?.clone()},async put(key,response){entries.set(key.url,response.clone())}}};
+ const bytes=new Uint8Array([137,80,78,71]);
+ const env={DB:{},IMAGES:{async get(key){reads.push(key);return key.startsWith('_opt3/')?null:{
+  size:50000,httpEtag:'"logo"',writeHttpMetadata(h){h.set('Content-Type','image/png')},async arrayBuffer(){return bytes.slice().buffer},
+ }}}};
+ const ctx={waitUntil(p){tasks.push(p)}};
+ try{
+  for(let i=0;i<100;i++){
+   const res=await worker.fetch(new Request(`https://example.com/img/logo.png?v=2&utm_source=${i}`,{headers:{Accept:'image/webp'}}),env,ctx);
+   assert.equal(res.status,200);assert.equal(res.headers.get('Content-Type'),'image/png');
+   assert.equal(res.headers.get('X-Image-Cache'),i?'HIT':'MISS');
+   assert.deepEqual(new Uint8Array(await res.arrayBuffer()),bytes);
+   await Promise.all(tasks);
+  }
+  assert.deepEqual(reads,['_opt3/logo.png.webp','logo.png']);
+ }finally{globalThis.caches=previous}
+});
+
+test('cron cleans expired visitors once without waiting for the admin panel',async()=>{
+ const calls=[],tasks=[];
+ const env={DB:{prepare(sql){calls.push(sql);return {bind(){return this},async run(){return {meta:{}}},async all(){return {results:[]}}}}},IMAGES:{
+  async get(key){return key==='_internal/d1-ranking-guard-v1.json'?{json:async()=>({nextAttemptAt:Date.now()+60000})}:null},async put(){return {etag:'test'}},
+ }};
+ await worker.scheduled({},env,{waitUntil(p){tasks.push(p)}});await Promise.all(tasks);
+ assert.equal(calls.filter(sql=>/DELETE FROM active_visitors/.test(sql)).length,1);
+ assert.ok(calls.every(sql=>!/CREATE|ALTER|DROP/i.test(sql)));
 });

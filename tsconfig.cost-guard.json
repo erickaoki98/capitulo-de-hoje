@@ -1,6 +1,7 @@
 {
   "extends": "./tsconfig.json",
   "include": [
+    "src/imageCache.ts",
     "src/d1Telemetry.ts",
     "src/heartbeat.ts",
     "src/rankingSnapshot.ts",
