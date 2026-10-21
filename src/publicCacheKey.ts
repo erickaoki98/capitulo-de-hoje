@@ -5,6 +5,7 @@ export function publicCacheKeyUrl(requestUrl: string, version: string): string {
   for (const key of [...url.searchParams.keys()]) {
     if (TRACKING_QUERY_PARAM.test(key)) url.searchParams.delete(key);
   }
-  url.searchParams.set('__cv', version);
+  // Isolate current HTML from the previous renderer, even before a settings purge.
+  url.searchParams.set('__cv', `2:${version}`);
   return url.toString();
 }

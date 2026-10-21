@@ -9,7 +9,7 @@ test('tracking do Facebook e campanhas compartilham a URL canônica do cache', (
     '7',
   );
 
-  assert.equal(key, 'https://capitulodehoje.com.br/artigo?__cv=7');
+  assert.equal(key, 'https://capitulodehoje.com.br/artigo?__cv=2%3A7');
 });
 
 test('parâmetros funcionais permanecem separados no cache', () => {
@@ -18,5 +18,5 @@ test('parâmetros funcionais permanecem separados no cache', () => {
     '8',
   );
 
-  assert.equal(key, 'https://capitulodehoje.com.br/?page=2&__cv=8');
+  assert.equal(key, 'https://capitulodehoje.com.br/?page=2&__cv=2%3A8');
 });

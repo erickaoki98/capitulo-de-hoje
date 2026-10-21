@@ -40,6 +40,6 @@ test('section recommendation query preserves content image fallback and alternat
  const h=harness();try{
  h.sql.prepare("INSERT INTO posts(slug,title,content,pub_date,updated_date) VALUES(?,?,?,?,?)").run('image-fallback','Title','<img src="/img/first.jpg"><img src="/img/alternate.jpg">',Date.now(),Date.now());
  const [post]=await getPublicPostsBySlugList(h.db,['image-fallback'],{includeContent:true});
- const html=renderSectionCard(post,1);assert.match(html,/src="\/img\/first.jpg"/);assert.match(html,/data-face-alternatives/);assert.match(html,/alternate.jpg/);
+ const html=renderSectionCard(post,1);assert.match(html,/src="\/img\/first.jpg"/);assert.match(html,/data-fallback/);assert.match(html,/alternate.jpg/);
  }finally{h.sql.close()}
 });

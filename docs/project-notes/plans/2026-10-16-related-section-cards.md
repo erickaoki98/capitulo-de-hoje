@@ -1,4 +1,6 @@
-# Cards relacionados por seção — plano de implementação
+# Cards relacionados por seção — histórico de implementação
+
+> Em 21/10/2026, a decisão de voltar às fotos estáticas removeu os recortes, a detecção local e a alternância descritos abaixo. Seleção, posição, tipografia e fallback de imagens dos cards foram preservados. Veja [encerramento](../../photo-ab-test.md).
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use subagent-driven-development (recommended) or executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 

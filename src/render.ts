@@ -19,10 +19,6 @@ import {
   mixActive, nativeActive, renderMixRuntime, renderMixSlot, runnableCreatives, slotImages,
 } from './nativeAds.ts';
 import { MANUAL_GAP, SYNC_INTERVAL } from './adsenseReports.ts';
-import { renderPhotoBootstrap, renderPhotoScript, type PhotoExperimentConfig } from './photoExperiment.ts';
-import { articlePhotoMaps, photoMapsJSON, type PhotoMaps } from './photoMaps.ts';
-import { photoPanelBody } from './photoPanel.ts';
-import type { PhotoPanelData } from './photoRoutes.ts';
 
 export interface SiteAdSettings {
   publisherId: string;       // ca-pub-XXX
@@ -287,8 +283,6 @@ interface LayoutOptions {
   stickyAd?: string;     // ad fixo no rodapé mobile
   typography?: SiteTypography;
   cookieBanner?: boolean; // aviso "Usamos cookies" (padrão: exibe; admin → Configurações → Cookies)
-  photoExperiment?: PhotoExperimentConfig;
-  photoMaps?: PhotoMaps;
 }
 
 /** Pathname de uma URL absoluta ('' se inválida — ex.: admin passa url vazia). */
@@ -301,7 +295,7 @@ function layout(opts: LayoutOptions, body: string): string {
     title, description, url, siteTitle,
     type = 'website', pubDate, updatedDate, author,
     image, tags = [], category, jsonLd, bodyClass = '',
-    headInject = '', gaId = '', stickyAd = '', typography, cookieBanner = true, photoExperiment, photoMaps,
+    headInject = '', gaId = '', stickyAd = '', typography, cookieBanner = true,
   } = opts;
   const typoClasses = typography ? `t-title-${typography.titleScale} t-body-${typography.bodyScale}` : '';
   const finalBodyClass = `${bodyClass} ${typoClasses}`.trim();
@@ -356,7 +350,6 @@ ${image ? `<meta name="twitter:image" content="${escapeHtml(image)}">` : ''}
 ${author ? `<meta name="author" content="${escapeHtml(author)}">` : ''}
 ${isAdmin || bodyClass.includes('is-404') ? '<meta name="robots" content="noindex, nofollow">' : '<meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">'}
 ${ld}
-${!isAdmin && photoExperiment ? renderPhotoBootstrap(photoExperiment, type === 'article' && !!Object.keys(photoMaps || {}).length) : ''}
 ${headInject}
 ${/* PROTEÇÃO ANALYTICS — NÃO REMOVER. O GA só é injetado quando `gaId` chega
      preenchido. Quem preenche é a ROTA: ela carrega loadGaId(env) (src/index.ts)
@@ -513,7 +506,6 @@ ${!isAdmin ? `<script>${heartbeatScript}</script>` : ''}
 })();
 </script>
 ${gaId && !isAdmin ? renderGaEventsScript() : ''}
-${!isAdmin && type === 'article' && photoExperiment ? '<script type="application/json" id="cdh-photo-maps">'+photoMapsJSON(photoMaps || {})+'</script>'+renderPhotoScript(photoExperiment) : ''}
 </body>
 </html>`;
 }
@@ -523,7 +515,6 @@ export function renderHome(
   env: Env, request: Request, posts: (Post | PostCard)[],
   ads?: SiteAdSettings, typography?: SiteTypography, gaId?: string,
   cookieBanner = true,
-  photoExperiment?: PhotoExperimentConfig,
 ): string {
   const url = new URL(request.url);
   const siteUrl = siteCanonical(env, url);
@@ -578,7 +569,6 @@ export function renderHome(
       stickyAd,
       typography,
       cookieBanner,
-      photoExperiment,
       jsonLd: {
         '@context': 'https://schema.org',
         '@type': 'WebSite',
@@ -1084,8 +1074,6 @@ export function renderPost(
   shopeeConfig?: ShopeeInjectionConfig | null,
   authorProfile?: AuthorProfile | null,
   cookieBanner = true,
-  photoExperiment?: PhotoExperimentConfig,
-  photoMaps: PhotoMaps = {},
 ): string {
   const url = new URL(request.url);
   const siteOrigin = siteCanonical(env, url);
@@ -1198,7 +1186,6 @@ export function renderPost(
   <div class="prose">${html}</div>
   ${adIf('afterContent', 'ad-slot--after')}
 </article>${authorProfile ? renderAuthorBox(authorProfile) : ''}${relatedHtml}
-${recommendations.usedSlugs.size ? '<script type="module" src="/related-faces.js?v=20261016-3"></script>' : ''}
 ${adIf('bottomOfPage', 'ad-slot--bottom')}
 <div class="continue-cta">
   <h3 class="continue-cta__title">Gostou do capítulo?</h3>
@@ -1228,6 +1215,19 @@ ${adIf('bottomOfPage', 'ad-slot--bottom')}
         var fig = this.closest('figure');
         (fig || this).style.display = 'none';
       }, { once: true });
+    });
+
+    document.querySelectorAll('.section-rec__image').forEach(function(img) {
+      var next = img.getAttribute('data-fallback');
+      function onError() {
+        if (next) {
+          var source = next; next = ''; img.src = source;
+        } else {
+          img.closest('.section-rec').classList.add('section-rec--text-only');
+        }
+      }
+      img.addEventListener('error', onError);
+      if (img.complete && img.naturalWidth === 0) onError();
     });
 
     var hero = document.querySelector('.post__hero');
@@ -1308,8 +1308,6 @@ ${adIf('bottomOfPage', 'ad-slot--bottom')}
       stickyAd,
       typography,
       cookieBanner,
-      photoExperiment,
-      photoMaps: articlePhotoMaps(html, photoMaps),
       jsonLd: {
         '@context': 'https://schema.org',
         '@type': 'NewsArticle',
@@ -1980,7 +1978,7 @@ export function renderAdminPosts(
 }
 
 // ====== Admin: shell with sidebar nav ======
-type AdminSection = 'dashboard' | 'posts' | 'adsense' | 'photo-test' | 'settings' | 'configuracoes' | 'analytics' | 'shopee' | 'api-keys' | 'cache' | 'users';
+type AdminSection = 'dashboard' | 'posts' | 'adsense' | 'settings' | 'configuracoes' | 'analytics' | 'shopee' | 'api-keys' | 'cache' | 'users';
 
 interface AdminShellOptions {
   active: AdminSection;
@@ -1993,7 +1991,6 @@ interface AdminShellOptions {
 
 /** Ícones SVG inline — 20px, stroke 1.75, currentColor */
 const ICONS: Record<AdminSection, string> = {
-  'photo-test':'<span aria-hidden="true">A/B</span>',
   dashboard: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>',
   posts:     '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><line x1="10" y1="9" x2="8" y2="9"/></svg>',
   analytics: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/><line x1="3" y1="20" x2="21" y2="20"/></svg>',
@@ -2007,7 +2004,7 @@ const ICONS: Record<AdminSection, string> = {
 };
 
 // Sections restricted to admin role only
-const ADMIN_ONLY_SECTIONS: Set<AdminSection> = new Set(['configuracoes', 'api-keys', 'users', 'adsense', 'photo-test']);
+const ADMIN_ONLY_SECTIONS: Set<AdminSection> = new Set(['configuracoes', 'api-keys', 'users', 'adsense']);
 
 function adminShell(env: Env, opts: AdminShellOptions, body: string): string {
   const { active, title, subtitle, actions = '', bodyClass = '', userRole = 'admin' } = opts;
@@ -2015,7 +2012,6 @@ function adminShell(env: Env, opts: AdminShellOptions, body: string): string {
     ['dashboard', '/admin', 'Início'],
     ['posts',     '/admin/posts', 'Posts'],
     ['analytics', '/admin/analytics', 'Analytics'],
-    ['photo-test', '/admin/teste-fotos', 'Teste de fotos'],
     ['settings',  '/admin/settings', 'Monetização'],
     ['configuracoes', '/admin/configuracoes', 'Configurações'],
     ['users',     '/admin/users', 'Usuários'],
@@ -4449,10 +4445,6 @@ export function renderAdminUsers(
 }
 
 // ====== Admin: AdSense reports (authenticated snapshot, never fetches Google on GET) ======
-export function renderAdminPhotoTest(env: Env, view: PhotoPanelData, message?: string): string {
-  return adminShell(env, {active:'photo-test',title:'Teste de fotos',subtitle:'Foto estática × recortes animados · receita e engajamento'}, photoPanelBody(view,message));
-}
-
 export function renderAdminAdSense(env: Env, view: import('./adsenseReports').ReportsView, message?: string): string {
   const snapshot = view.snapshot;
   const date = (value: string) => value.split('-').reverse().join('/');

@@ -35,11 +35,14 @@ test('fetch real: cache indisponível e URLs únicas não executam agregações 
       const before=queries.length;
       const res=await worker.fetch(new Request(`https://example.com/artigo?fbclid=${i}&utm_source=teste`),env,{waitUntil(p){tasks.push(p);}});
       assert.equal(res.status,200);
-      assert.match(await res.text(),/Conteúdo público/);
+      const html = await res.text();
+      assert.match(html,/Conteúdo público/);
+      assert.doesNotMatch(html,/cdh-photo|photo_ab|photo-motion|related-faces|data-face-/);
       await Promise.all(tasks);
       assert.ok(queries.length-before<=40,'orçamento público: no máximo 40 consultas mesmo sem cache/R2');
     }
     assert.ok(queries.length>0);
+    assert.ok(queries.every(sql=>! /photo\./.test(sql)), 'public readers no longer load experiment settings');
     assert.equal(queries.filter(sql=>/\bFROM\s+pageviews_hourly\b/i.test(sql)).length,0,'request de leitor jamais pode consultar histórico de pageviews');
     assert.equal(queries.filter(sql=>/INSERT INTO pageviews_hourly/.test(sql)).length,25,'proteção preserva contagem de acessos');
   }finally{globalThis.caches=previous;sqlite.close();}
@@ -57,19 +60,21 @@ test('Wrangler e CI exigem proteção antes de publicar',async()=>{
   assert.match(pkg.scripts['test:d1-protection'],/workerSafety\.test\.mjs/);
 });
 
-test('cron aguarda tarefas anteriores liberarem conexões antes de descobrir e processar fotos',async()=>{
-  let release;const blocked=new Promise(resolve=>{release=resolve;});const queries=[];const tasks=[];
+test('cron only runs protected rankings, AdSense reports and image migration',async()=>{
+  const keys=[],queries=[],tasks=[];
   const env={DB:{prepare(sql){queries.push(sql);return {async all(){return {results:[]}},bind(){return this},async first(){return null}}}},IMAGES:{
-    async get(key){if(key==='_internal/d1-ranking-guard-v1.json'){await blocked;return {json:async()=>({nextAttemptAt:Date.now()+60000})}}if(key==='_internal/photo-ai-v3/state')return {json:async()=>({enabled:true,composition:'luna-shoulders-v1',articles:[]})};return null;},
-    async put(){return {etag:'test'};},
+    async get(key){keys.push(key);if(key==='_internal/d1-ranking-guard-v1.json')return {json:async()=>({nextAttemptAt:Date.now()+60000})};return null;},
+    async put(key){keys.push(key);return {etag:'test'};},
   }};
-  await worker.scheduled({},env,{waitUntil(p){tasks.push(p)}});
-  await new Promise(resolve=>setTimeout(resolve,10));
-  const discovers=()=>queries.some(sql=>/ORDER BY p.pub_date DESC LIMIT 30/.test(sql));
-  try{assert.equal(discovers(),false,'IA deve esperar ranking, relatórios e migração');}finally{release();await Promise.all(tasks);}
-  assert.equal(discovers(),true);
+  const old=globalThis.fetch;globalThis.fetch=async()=>{throw Error('no upstream work expected');};
+  try{
+    await worker.scheduled({},env,{waitUntil(p){tasks.push(p)}});await Promise.all(tasks);
+    assert.ok(keys.includes('_internal/d1-ranking-guard-v1.json'));
+    assert.ok(queries.some(sql=>/images_migrated/.test(sql)),'image migration remains active');
+    assert.ok(keys.every(key=>! /photo|analytics/i.test(key)), 'no retired AI or comparison storage');
+    assert.ok(queries.every(sql=>! /photo\.|ORDER BY p.pub_date DESC LIMIT 30/.test(sql)));
+  }finally{globalThis.fetch=old;}
 });
-
 
 test('heartbeat real não executa DDL e requisições repetidas não regravam visitante',async()=>{
   const sqlite=new DatabaseSync(':memory:');
