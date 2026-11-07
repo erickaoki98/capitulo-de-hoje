@@ -119,6 +119,12 @@ export default {
     env = { ...env, DB: withD1Telemetry(env.DB, 'fetch') };
     const url = new URL(request.url);
     const { pathname } = url;
+    if (pathname.startsWith('/admin') && !['GET', 'HEAD'].includes(request.method)) {
+      const origin = request.headers.get('Origin');
+      if ((origin && origin !== url.origin) || request.headers.get('Sec-Fetch-Site') === 'cross-site') {
+        return new Response('Origem inválida.', { status: 403, headers: NO_CACHE_HEADERS });
+      }
+    }
 
     try {
       // ===== www → apex redirect =====
@@ -1073,9 +1079,9 @@ ${urls.join('\n')}
       if (pathname === '/admin/api-keys' && request.method === 'GET') {
         if (!authed) return redirectToLogin();
         const keys = await listApiKeys(env.DB);
-        // pega token recém criado da query string (one-shot)
-        const newToken = url.searchParams.get('new') || undefined;
-        return new Response(renderAdminApiKeys(env, request, keys, newToken), {
+        // Old URLs must never echo credentials from browsing history.
+        if (url.searchParams.has('new')) return new Response(null, { status: 303, headers: { ...NO_CACHE_HEADERS, Location: '/admin/api-keys' } });
+        return new Response(renderAdminApiKeys(env, request, keys), {
           headers: NO_CACHE_HEADERS,
         });
       }
@@ -1086,9 +1092,9 @@ ${urls.join('\n')}
         const name = String(form.get('name') ?? '').trim() || 'Chave sem nome';
         const { token, prefix, hash } = await generateApiKey();
         await insertApiKey(env.DB, name, prefix, hash);
-        return new Response(null, {
-          status: 303,
-          headers: { Location: `/admin/api-keys?new=${encodeURIComponent(token)}` },
+        const keys = await listApiKeys(env.DB);
+        return new Response(renderAdminApiKeys(env, request, keys, token), {
+          headers: { ...NO_CACHE_HEADERS, 'Referrer-Policy': 'no-referrer' },
         });
       }
 

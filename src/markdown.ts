@@ -1,4 +1,31 @@
 import { marked } from 'marked';
+import { fromHtml } from 'hast-util-from-html';
+import { sanitize, defaultSchema } from 'hast-util-sanitize';
+import { toHtml } from 'hast-util-to-html';
+
+/** Parse real HTML, apply the established GitHub-style allowlist, then serialize.
+ * No script, inline handler, iframe, form, SVG or CSS from article content executes.
+ */
+export function sanitizeArticleHtml(html: string): string {
+  return toHtml(sanitize(fromHtml(html, { fragment: true }), {
+    ...defaultSchema,
+    tagNames: [...(defaultSchema.tagNames ?? []), 'figure', 'figcaption', 'picture', 'source', 'video'],
+    attributes: {
+      ...defaultSchema.attributes,
+      '*': [...(defaultSchema.attributes?.['*'] ?? []), 'className', 'title', 'lang', 'dir'],
+      a: [...(defaultSchema.attributes?.a ?? []), 'target', 'rel'],
+      img: ['src', 'alt', 'title', 'width', 'height', 'loading', 'decoding'],
+      source: ['src', 'type', 'media'],
+      video: ['src', 'poster', 'controls', 'width', 'height', 'preload'],
+    },
+    protocols: { ...defaultSchema.protocols, src: ['http', 'https'], poster: ['http', 'https'], href: ['http', 'https', 'mailto', 'tel'] },
+  }));
+}
+
+/** JSON embedded in an HTML script element must not contain a closing tag. */
+export function scriptJson(value: unknown): string {
+  return (JSON.stringify(value) ?? 'null').replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
+}
 
 marked.setOptions({
   gfm: true,
@@ -19,16 +46,16 @@ export function renderMarkdown(md: string): string {
   if (/^(<!\s*--)|(<!DOCTYPE\s)/i.test(trimmed) && /<body[\s>]/i.test(trimmed)) {
     const bodyMatch = trimmed.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
     const body = bodyMatch ? bodyMatch[1].trim() : trimmed;
-    return stripSceneMarkers(body);
+    return sanitizeArticleHtml(stripSceneMarkers(body));
   }
 
   // Se o conteúdo já é HTML (tem tags block-level), retorna direto
   if (/^(<!\s*--[\s\S]*?-->\s*)?<(h[1-6]|p|div|figure|article|section|ul|ol|table|blockquote)\b/i.test(trimmed)) {
-    return stripSceneMarkers(trimmed);
+    return sanitizeArticleHtml(stripSceneMarkers(trimmed));
   }
 
   // Caso contrário é Markdown — converte via marked
-  return stripSceneMarkers(marked.parse(md, { async: false }) as string);
+  return sanitizeArticleHtml(stripSceneMarkers(marked.parse(md, { async: false }) as string));
 }
 
 /**

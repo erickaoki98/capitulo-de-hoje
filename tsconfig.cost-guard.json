@@ -8,6 +8,7 @@
     "src/sectionRecommendations.ts",
     "src/publicCacheKey.ts",
     "src/adsenseReports.ts",
-    "src/adsenseRoutes.ts"
+    "src/adsenseRoutes.ts",
+    "src/markdown.ts"
   ]
 }

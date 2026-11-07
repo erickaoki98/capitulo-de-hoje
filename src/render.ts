@@ -5,7 +5,7 @@ import type { Env, Post, PostCard } from './types';
 import type { ShopeeProduct, AdminUser, ShopeeClickDay, ShopeeProductDayClicks } from './db';
 import type { ShopeeApiProduct } from './shopee';
 import type { UserRole } from './auth';
-import { renderMarkdown, readingTime, stripBrokenImageFigures } from './markdown';
+import { renderMarkdown, readingTime, stripBrokenImageFigures, scriptJson } from './markdown';
 import {
   type AdConfig, type AdPlacementConfig, renderAdSenseScript, renderAdUnit, renderAdIns, injectInContentAds,
   adsenseScriptSrc,
@@ -301,7 +301,7 @@ function layout(opts: LayoutOptions, body: string): string {
   const finalBodyClass = `${bodyClass} ${typoClasses}`.trim();
 
   const isAdmin = bodyClass.includes('admin');
-  const ld = jsonLd ? `<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>` : '';
+  const ld = jsonLd ? `<script type="application/ld+json">${scriptJson(jsonLd)}</script>` : '';
   const twitterCard = image ? 'summary_large_image' : 'summary';
 
   return `<!doctype html>
@@ -1137,7 +1137,7 @@ export function renderPost(
   const resolvedAuthorName = authorProfile?.name?.trim() || (post.author && post.author.trim()) || env.SITE_TITLE;
 
   // Metadata para personalização client-side
-  const postMeta = JSON.stringify({ category: post.category || '', tags: tags });
+  const postMeta = scriptJson({ category: post.category || '', tags: tags });
 
   const body = `
 <script type="application/json" id="cdh-post-meta">${postMeta}</script>
