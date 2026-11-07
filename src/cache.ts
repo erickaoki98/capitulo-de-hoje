@@ -40,11 +40,12 @@ export async function bumpCacheVersion(env: Env): Promise<string> {
 
 /**
  * Constrói a chave de cache combinando URL + versão.
+ * O namespace safe-html-v1 impede servir HTML anterior à sanitização.
  * Adicionamos a versão como query param para que o Cloudflare Cache API
  * trate como request distinta sem mudar a URL real do cliente.
  */
 function cacheKeyFor(request: Request, version: string): Request {
-  return new Request(publicCacheKeyUrl(request.url, version), {
+  return new Request(publicCacheKeyUrl(request.url, `safe-html-v1:${version}`), {
     method: 'GET',
     headers: request.headers,
   });

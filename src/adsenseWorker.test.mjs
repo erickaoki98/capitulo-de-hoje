@@ -6,12 +6,12 @@ const built=await build({entryPoints:['src/index.ts'],bundle:true,write:false,fo
  name:'unused-photon',setup(builder){builder.onResolve({filter:/^@cf-wasm\/photon$/},()=>({path:'photon',namespace:'test'}));builder.onLoad({filter:/.*/,namespace:'test'},()=>({contents:'export class PhotonImage {} export const SamplingFilter = {}; export function crop(){throw Error("unused")} export function resize(){throw Error("unused")}',loader:'js'}));}
 }]});
 const {default:worker}=await import('data:text/javascript;base64,'+Buffer.from(built.outputFiles[0].text).toString('base64'));
-test('real Worker enforces login, renders unconfigured state without storage and rejects CSRF',async()=>{
- const env={SESSION_SECRET:'test-only-session',SITE_TITLE:'Capítulo de Hoje',SITE_DESCRIPTION:'Teste',CANONICAL_URL:'https://example.com',ADSENSE_GOOGLE_EMAIL:'expected@example.com',DB:{prepare(){throw Error('must not query D1');}},IMAGES:{get(){throw Error('must not read unconfigured reports');}}};
+test('real Worker enforces revocable login, renders unconfigured state without reports storage and rejects CSRF',async()=>{
+ const env={SESSION_SECRET:'test-only-session',SITE_TITLE:'Capítulo de Hoje',SITE_DESCRIPTION:'Teste',CANONICAL_URL:'https://example.com',ADSENSE_GOOGLE_EMAIL:'expected@example.com',DB:{prepare(sql){assert.match(sql,/admin_sessions/);return {bind(){return this},async run(){return {meta:{}}},async first(){return {valid:1}},async all(){return {results:[{valid:1}]}}}}},IMAGES:{get(){throw Error('must not read unconfigured reports');}}};
  const context={waitUntil(){throw Error('must not launch background work');}};
  const publicRes=await worker.fetch(new Request('https://example.com/admin/adsense'),env,context);
  assert.equal(publicRes.status,303);assert.equal(publicRes.headers.get('location'),'/admin');
- const session=await createSession(env.SESSION_SECRET);
+ const session=await createSession(env.SESSION_SECRET,env.DB);
  const response=await worker.fetch(new Request('https://example.com/admin/adsense',{headers:{Cookie:`session=${session}`}}),env,context);
  assert.equal(response.status,200);assert.match(response.headers.get('cache-control'),/private, no-store/);
  const html=await response.text();assert.match(html,/Receita do AdSense/);assert.match(html,/aguarda a configuração do cliente OAuth/);assert.doesNotMatch(html,/test-only-session/);
@@ -23,8 +23,8 @@ test('real Worker enforces login, renders unconfigured state without storage and
 
 test('retired photo admin and API routes are unavailable and cannot schedule work',async()=>{
  const queries=[],keys=[],tasks=[];
- const env={SESSION_SECRET:'test-only-session',SITE_TITLE:'Site',SITE_DESCRIPTION:'Teste',CANONICAL_URL:'https://example.com',DB:{prepare(sql){queries.push(sql);return {bind(){return this},async all(){return {results:/api_keys/i.test(sql)?[{id:1}]:[]}},async first(){return /api_keys/i.test(sql)?{id:1}:null},async run(){return {meta:{}}}}}},IMAGES:{async get(key){keys.push(key);throw Error('retired routes must not read R2')}}};
- const session=await createSession(env.SESSION_SECRET),ctx={waitUntil(p){tasks.push(p)}};
+ const env={SESSION_SECRET:'test-only-session',SITE_TITLE:'Site',SITE_DESCRIPTION:'Teste',CANONICAL_URL:'https://example.com',DB:{prepare(sql){queries.push(sql);return {bind(){return this},async all(){return {results:/api_keys/i.test(sql)?[{id:1}]:[]}},async first(){return /api_keys|admin_sessions/i.test(sql)?{id:1}:null},async run(){return {meta:{}}}}}},IMAGES:{async get(key){keys.push(key);throw Error('retired routes must not read R2')}}};
+ const session=await createSession(env.SESSION_SECRET,env.DB),ctx={waitUntil(p){tasks.push(p)}};
  for(const suffix of ['', '/config','/map','/connect','/sync']){
   const res=await worker.fetch(new Request('https://example.com/admin/teste-fotos'+suffix,{method:suffix?'POST':'GET',headers:{Cookie:`session=${session}`,Origin:'https://example.com'}}),env,ctx);
   assert.equal(res.status,404);
@@ -35,5 +35,5 @@ test('retired photo admin and API routes are unavailable and cannot schedule wor
  }
  await Promise.all(tasks);
  assert.equal(keys.length,0);
- assert.ok(queries.every(sql=>/settings|api_keys/.test(sql)));
+ assert.ok(queries.every(sql=>/settings|api_keys|admin_sessions/.test(sql)));
 });

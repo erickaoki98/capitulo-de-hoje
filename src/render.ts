@@ -5,7 +5,7 @@ import type { Env, Post, PostCard } from './types';
 import type { ShopeeProduct, AdminUser, ShopeeClickDay, ShopeeProductDayClicks } from './db';
 import type { ShopeeApiProduct } from './shopee';
 import type { UserRole } from './auth';
-import { renderMarkdown, readingTime, stripBrokenImageFigures } from './markdown';
+import { renderMarkdown, readingTime, stripBrokenImageFigures, scriptJson } from './markdown';
 import {
   type AdConfig, type AdPlacementConfig, renderAdSenseScript, renderAdUnit, renderAdIns, injectInContentAds,
   adsenseScriptSrc,
@@ -141,89 +141,6 @@ function stripDuplicateH1(html: string, postTitle: string): string {
   });
 }
 
-/**
- * Corrige blockquotes não-fechados no HTML.
- * Padrão comum do WP export: `<blockquote>TEXTO</p>` em vez de `<blockquote>TEXTO</blockquote>`.
- * Sem correção, tudo após o blockquote aberto é engolido — o conteúdo some visualmente.
- *
- * Estratégia: rastreia profundidade de blockquotes tag a tag.
- * Quando estamos dentro de um blockquote aberto e encontramos `</p>` seguido por
- * um elemento block-level (h2, figure, div, etc.), esse `</p>` deveria ser `</blockquote>`.
- */
-function fixUnclosedBlockquotes(html: string): string {
-  const opens = (html.match(/<blockquote[\s>]/gi) || []).length;
-  const closes = (html.match(/<\/blockquote>/gi) || []).length;
-  if (opens <= closes) return html;
-
-  let needed = opens - closes;
-
-  // Tokeniza tag por tag, rastreando profundidade
-  const TAG_RE = /<\/?[a-zA-Z][^>]*>/g;
-  const BLOCK_NEXT = /^[\s\n]*<(h[1-6]|figure|div|section|blockquote|table|ul|ol|nav|aside|hr|article|header|footer)\b/i;
-  let depth = 0;
-  let lastIndex = 0;
-  const parts: string[] = [];
-  let match: RegExpExecArray | null;
-
-  while ((match = TAG_RE.exec(html)) !== null) {
-    const tag = match[0];
-    const lower = tag.toLowerCase();
-
-    if (/^<blockquote[\s>]/i.test(tag)) {
-      depth++;
-    } else if (lower === '</blockquote>') {
-      depth = Math.max(0, depth - 1);
-    } else if (lower === '</p>' && depth > 0 && needed > 0) {
-      // Olha o que vem DEPOIS desse </p>
-      const after = html.slice(match.index + tag.length);
-      if (BLOCK_NEXT.test(after) || after.trim().length === 0) {
-        // Este </p> deveria ser </blockquote>
-        parts.push(html.slice(lastIndex, match.index));
-        parts.push('</blockquote>');
-        lastIndex = match.index + tag.length;
-        depth--;
-        needed--;
-        continue;
-      }
-    }
-  }
-
-  if (parts.length === 0) return html; // nenhuma correção feita
-  parts.push(html.slice(lastIndex));
-  return parts.join('');
-}
-
-/**
- * Remove tags </blockquote> órfãs (sem <blockquote> correspondente).
- * Comum em conteúdo importado do WP. Browsers ignoram, mas poluem o HTML.
- */
-function stripOrphanBlockquoteCloses(html: string): string {
-  const opens = (html.match(/<blockquote[\s>]/gi) || []).length;
-  const closes = (html.match(/<\/blockquote>/gi) || []).length;
-  if (closes <= opens) return html;
-
-  let excess = closes - opens;
-  // Remove os primeiros </blockquote> que aparecem sem ter aberto
-  let depth = 0;
-  return html.replace(/<\/?blockquote[^>]*>/gi, (tag) => {
-    if (/^<blockquote/i.test(tag)) {
-      depth++;
-      return tag;
-    }
-    // É </blockquote>
-    if (depth > 0) {
-      depth--;
-      return tag;
-    }
-    // Órfão
-    if (excess > 0) {
-      excess--;
-      return '';
-    }
-    return tag;
-  });
-}
-
 /** Troca a primeira <img> pela última <img> no HTML do conteúdo.
  *  Evita que a hero image (igual à 1ª do corpo) se repita logo abaixo. */
 function swapFirstLastImages(html: string): string {
@@ -301,7 +218,7 @@ function layout(opts: LayoutOptions, body: string): string {
   const finalBodyClass = `${bodyClass} ${typoClasses}`.trim();
 
   const isAdmin = bodyClass.includes('admin');
-  const ld = jsonLd ? `<script type="application/ld+json">${JSON.stringify(jsonLd)}</script>` : '';
+  const ld = jsonLd ? `<script type="application/ld+json">${scriptJson(jsonLd)}</script>` : '';
   const twitterCard = image ? 'summary_large_image' : 'summary';
 
   return `<!doctype html>
@@ -1082,10 +999,6 @@ export function renderPost(
   let html = renderMarkdown(post.content);
   // Remove <figure> com imagens de domínios desativados (Supabase antigo)
   html = stripBrokenImageFigures(html);
-  // Sanitiza blockquotes mal-formados (WP export): fecha os não-fechados,
-  // remove closes órfãos. Deve rodar ANTES de qualquer processamento de HTML.
-  html = fixUnclosedBlockquotes(html);
-  html = stripOrphanBlockquoteCloses(html);
   // Stripa <h1> duplicado no início do content (WP exporta o título dentro do body).
   // Remove o primeiro <h1>...</h1> se o texto bater ~80% com o título do post.
   html = stripDuplicateH1(html, post.title);
@@ -1137,7 +1050,7 @@ export function renderPost(
   const resolvedAuthorName = authorProfile?.name?.trim() || (post.author && post.author.trim()) || env.SITE_TITLE;
 
   // Metadata para personalização client-side
-  const postMeta = JSON.stringify({ category: post.category || '', tags: tags });
+  const postMeta = scriptJson({ category: post.category || '', tags: tags });
 
   const body = `
 <script type="application/json" id="cdh-post-meta">${postMeta}</script>
@@ -1550,7 +1463,7 @@ export function renderDocs(env: Env, request: Request, cookieBanner = true): str
     <p>Toda requisição precisa de um <strong>Bearer token</strong> no header <code>Authorization</code>. Gere sua chave no painel:</p>
     <p><a href="/admin/api-keys" class="btn btn--primary">Ir para o painel de API Keys →</a></p>
     <pre><code>Authorization: Bearer cdh_xxxxxxxxxxxxxxxxxxxxxxxxx</code></pre>
-    <p>O token aparece <strong>uma única vez</strong> no momento da criação — anote em local seguro. Para revogar uma chave, vá no painel e clique em <em>Revogar</em>.</p>
+    <p>O token aparece <strong>uma única vez</strong> no momento da criação — anote em local seguro. Novas chaves têm validade de 30, 90 ou 365 dias e podem permitir somente leitura ou também publicação. Chaves antigas mantêm suas permissões e não expiram automaticamente. Para revogar uma chave, vá no painel e clique em <em>Revogar</em>.</p>
 
     <h2 id="endpoints">Endpoints</h2>
     <table class="docs-table">
@@ -4029,7 +3942,7 @@ export function renderShopeeInlineCard(product: import('./db').ShopeeProduct): s
 // ====== Admin: API Keys ======
 export function renderAdminApiKeys(
   env: Env, request: Request,
-  keys: Array<{ id: number; name: string; key_prefix: string; created_at: number; last_used_at: number | null }>,
+  keys: Array<{ id: number; name: string; key_prefix: string; created_at: number; last_used_at: number | null; scopes?: string; expires_at?: number | null }>,
   newToken?: string,
 ): string {
   const url = new URL(request.url);
@@ -4055,10 +3968,13 @@ export function renderAdminApiKeys(
         <p class="card__desc">Cada chave deve ter um nome descritivo (de onde será usada).</p>
       </header>
       <div class="card__body">
-        <form method="POST" action="/admin/api-keys/new" class="inline-form">
-          <div class="field" style="flex:1">
-            <input type="text" name="name" placeholder="ex: Bot de notícias, n8n, Zapier..." required>
+        <form method="POST" action="/admin/api-keys/new" class="inline-form" style="flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="flex:1 1 240px">
+            <label for="key-name">Nome da integração</label>
+            <input id="key-name" type="text" name="name" placeholder="ex: Bot de notícias, n8n, Zapier..." required>
           </div>
+          <div class="field" style="flex:1 1 180px"><label for="key-scopes">Permissões</label><select id="key-scopes" name="scopes"><option value="read,write">Leitura e publicação</option value="read">Somente leitura</option></select></div>
+          <div class="field" style="flex:1 1 120px"><label for="key-expiry">Validade</label><select id="key-expiry" name="expiry_days"><option value="90">90 dias</option><option value="30">30 dias</option><option value="365">1 ano</option></select></div>
           <button type="submit" class="btn btn--primary">Gerar chave</button>
         </form>
       </div>
@@ -4074,7 +3990,7 @@ export function renderAdminApiKeys(
         <tbody>
           ${keys.length === 0 ? `<tr><td colspan="5" class="empty-state">Nenhuma chave ainda.</td></tr>` : keys.map((k) => `
             <tr>
-              <td><strong>${escapeHtml(k.name)}</strong></td>
+              <td><strong>${escapeHtml(k.name)}</strong><div class="muted">${k.scopes === 'read' ? 'Somente leitura' : 'Leitura e publicação'} · ${k.expires_at ? 'Validade: ' + formatDate(k.expires_at) : 'Legada: sem expiração'}</div></td>
               <td><code class="mono">${escapeHtml(k.key_prefix)}…</code></td>
               <td><time class="muted">${formatDate(k.created_at)}</time></td>
               <td>${k.last_used_at ? `<time class="muted">${formatDate(k.last_used_at)}</time>` : '<span class="muted">nunca</span>'}</td>
