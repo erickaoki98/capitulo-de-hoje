@@ -71,3 +71,27 @@ test('real key flow shows secret only in POST body, never a URL or later GET', a
     await Promise.all(tasks);
   } finally { sqlite.close(); }
 });
+
+
+test('real article render repairs WordPress quotes before sanitizing and keeps following sections outside the quote', async () => {
+  const built = await build({ entryPoints: ['src/render.ts'], bundle: true, write: false, format: 'esm', platform: 'neutral', mainFields: ['module', 'main'] });
+  const { renderPost } = await import('data:text/javascript;base64,' + Buffer.from(built.outputFiles[0].text).toString('base64'));
+  const { fromHtml } = await import('hast-util-from-html');
+  const content = '<blockquote><p>Fala curta.</p><h2>Próxima seção</h2><p>Texto fora da fala.</p><img src="https://example.com/photo.jpg" onerror="bad()">';
+  const now = Date.now();
+  const article = { id: 1, slug: 'atual', title: 'Atual', description: 'Descrição', content, category: 'Novela', tags: '', author: 'Autor', hero_image: null, draft: 0, pub_date: now, updated_date: now, source_url: null };
+  const related = [{ ...article, id: 2, slug: 'relacionado', title: 'Notícia relacionada', content: '<p>Texto relacionado.</p>' }];
+  const html = renderPost({ SITE_TITLE: 'Site', SITE_DESCRIPTION: 'Teste' }, new Request('https://example.com/atual'), article, related, undefined, undefined, related);
+  const find = (node, predicate) => predicate(node) ? node : node.children?.map(child => find(child, predicate)).find(Boolean);
+  const tree = fromHtml(html);
+  const prose = find(tree, node => node.type === 'element' && node.properties.className?.includes('prose'));
+  assert.ok(prose);
+  const quote = prose.children.find(node => node.tagName === 'blockquote');
+  assert.ok(quote);
+  assert.equal(find(quote, node => node.tagName === 'h2'), undefined);
+  assert.ok(prose.children.some(node => node.tagName === 'h2'), 'the section stays at article level');
+  assert.equal((html.match(/data-related-card/g) ?? []).length, 1, 'the following section still receives its recommendation');
+  assert.doesNotMatch(html, /onerror="bad\(\)"/);
+  assert.match(html, /src="https:\/\/example.com\/photo.jpg"/);
+  assert.doesNotMatch(renderMarkdown(content), /onerror=/i, 'direct Markdown callers remain sanitized');
+});

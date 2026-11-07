@@ -141,89 +141,6 @@ function stripDuplicateH1(html: string, postTitle: string): string {
   });
 }
 
-/**
- * Corrige blockquotes não-fechados no HTML.
- * Padrão comum do WP export: `<blockquote>TEXTO</p>` em vez de `<blockquote>TEXTO</blockquote>`.
- * Sem correção, tudo após o blockquote aberto é engolido — o conteúdo some visualmente.
- *
- * Estratégia: rastreia profundidade de blockquotes tag a tag.
- * Quando estamos dentro de um blockquote aberto e encontramos `</p>` seguido por
- * um elemento block-level (h2, figure, div, etc.), esse `</p>` deveria ser `</blockquote>`.
- */
-function fixUnclosedBlockquotes(html: string): string {
-  const opens = (html.match(/<blockquote[\s>]/gi) || []).length;
-  const closes = (html.match(/<\/blockquote>/gi) || []).length;
-  if (opens <= closes) return html;
-
-  let needed = opens - closes;
-
-  // Tokeniza tag por tag, rastreando profundidade
-  const TAG_RE = /<\/?[a-zA-Z][^>]*>/g;
-  const BLOCK_NEXT = /^[\s\n]*<(h[1-6]|figure|div|section|blockquote|table|ul|ol|nav|aside|hr|article|header|footer)\b/i;
-  let depth = 0;
-  let lastIndex = 0;
-  const parts: string[] = [];
-  let match: RegExpExecArray | null;
-
-  while ((match = TAG_RE.exec(html)) !== null) {
-    const tag = match[0];
-    const lower = tag.toLowerCase();
-
-    if (/^<blockquote[\s>]/i.test(tag)) {
-      depth++;
-    } else if (lower === '</blockquote>') {
-      depth = Math.max(0, depth - 1);
-    } else if (lower === '</p>' && depth > 0 && needed > 0) {
-      // Olha o que vem DEPOIS desse </p>
-      const after = html.slice(match.index + tag.length);
-      if (BLOCK_NEXT.test(after) || after.trim().length === 0) {
-        // Este </p> deveria ser </blockquote>
-        parts.push(html.slice(lastIndex, match.index));
-        parts.push('</blockquote>');
-        lastIndex = match.index + tag.length;
-        depth--;
-        needed--;
-        continue;
-      }
-    }
-  }
-
-  if (parts.length === 0) return html; // nenhuma correção feita
-  parts.push(html.slice(lastIndex));
-  return parts.join('');
-}
-
-/**
- * Remove tags </blockquote> órfãs (sem <blockquote> correspondente).
- * Comum em conteúdo importado do WP. Browsers ignoram, mas poluem o HTML.
- */
-function stripOrphanBlockquoteCloses(html: string): string {
-  const opens = (html.match(/<blockquote[\s>]/gi) || []).length;
-  const closes = (html.match(/<\/blockquote>/gi) || []).length;
-  if (closes <= opens) return html;
-
-  let excess = closes - opens;
-  // Remove os primeiros </blockquote> que aparecem sem ter aberto
-  let depth = 0;
-  return html.replace(/<\/?blockquote[^>]*>/gi, (tag) => {
-    if (/^<blockquote/i.test(tag)) {
-      depth++;
-      return tag;
-    }
-    // É </blockquote>
-    if (depth > 0) {
-      depth--;
-      return tag;
-    }
-    // Órfão
-    if (excess > 0) {
-      excess--;
-      return '';
-    }
-    return tag;
-  });
-}
-
 /** Troca a primeira <img> pela última <img> no HTML do conteúdo.
  *  Evita que a hero image (igual à 1ª do corpo) se repita logo abaixo. */
 function swapFirstLastImages(html: string): string {
@@ -1082,10 +999,6 @@ export function renderPost(
   let html = renderMarkdown(post.content);
   // Remove <figure> com imagens de domínios desativados (Supabase antigo)
   html = stripBrokenImageFigures(html);
-  // Sanitiza blockquotes mal-formados (WP export): fecha os não-fechados,
-  // remove closes órfãos. Deve rodar ANTES de qualquer processamento de HTML.
-  html = fixUnclosedBlockquotes(html);
-  html = stripOrphanBlockquoteCloses(html);
   // Stripa <h1> duplicado no início do content (WP exporta o título dentro do body).
   // Remove o primeiro <h1>...</h1> se o texto bater ~80% com o título do post.
   html = stripDuplicateH1(html, post.title);

@@ -7,7 +7,10 @@ import { toHtml } from 'hast-util-to-html';
  * No script, inline handler, iframe, form, SVG or CSS from article content executes.
  */
 export function sanitizeArticleHtml(html: string): string {
-  return toHtml(sanitize(fromHtml(html, { fragment: true }), {
+  // Repair malformed WordPress quotes before the HTML parser auto-closes them.
+  // Once parsed, an unclosed quote would appear balanced around the whole article.
+  const repaired = stripOrphanBlockquoteCloses(fixUnclosedBlockquotes(html));
+  return toHtml(sanitize(fromHtml(repaired, { fragment: true }), {
     ...defaultSchema,
     tagNames: [...(defaultSchema.tagNames ?? []), 'figure', 'figcaption', 'picture', 'source', 'video'],
     attributes: {
@@ -20,6 +23,89 @@ export function sanitizeArticleHtml(html: string): string {
     },
     protocols: { ...defaultSchema.protocols, src: ['http', 'https'], poster: ['http', 'https'], href: ['http', 'https', 'mailto', 'tel'] },
   }));
+}
+
+/**
+ * Corrige blockquotes não-fechados no HTML.
+ * Padrão comum do WP export: `<blockquote>TEXTO</p>` em vez de `<blockquote>TEXTO</blockquote>`.
+ * Sem correção, tudo após o blockquote aberto é engolido — o conteúdo some visualmente.
+ *
+ * Estratégia: rastreia profundidade de blockquotes tag a tag.
+ * Quando estamos dentro de um blockquote aberto e encontramos `</p>` seguido por
+ * um elemento block-level (h2, figure, div, etc.), esse `</p>` deveria ser `</blockquote>`.
+ */
+function fixUnclosedBlockquotes(html: string): string {
+  const opens = (html.match(/<blockquote[\s>]/gi) || []).length;
+  const closes = (html.match(/<\/blockquote>/gi) || []).length;
+  if (opens <= closes) return html;
+
+  let needed = opens - closes;
+
+  // Tokeniza tag por tag, rastreando profundidade
+  const TAG_RE = /<\/?[a-zA-Z][^>]*>/g;
+  const BLOCK_NEXT = /^[\s\n]*<(h[1-6]|figure|div|section|blockquote|table|ul|ol|nav|aside|hr|article|header|footer)\b/i;
+  let depth = 0;
+  let lastIndex = 0;
+  const parts: string[] = [];
+  let match: RegExpExecArray | null;
+
+  while ((match = TAG_RE.exec(html)) !== null) {
+    const tag = match[0];
+    const lower = tag.toLowerCase();
+
+    if (/^<blockquote[\s>]/i.test(tag)) {
+      depth++;
+    } else if (lower === '</blockquote>') {
+      depth = Math.max(0, depth - 1);
+    } else if (lower === '</p>' && depth > 0 && needed > 0) {
+      // Olha o que vem DEPOIS desse </p>
+      const after = html.slice(match.index + tag.length);
+      if (BLOCK_NEXT.test(after) || after.trim().length === 0) {
+        // Este </p> deveria ser </blockquote>
+        parts.push(html.slice(lastIndex, match.index));
+        parts.push('</blockquote>');
+        lastIndex = match.index + tag.length;
+        depth--;
+        needed--;
+        continue;
+      }
+    }
+  }
+
+  if (parts.length === 0) return html; // nenhuma correção feita
+  parts.push(html.slice(lastIndex));
+  return parts.join('');
+}
+
+/**
+ * Remove tags </blockquote> órfãs (sem <blockquote> correspondente).
+ * Comum em conteúdo importado do WP. Browsers ignoram, mas poluem o HTML.
+ */
+function stripOrphanBlockquoteCloses(html: string): string {
+  const opens = (html.match(/<blockquote[\s>]/gi) || []).length;
+  const closes = (html.match(/<\/blockquote>/gi) || []).length;
+  if (closes <= opens) return html;
+
+  let excess = closes - opens;
+  // Remove os primeiros </blockquote> que aparecem sem ter aberto
+  let depth = 0;
+  return html.replace(/<\/?blockquote[^>]*>/gi, (tag) => {
+    if (/^<blockquote/i.test(tag)) {
+      depth++;
+      return tag;
+    }
+    // É </blockquote>
+    if (depth > 0) {
+      depth--;
+      return tag;
+    }
+    // Órfão
+    if (excess > 0) {
+      excess--;
+      return '';
+    }
+    return tag;
+  });
 }
 
 /** JSON embedded in an HTML script element must not contain a closing tag. */
