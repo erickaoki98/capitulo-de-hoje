@@ -449,6 +449,8 @@ export interface ApiKey {
   created_at: number;
   last_used_at: number | null;
   active: number;
+  scopes: string;
+  expires_at: number | null;
 }
 
 export async function listApiKeys(db: D1Database): Promise<ApiKey[]> {
@@ -459,18 +461,18 @@ export async function listApiKeys(db: D1Database): Promise<ApiKey[]> {
 }
 
 export async function insertApiKey(
-  db: D1Database, name: string, prefix: string, hash: string,
+  db: D1Database, name: string, prefix: string, hash: string, scopes = 'read,write', expiresAt: number | null = Date.now() + 90 * 86400000,
 ): Promise<number> {
   const r = await db.prepare(
-    `INSERT INTO api_keys (key_prefix, key_hash, name, created_at, active)
-     VALUES (?, ?, ?, ?, 1)`,
-  ).bind(prefix, hash, name, Date.now()).run();
+    `INSERT INTO api_keys (key_prefix, key_hash, name, created_at, active, scopes, expires_at)
+     VALUES (?, ?, ?, ?, 1, ?, ?)`,
+  ).bind(prefix, hash, name, Date.now(), scopes, expiresAt).run();
   return Number(r.meta.last_row_id);
 }
 
 export async function findApiKeyByHash(db: D1Database, hash: string): Promise<ApiKey | null> {
-  return await db.prepare('SELECT * FROM api_keys WHERE key_hash = ? AND active = 1')
-    .bind(hash).first<ApiKey>();
+  return await db.prepare('SELECT * FROM api_keys WHERE key_hash = ? AND active = 1 AND (expires_at IS NULL OR expires_at > ?)')
+    .bind(hash, Date.now()).first<ApiKey>();
 }
 
 export async function touchApiKey(db: D1Database, id: number): Promise<void> {

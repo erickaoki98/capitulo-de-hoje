@@ -8,7 +8,7 @@ import { renderMarkdown, sanitizeArticleHtml, scriptJson } from './markdown.ts';
 
 async function fixture() {
   const sqlite = new DatabaseSync(':memory:');
-  for (const path of ['schema.sql', 'migrations/0003-settings-analytics-api.sql']) {
+  for (const path of ['schema.sql', 'migrations/0003-settings-analytics-api.sql', 'migrations/0009_security_auth.sql']) {
     sqlite.exec(await readFile(new URL('../' + path, import.meta.url), 'utf8'));
   }
   const queries = [];

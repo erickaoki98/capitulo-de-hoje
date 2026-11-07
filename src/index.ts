@@ -43,7 +43,7 @@ import { optimizeImage, shouldOptimize } from './imageopt';
 import { parseAdConfig, parseInContentExtraForm, renderAdsTxt, type AdConfig, DEFAULT_AD_CONFIG } from './adsense';
 import { generateApiKey, sha256 } from './apikey';
 import {
-  createSession, sessionCookie, clearSessionCookie, requireAuth,
+  createSession, sessionCookie, clearSessionCookie, requireAuth, revokeSession, reserveLoginAttempt, clearLoginAttempts, cleanupAuthState,
 } from './auth';
 import { excerpt, sanitizeDescription } from './markdown';
 import { isArchivedCategoryError, normalizeCategoryKey } from './archive.ts';
@@ -486,7 +486,7 @@ ${urls.join('\n')}
 
       // ===== Admin: login (GET) / Dashboard =====
       if (pathname === '/admin' && request.method === 'GET') {
-        const authed = await requireAuth(request, env.SESSION_SECRET);
+        const authed = await requireAuth(request, env.SESSION_SECRET, env.DB, env.ADMIN_PASSWORD);
         if (!authed) {
           return new Response(renderLogin(env, request), { headers: NO_CACHE_HEADERS });
         }
@@ -524,7 +524,7 @@ ${urls.join('\n')}
 
       // ===== Admin: Posts list =====
       if (pathname === '/admin/posts' && request.method === 'GET') {
-        const authed = await requireAuth(request, env.SESSION_SECRET);
+        const authed = await requireAuth(request, env.SESSION_SECRET, env.DB, env.ADMIN_PASSWORD);
         if (!authed) return redirectToLogin();
         const posts = await listPosts(env.DB, { includeDrafts: true, limit: 500 });
         const viewsByPath = await totalViewsByPath(env.DB);
@@ -540,6 +540,11 @@ ${urls.join('\n')}
 
       // ===== Admin: login (POST) =====
       if (pathname === '/admin/login' && request.method === 'POST') {
+        if (!await reserveLoginAttempt(request, env.SESSION_SECRET, env.DB)) {
+          return new Response(renderLogin(env, request, 'Muitas tentativas. Aguarde até 15 minutos e tente novamente.'), {
+            status: 429, headers: { ...NO_CACHE_HEADERS, 'Retry-After': '900' },
+          });
+        }
         const form = await parseFormData(request);
         const username = String(form.get('username') ?? '').trim();
         const password = String(form.get('password') ?? '');
@@ -549,7 +554,8 @@ ${urls.join('\n')}
             headers: NO_CACHE_HEADERS,
           });
         }
-        const token = await createSession(env.SESSION_SECRET);
+        await clearLoginAttempts(request, env.SESSION_SECRET, env.DB);
+        const token = await createSession(env.SESSION_SECRET, env.DB, env.ADMIN_PASSWORD);
         return new Response(null, {
           status: 303,
           headers: { Location: '/admin', 'Set-Cookie': sessionCookie(token) },
@@ -558,6 +564,7 @@ ${urls.join('\n')}
 
       // ===== Admin: logout =====
       if (pathname === '/admin/logout' && request.method === 'POST') {
+        await revokeSession(request, env.SESSION_SECRET, env.DB);
         return new Response(null, {
           status: 303,
           headers: { Location: '/admin', 'Set-Cookie': clearSessionCookie() },
@@ -565,7 +572,7 @@ ${urls.join('\n')}
       }
 
       // ===== Everything below requires auth =====
-      const authed = await requireAuth(request, env.SESSION_SECRET);
+      const authed = await requireAuth(request, env.SESSION_SECRET, env.DB, env.ADMIN_PASSWORD);
 
       if (pathname === '/admin/adsense' || pathname.startsWith('/admin/adsense/')) {
         return handleAdSenseRoute(request, env, authed, (view, message) => renderAdminAdSense(env, view, message));
@@ -1091,7 +1098,10 @@ ${urls.join('\n')}
         const form = await request.formData();
         const name = String(form.get('name') ?? '').trim() || 'Chave sem nome';
         const { token, prefix, hash } = await generateApiKey();
-        await insertApiKey(env.DB, name, prefix, hash);
+        const scopes = form.get('scopes') === 'read' ? 'read' : 'read,write';
+        const days = Number(form.get('expiry_days') || 90);
+        if (![30, 90, 365].includes(days)) return json({ error: 'Validade inválida.' }, 400);
+        await insertApiKey(env.DB, name, prefix, hash, scopes, Date.now() + days * 86400000);
         const keys = await listApiKeys(env.DB);
         return new Response(renderAdminApiKeys(env, request, keys, token), {
           headers: { ...NO_CACHE_HEADERS, 'Referrer-Policy': 'no-referrer' },
@@ -1163,7 +1173,7 @@ ${urls.join('\n')}
 
       // ===== Contagem de visitantes ao vivo (admin, session auth) =====
       if (pathname === '/api/active-visitors' && request.method === 'GET') {
-        const authedApi = await requireAuth(request, env.SESSION_SECRET);
+        const authedApi = await requireAuth(request, env.SESSION_SECRET, env.DB, env.ADMIN_PASSWORD);
         if (!authedApi) return json({ error: 'Unauthorized' }, 401);
         const count = await countActiveVisitors(env.DB);
         return new Response(JSON.stringify({ active: count }), {
@@ -1181,7 +1191,9 @@ ${urls.join('\n')}
         }
         const hash = await sha256(token);
         const apiKey = await findApiKeyByHash(env.DB, hash);
-        if (!apiKey) return json({ error: 'Invalid or revoked API key' }, 401);
+        if (!apiKey) return json({ error: 'Invalid, expired or revoked API key' }, 401);
+        const requiredScope = ['GET', 'HEAD', 'OPTIONS'].includes(request.method) ? 'read' : 'write';
+        if (!(apiKey.scopes ?? 'read,write').split(',').includes(requiredScope)) return json({ error: 'API key does not permit this operation' }, 403);
         ctx.waitUntil(touchApiKey(env.DB, apiKey.id).catch(() => {}));
 
         const siteOrigin = `${url.protocol}//${url.host}`;
@@ -1453,6 +1465,7 @@ ${urls.join('\n')}
     env = { ...env, DB: withD1Telemetry(env.DB, 'scheduled') };
     // Expired visitors never affect the live count; remove at most 500 per tick.
     ctx.waitUntil(cleanupStaleVisitors(env.DB).catch(() => {}));
+    ctx.waitUntil(cleanupAuthState(env.DB).catch(() => {}));
     const ranking = refreshRankingSnapshot(env.IMAGES, env.DB);
     // AdSense reserves globally at most one attempt/hour; no D1 history scans.
     const adsense = syncReports(env);

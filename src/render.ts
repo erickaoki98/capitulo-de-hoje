@@ -1550,7 +1550,7 @@ export function renderDocs(env: Env, request: Request, cookieBanner = true): str
     <p>Toda requisição precisa de um <strong>Bearer token</strong> no header <code>Authorization</code>. Gere sua chave no painel:</p>
     <p><a href="/admin/api-keys" class="btn btn--primary">Ir para o painel de API Keys →</a></p>
     <pre><code>Authorization: Bearer cdh_xxxxxxxxxxxxxxxxxxxxxxxxx</code></pre>
-    <p>O token aparece <strong>uma única vez</strong> no momento da criação — anote em local seguro. Para revogar uma chave, vá no painel e clique em <em>Revogar</em>.</p>
+    <p>O token aparece <strong>uma única vez</strong> no momento da criação — anote em local seguro. Novas chaves têm validade de 30, 90 ou 365 dias e podem permitir somente leitura ou também publicação. Chaves antigas mantêm suas permissões e não expiram automaticamente. Para revogar uma chave, vá no painel e clique em <em>Revogar</em>.</p>
 
     <h2 id="endpoints">Endpoints</h2>
     <table class="docs-table">
@@ -4029,7 +4029,7 @@ export function renderShopeeInlineCard(product: import('./db').ShopeeProduct): s
 // ====== Admin: API Keys ======
 export function renderAdminApiKeys(
   env: Env, request: Request,
-  keys: Array<{ id: number; name: string; key_prefix: string; created_at: number; last_used_at: number | null }>,
+  keys: Array<{ id: number; name: string; key_prefix: string; created_at: number; last_used_at: number | null; scopes?: string; expires_at?: number | null }>,
   newToken?: string,
 ): string {
   const url = new URL(request.url);
@@ -4055,10 +4055,13 @@ export function renderAdminApiKeys(
         <p class="card__desc">Cada chave deve ter um nome descritivo (de onde será usada).</p>
       </header>
       <div class="card__body">
-        <form method="POST" action="/admin/api-keys/new" class="inline-form">
-          <div class="field" style="flex:1">
-            <input type="text" name="name" placeholder="ex: Bot de notícias, n8n, Zapier..." required>
+        <form method="POST" action="/admin/api-keys/new" class="inline-form" style="flex-wrap:wrap;align-items:flex-end">
+          <div class="field" style="flex:1 1 240px">
+            <label for="key-name">Nome da integração</label>
+            <input id="key-name" type="text" name="name" placeholder="ex: Bot de notícias, n8n, Zapier..." required>
           </div>
+          <div class="field" style="flex:1 1 180px"><label for="key-scopes">Permissões</label><select id="key-scopes" name="scopes"><option value="read,write">Leitura e publicação</option value="read">Somente leitura</option></select></div>
+          <div class="field" style="flex:1 1 120px"><label for="key-expiry">Validade</label><select id="key-expiry" name="expiry_days"><option value="90">90 dias</option><option value="30">30 dias</option><option value="365">1 ano</option></select></div>
           <button type="submit" class="btn btn--primary">Gerar chave</button>
         </form>
       </div>
@@ -4074,7 +4077,7 @@ export function renderAdminApiKeys(
         <tbody>
           ${keys.length === 0 ? `<tr><td colspan="5" class="empty-state">Nenhuma chave ainda.</td></tr>` : keys.map((k) => `
             <tr>
-              <td><strong>${escapeHtml(k.name)}</strong></td>
+              <td><strong>${escapeHtml(k.name)}</strong><div class="muted">${k.scopes === 'read' ? 'Somente leitura' : 'Leitura e publicação'} · ${k.expires_at ? 'Validade: ' + formatDate(k.expires_at) : 'Legada: sem expiração'}</div></td>
               <td><code class="mono">${escapeHtml(k.key_prefix)}…</code></td>
               <td><time class="muted">${formatDate(k.created_at)}</time></td>
               <td>${k.last_used_at ? `<time class="muted">${formatDate(k.last_used_at)}</time>` : '<span class="muted">nunca</span>'}</td>
